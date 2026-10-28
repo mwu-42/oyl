@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>Oyl</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.nott</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>Oyl</string>
+	<key>CFBundleDisplayName</key>
+	<string>Oyl</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.2</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Oyl listens to Music and Spotify's audio so the visualizer moves with the song.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Oyl watches for hand gestures while your pointer is over the open notch.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Oyl reads the current song from Music and Spotify and controls playback.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>

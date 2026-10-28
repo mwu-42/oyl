@@ -1,0 +1,1470 @@
+import SwiftUI
+
+/// The song's beat, for Oyl to bop to: the bass level the visualizer shows, 0...1. Set by
+/// `AudioSpectrum` as frames arrive; read while drawing, so nothing re-renders for it.
+@MainActor
+enum Beat {
+    static var level: Float = 0
+}
+
+/// Oyl, Oyl's imp: white, with a spiky head and big sleepy eyes. It acts out what its agent is doing (at a laptop for code, a
+/// speech bubble for a chat), wears an orange hat while it's running a Claude, bops along to
+/// music, and with nothing to run, hangs out.
+struct Oyl: View {
+    var activity: AgentActivity = .idle
+    var hat = false
+    /// Walking off to the left, for one that's finished (see `WalkerOverlay`).
+    var walking = false
+    /// On a surfboard, riding the visualizer's wave.
+    var surfing = false
+    /// With no agent to run: off on its own, a new pastime every so often.
+    var hangingOut = false
+    /// Music's playing, so while hanging out it dances.
+    var music = false
+    /// White on its own; a pastel when it's on a task (see `pastel(_:)`).
+    var skin = Oyl.white
+    /// One of the app's own jobs, which decides its color too.
+    var duty: OylDuty?
+    /// What it's doing for the calendar's event now.
+    var attending: CalendarActivity?
+    /// Peering ahead with a magnifying glass.
+    var peeking = false
+
+    static let hatOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
+    static let white = Color(white: 0.96)
+    static let cyan = Color(red: 0.5, green: 0.89, blue: 1)
+
+    /// The pastel numbered `number`, for an Oyl on a task (see `AgentSession.skin`).
+    static func pastel(_ number: Int) -> Color {
+        pastels[number % pastels.count]
+    }
+
+    /// The pastel a new task's Oyl gets: the same each time for the same task, unless an Oyl
+    /// already out has it, so several at once can be told apart.
+    static func pastel(for task: String, avoiding taken: Set<Int>) -> Int {
+        // FNV-1a, since Swift's own hashing changes from launch to launch; its high bits, which
+        // are the best mixed.
+        var hash: UInt32 = 2_166_136_261
+        for byte in task.utf8 { hash = (hash ^ UInt32(byte)) &* 16_777_619 }
+        let first = Int((UInt64(hash) * UInt64(pastels.count)) >> 32)
+        return (0..<pastels.count).lazy.map { (first + $0) % pastels.count }.first { !taken.contains($0) } ?? first
+    }
+
+    // Clear of the jobs' own colors: cyan for staying awake, orange for timers, grey for a tired
+    // battery.
+    private static let pastels = [
+        Color(red: 1, green: 0.7, blue: 0.8),       // pink
+        Color(red: 1, green: 0.88, blue: 0.46),     // butter
+        Color(red: 0.6, green: 0.93, blue: 0.68),   // mint
+        Color(red: 0.64, green: 0.72, blue: 1),     // periwinkle
+        Color(red: 0.8, green: 0.65, blue: 1),      // lavender
+        Color(red: 0.82, green: 0.95, blue: 0.45),  // lime
+        Color(red: 1, green: 0.64, blue: 0.56),     // coral
+    ]
+    /// Around Oyls on the menu bar, so a white one shows on a light one too.
+    static let menuBarOutline = Color(white: 0.15).opacity(0.55)
+
+    var body: some View {
+        // A touch slower while hanging out, since that's on screen all the time.
+        TimelineView(.animation(minimumInterval: 1.0 / (hangingOut ? 12 : 15))) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            let beat = CGFloat(max(Beat.level - 0.3, 0) / 0.7)
+            Canvas { canvas, size in
+                let skin = duty?.skin(at: context.date) ?? skin
+                let drawing = OylDrawing(canvas: canvas, size: size, time: time, beat: beat, skin: skin)
+                if let duty {
+                    drawing.perform(duty)
+                } else if let attending {
+                    drawing.attend(attending)
+                } else if peeking {
+                    drawing.peek()
+                } else if hangingOut {
+                    drawing.hangOut(music: music)
+                } else {
+                    drawing.draw(activity, hat: hat, walking: walking, surfing: surfing)
+                }
+            }
+        }
+    }
+}
+
+/// Draws in a 100 × 50 space scaled to fit: Oyl in a 40 × 44 box on the left (or in the middle
+/// when it has nothing to work at, or walking), props on the right.
+struct OylDrawing {
+    let canvas: GraphicsContext
+    let size: CGSize
+    let time: TimeInterval
+    let beat: CGFloat
+    let skin: Color
+    /// Drawn around it, if anything: on the menu bar, so it shows on a light one.
+    var outline: Color?
+    /// How quick its steps are, walking, against a stroll.
+    var pace: Double = 1
+    private static let ink = Color(white: 0.08)  // its eyes
+    private static let paper = Color.white.opacity(0.92)
+    /// What it does at a laptop, standing left of the middle to make room.
+    static let props: Set<AgentActivity> = [.coding, .running, .reading, .browsing, .thinking, .writing, .delegating]
+    private static let codeColors = [Oyl.hatOrange, Color(red: 0.45, green: 0.7, blue: 1), Color(red: 0.45, green: 0.85, blue: 0.5)]
+
+    /// The pose: where its eyes look, its hands and feet go, how high it is.
+    private struct Pose {
+        var look = CGPoint.zero
+        var hands = (CGPoint(x: 12, y: 31), CGPoint(x: 28, y: 31))
+        var feet = (CGPoint(x: 14, y: 41), CGPoint(x: 31, y: 37))
+        var lift: CGFloat = 0
+        var squash: CGFloat = 1
+        var eyesClosed = false
+        var lid: CGFloat = 0.36  // how far its lids come down
+    }
+
+    func draw(_ activity: AgentActivity, hat: Bool, walking: Bool, surfing: Bool) {
+        let atWork = Self.props.contains(activity) && !walking && !surfing
+        let pose = pose(for: activity, walking: walking, surfing: surfing)
+
+        let space = self.space
+        // Facing left when walking, the way it goes.
+        let body = body(in: space, at: atWork ? 6 : 30, pose: pose, mirrored: walking)
+        if surfing {
+            // A board under its feet.
+            let board = Path(roundedRect: CGRect(x: 1, y: 41.5, width: 38, height: 4.2), cornerRadius: 2.1)
+            body.fill(board, with: .color(Oyl.hatOrange))
+            body.fill(Path(CGRect(x: 19, y: 41.5, width: 2, height: 4.2)), with: .color(.white.opacity(0.85)))
+        }
+        drawOyl(in: body, pose: pose, hat: hat)
+
+        guard !walking, !surfing else { return }
+        switch activity {
+        case .coding, .running, .reading, .browsing, .thinking:
+            laptop(in: space, activity: activity)
+            if activity == .thinking { thoughts(in: space) }
+        case .writing:
+            bubble(in: space)
+        case .delegating:
+            var helper = space
+            helper.translateBy(x: 62, y: 16 - abs(sin(time * .pi * 1.6)) * 4)
+            helper.scaleBy(x: 0.55, y: 0.55)
+            drawOyl(in: helper, pose: Pose(look: CGPoint(x: -0.8, y: 0)), hat: false)
+        case .waiting:
+            // "!" for your attention, blinking.
+            if Int(time * 3) % 3 != 2 {
+                let mark = Color(red: 1, green: 0.8, blue: 0.26)
+                space.fill(Path(roundedRect: CGRect(x: 76, y: 6, width: 4, height: 13), cornerRadius: 2), with: .color(mark))
+                space.fill(Path(ellipseIn: CGRect(x: 75.8, y: 22, width: 4.4, height: 4.4)), with: .color(mark))
+            }
+        case .done:
+            var check = Path()
+            check.move(to: CGPoint(x: 74, y: 16))
+            check.addLine(to: CGPoint(x: 79, y: 22))
+            check.addLine(to: CGPoint(x: 89, y: 9))
+            space.stroke(check, with: .color(Color(red: 0.45, green: 0.85, blue: 0.5)),
+                         style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+        case .idle:
+            break
+        }
+    }
+
+    /// The drawing space, scaled to fit and centered.
+    private var space: GraphicsContext {
+        let scale = min(size.width / 100, size.height / 50)
+        var space = canvas
+        space.translateBy(x: (size.width - 100 * scale) / 2, y: (size.height - 50 * scale) / 2)
+        space.scaleBy(x: scale, y: scale)
+        return space
+    }
+
+    /// Where to draw Oyl's 40 × 44 box, at `x` in the drawing space, lifted and squashed as posed.
+    private func body(in space: GraphicsContext, at x: CGFloat, pose: Pose, mirrored: Bool = false) -> GraphicsContext {
+        var body = space
+        body.translateBy(x: x, y: 3 - pose.lift)
+        if mirrored {
+            body.translateBy(x: 40, y: 0)
+            body.scaleBy(x: -1, y: 1)
+        }
+        // Squashing down from the feet, so a bop looks like a bounce.
+        body.translateBy(x: 20, y: 44)
+        body.scaleBy(x: 1 + (1 - pose.squash) * 0.6, y: pose.squash)
+        body.translateBy(x: -20, y: -44)
+        return body
+    }
+
+    /// Breathing, blinking and bopping to the beat, whatever else it's up to.
+    private func restingPose() -> Pose {
+        var pose = Pose()
+        let breath = sin(time * 2 * .pi / 3)
+        pose.squash = 1 + 0.025 * breath - beat * 0.08
+        pose.lift = beat * 3
+        pose.eyesClosed = time.truncatingRemainder(dividingBy: 3.7) < 0.12
+        return pose
+    }
+
+    private func pose(for activity: AgentActivity, walking: Bool, surfing: Bool) -> Pose {
+        var pose = restingPose()
+        if walking {
+            let stride = sin(time * pace * 2 * .pi * 1.8)
+            pose.feet = (CGPoint(x: 18 + stride * 5, y: 41.5), CGPoint(x: 22 - stride * 5, y: 41.5))
+            pose.hands = (CGPoint(x: 12 - stride * 2, y: 31), CGPoint(x: 28 + stride * 2, y: 31))
+            pose.lift += abs(stride) * 1.4
+            pose.look = CGPoint(x: 0.7, y: 0)
+            return pose
+        }
+        if surfing {
+            // Knees bent, arms out for balance, swaying.
+            let sway = sin(time * 2 * .pi / 2.2)
+            pose.feet = (CGPoint(x: 11, y: 40.5), CGPoint(x: 29, y: 40.5))
+            pose.hands = (CGPoint(x: 4, y: 24 + sway * 3), CGPoint(x: 36, y: 22 - sway * 3))
+            pose.look = CGPoint(x: 0.8, y: 0.1)
+            return pose
+        }
+        switch activity {
+        case .coding, .running:
+            // Both hands at the keys, taking turns.
+            let tap = sin(time * 2 * .pi * 3) > 0
+            pose.hands = (CGPoint(x: 30, y: tap ? 31 : 33), CGPoint(x: 35, y: tap ? 33 : 31))
+            pose.look = CGPoint(x: 0.8, y: 0.3)
+        case .thinking:
+            pose.look = CGPoint(x: 0.5, y: -0.9)
+            pose.hands.1 = CGPoint(x: 26, y: 24)  // chin in hand
+        case .reading, .browsing:
+            pose.look = CGPoint(x: 0.5 + 0.4 * sin(time * 1.6), y: 0.2)
+            pose.hands.1 = CGPoint(x: 33, y: 33)
+        case .writing, .delegating:
+            pose.look = CGPoint(x: 0.9, y: 0)
+        case .waiting:
+            pose.lift += abs(sin(time * .pi * 1.6)) * 5
+            pose.hands = (CGPoint(x: 9, y: 24), CGPoint(x: 31, y: 24))  // arms up
+            pose.look = CGPoint(x: 0, y: 0.4)
+        case .idle, .done:
+            pose.look = CGPoint(x: 0.6 * sin(time * 0.45), y: 0.15)
+        }
+        return pose
+    }
+
+    private func drawOyl(in context: GraphicsContext, pose: Pose, hat: Bool) {
+        let head = CGPoint(x: 20, y: 15), radius: CGFloat = 11
+        var shapes: [Path] = [Path(ellipseIn: CGRect(x: head.x - radius, y: head.y - radius, width: 2 * radius, height: 2 * radius)),
+                              Path(ellipseIn: CGRect(x: 14, y: 24, width: 12, height: 11))]
+        // Its spikes, chunky ones: two long ones up and out, shorter ones around the sides.
+        let spikes: [(CGFloat, CGFloat, CGFloat)] = [(-0.78, -0.62, 11), (0.35, -0.94, 11), (0.97, -0.25, 7),
+                                                     (-1, 0.05, 7.5), (-0.8, 0.6, 6), (0.9, 0.45, 4.5)]
+        for (dx, dy, length) in spikes {
+            let tip = CGPoint(x: head.x + dx * (radius + length), y: head.y + dy * (radius + length))
+            let base = CGPoint(x: head.x + dx * radius * 0.6, y: head.y + dy * radius * 0.6)
+            let width: CGFloat = length > 8 ? 5 : 4
+            var spike = Path()
+            spike.move(to: tip)
+            spike.addLine(to: CGPoint(x: base.x - dy * width, y: base.y + dx * width))
+            spike.addLine(to: CGPoint(x: base.x + dy * width, y: base.y - dx * width))
+            spike.closeSubpath()
+            shapes.append(spike)
+        }
+        var limbs: [(Path, CGFloat)] = []
+        for (shoulder, hand) in [(CGPoint(x: 15, y: 26), pose.hands.0), (CGPoint(x: 25, y: 26), pose.hands.1)] {
+            limbs.append((Path { $0.move(to: shoulder); $0.addLine(to: hand) }, 3))
+        }
+        for (hip, foot) in [(CGPoint(x: 17, y: 33), pose.feet.0), (CGPoint(x: 23, y: 33), pose.feet.1)] {
+            limbs.append((Path { $0.move(to: hip); $0.addLine(to: foot) }, 3.8))
+        }
+
+        // The outline: everything stroked first, then filled over, so only the outside edge
+        // shows (no need to merge the shapes).
+        if let outline {
+            let rim: CGFloat = 0.7
+            for shape in shapes { context.stroke(shape, with: .color(outline), lineWidth: 2 * rim) }
+            for (limb, width) in limbs {
+                context.stroke(limb, with: .color(outline), style: StrokeStyle(lineWidth: width + 2 * rim, lineCap: .round))
+            }
+        }
+        for shape in shapes { context.fill(shape, with: .color(skin)) }
+        for (limb, width) in limbs {
+            context.stroke(limb, with: .color(skin), style: StrokeStyle(lineWidth: width, lineCap: .round))
+        }
+
+        // Big sleepy eyes: white, with the pupil looking about and a heavy lid over the top.
+        for center in [CGPoint(x: 14.9, y: 18), CGPoint(x: 25.1, y: 18)] {
+            let eye = CGRect(x: center.x - 4, y: center.y - 3.5, width: 8, height: 7)
+            guard !pose.eyesClosed else {
+                context.stroke(Path { $0.move(to: CGPoint(x: eye.minX + 0.6, y: center.y + 0.8))
+                                      $0.addQuadCurve(to: CGPoint(x: eye.maxX - 0.6, y: center.y + 0.8),
+                                                      control: CGPoint(x: center.x, y: center.y + 2.4)) },
+                               with: .color(Self.ink), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+                continue
+            }
+            var inside = context
+            inside.clip(to: Path(ellipseIn: eye))
+            inside.fill(Path(ellipseIn: eye), with: .color(Self.ink))
+            let glint = CGPoint(x: center.x + pose.look.x * 1.6, y: center.y + 0.6 + pose.look.y * 1.1)
+            inside.fill(Path(ellipseIn: CGRect(x: glint.x - 1.2, y: glint.y - 1.2, width: 2.4, height: 2.4)), with: .color(.white))
+            inside.fill(Path(CGRect(x: eye.minX, y: eye.minY, width: eye.width, height: eye.height * pose.lid)), with: .color(skin))
+        }
+
+        if hat {
+            // An orange beanie with a bobble, for Claude.
+            var cap = Path()
+            cap.move(to: CGPoint(x: 10.5, y: 8.6))
+            cap.addQuadCurve(to: CGPoint(x: 29.5, y: 8.6), control: CGPoint(x: 20, y: -4))
+            cap.closeSubpath()
+            context.fill(cap, with: .color(Oyl.hatOrange))
+            context.fill(Path(roundedRect: CGRect(x: 9.6, y: 7.4, width: 20.8, height: 3.2), cornerRadius: 1.6),
+                         with: .color(Color(red: 0.72, green: 0.38, blue: 0.27)))
+            context.fill(Path(ellipseIn: CGRect(x: 18, y: -0.6, width: 4, height: 4)), with: .color(Oyl.hatOrange))
+        }
+    }
+
+    /// A laptop on the right, its screen showing the work.
+    private func laptop(in context: GraphicsContext, activity: AgentActivity) {
+        context.fill(Path(roundedRect: CGRect(x: 56, y: 9, width: 36, height: 25), cornerRadius: 3), with: .color(Color(white: 0.34)))
+        context.fill(Path(roundedRect: CGRect(x: 58.5, y: 11.5, width: 31, height: 20), cornerRadius: 1.5), with: .color(Color(white: 0.07)))
+        context.fill(Path(roundedRect: CGRect(x: 51, y: 34, width: 46, height: 3.6), cornerRadius: 1.8), with: .color(Color(white: 0.27)))
+        func line(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ color: Color) {
+            guard width > 0 else { return }
+            context.fill(Path(roundedRect: CGRect(x: x, y: y, width: width, height: 2.6), cornerRadius: 1.3), with: .color(color))
+        }
+        switch activity {
+        case .coding:
+            // Lines of code typed out, then cleared for the next lines.
+            var typed = (time * 14).truncatingRemainder(dividingBy: 60)
+            for (index, (indent, length)) in [(0.0, 14.0), (4.0, 18.0), (4.0, 10.0), (0.0, 16.0)].enumerated() {
+                let shown = min(max(typed, 0), length)
+                line(61 + indent, 14 + CGFloat(index) * 4.3, shown, Self.codeColors[index % 3])
+                typed -= length
+            }
+        case .running:
+            var prompt = Path()
+            prompt.move(to: CGPoint(x: 61, y: 14))
+            prompt.addLine(to: CGPoint(x: 63.5, y: 15.6))
+            prompt.addLine(to: CGPoint(x: 61, y: 17.2))
+            context.stroke(prompt, with: .color(Self.codeColors[2]), style: StrokeStyle(lineWidth: 1.1, lineCap: .round, lineJoin: .round))
+            line(65.5, 14.3, 12, .white.opacity(0.8))
+            let phase = time.truncatingRemainder(dividingBy: 2.4)
+            for row in 0..<3 where phase > 0.5 + Double(row) * 0.5 {
+                line(61, 19 + CGFloat(row) * 4, [20, 14, 23][row], .white.opacity(0.4))
+            }
+        case .thinking:
+            if Int(time * 2) % 2 == 0 { line(61, 14, 2.6, .white.opacity(0.7)) }  // a cursor, waiting
+        default:
+            // Text going by: gray for code, blue for the web.
+            let color = activity == .browsing ? Self.codeColors[1] : .white.opacity(0.6)
+            let shift = time * 5
+            let offset = CGFloat(shift.truncatingRemainder(dividingBy: 4.3))
+            var inside = context
+            inside.clip(to: Path(CGRect(x: 58.5, y: 11.5, width: 31, height: 20)))
+            for row in 0..<6 {
+                let width = [22.0, 14, 18, 9, 24, 16][(row + Int(shift / 4.3)) % 6]
+                line(61, 13 + CGFloat(row) * 4.3 - offset, width, color)
+            }
+        }
+    }
+
+    /// Thought bubbles rising from its head.
+    private func thoughts(in context: GraphicsContext) {
+        let shown = Int(time * 2) % 4
+        for (index, bubble) in [(39.0, 9.0, 1.4), (44.0, 4.5, 1.9), (50.5, 1.5, 2.4)].enumerated() where index < shown {
+            context.fill(Path(ellipseIn: CGRect(x: bubble.0 - bubble.2, y: bubble.1 - bubble.2, width: 2 * bubble.2, height: 2 * bubble.2)),
+                         with: .color(.white.opacity(0.75)))
+        }
+    }
+
+    /// A speech bubble filling up with words, for a reply in a chat.
+    private func bubble(in context: GraphicsContext) {
+        var shape = Path(roundedRect: CGRect(x: 54, y: 5, width: 40, height: 25), cornerRadius: 6)
+        shape.move(to: CGPoint(x: 57, y: 24))
+        shape.addLine(to: CGPoint(x: 48, y: 31))
+        shape.addLine(to: CGPoint(x: 62, y: 28))
+        shape.closeSubpath()
+        context.fill(shape, with: .color(Self.paper))
+        var written = (time * 16).truncatingRemainder(dividingBy: 80)
+        for (index, length) in [28.0, 22, 16].enumerated() {
+            let shown = min(max(written, 0), length)
+            if shown > 0 {
+                context.fill(Path(roundedRect: CGRect(x: 59, y: 10 + CGFloat(index) * 5.5, width: shown, height: 2.8), cornerRadius: 1.4),
+                             with: .color(Color(white: 0.3)))
+            }
+            written -= length
+        }
+    }
+}
+
+// MARK: - Hanging out
+
+extension OylDrawing {
+    /// What it gets up to with no agent to run: a pastime every 12 s, always in the same order
+    /// (so any Oyls on screen together do the same), or dancing while music plays.
+    fileprivate enum Pastime { case butterfly, toss, doze, wave, read, sip, dance }
+    private static let pastimes: [Pastime] = [.butterfly, .toss, .doze, .wave, .read, .sip]
+    private static let scene: TimeInterval = 12
+    private static let blue = Color(red: 0.45, green: 0.7, blue: 1)
+
+    /// Oyl on the left, as when at work, with what it's playing with to its right.
+    func hangOut(music: Bool) {
+        let count = Self.pastimes.count
+        let index = Int(time / Self.scene), t = time.truncatingRemainder(dividingBy: Self.scene)
+        let now: Pastime = music ? .dance : Self.pastimes[index % count]
+        let last: Pastime = music ? .dance : Self.pastimes[(index + count - 1) % count]
+        var pose = pose(for: now, at: t)
+        if t < 0.6 {
+            // Easing out of the last one.
+            pose = Self.blend(self.pose(for: last, at: t + Self.scene), pose, CGFloat(t / 0.6))
+        }
+        let space = self.space
+        let body = body(in: space, at: 6, pose: pose)
+        drawOyl(in: body, pose: pose, hat: false)
+
+        // Its things fade in and out with the pastime; things it holds move with it.
+        var props = space, held = body
+        props.opacity = now == .dance ? 1 : min(t / 0.5, (Self.scene - t) / 0.5, 1)
+        held.opacity = props.opacity
+        switch now {
+        case .butterfly:
+            butterfly(in: props, at: butterflySpot)
+        case .toss:
+            ball(in: held, at: tossedBall(at: t).ball)
+        case .doze:
+            snores(in: props)
+        case .wave:
+            // A heart, once it's waved.
+            let since = t < 7 ? t - 3 : t - 9
+            if since > 0 && since < 1.6 {
+                var faded = props
+                faded.opacity *= 1 - since / 1.6
+                Self.heart(in: faded, at: CGPoint(x: 45 + since * 3, y: 15 - since * 6))
+            }
+        case .read:
+            book(in: held, at: t)
+        case .sip:
+            mug(in: held, at: t)
+        case .dance:
+            notes(in: props)
+        }
+    }
+
+    private func pose(for pastime: Pastime, at t: TimeInterval) -> Pose {
+        var pose = restingPose()
+        let lookingAbout = CGPoint(x: 0.6 * sin(time * 0.45), y: 0.15)
+        switch pastime {
+        case .butterfly:
+            // Watching it (its eyes are about x 26, y 21 in the drawing space), and hopping for it.
+            let spot = butterflySpot
+            pose.look = CGPoint(x: Self.clamp((spot.x - 26) / 30), y: Self.clamp((spot.y - 21) / 12))
+            pose.lift += 5 * Self.during(t, 7, 7.6, ease: 0.3)
+        case .toss:
+            let toss = tossedBall(at: t)
+            pose.hands = (CGPoint(x: 12, y: 30), toss.hand)
+            pose.look = CGPoint(x: Self.clamp((toss.ball.x - 20) / 12), y: Self.clamp((toss.ball.y - 19) / 9))
+        case .doze:
+            Self.sit(&pose)
+            pose.eyesClosed = true
+            pose.squash = 1 + 0.045 * sin(time * 2 * .pi / 4.5)
+            pose.hands = (CGPoint(x: 19, y: 32), CGPoint(x: 27, y: 32))
+        case .wave:
+            // Waving at you, twice.
+            let up = max(Self.during(t, 0, 3), Self.during(t, 7, 9))
+            pose.hands.1 = Self.mix(pose.hands.1, CGPoint(x: 36 + 2 * sin(time * 2 * .pi * 2.2), y: 16), up)
+            pose.look = Self.mix(lookingAbout, CGPoint(x: 0, y: 0.3), up)
+        case .read:
+            Self.sit(&pose)
+            pose.hands = (CGPoint(x: 18, y: 31), CGPoint(x: 32, y: 31))
+            pose.look = CGPoint(x: 0.15 + 0.3 * sin(time * 1.3), y: 0.9)
+        case .sip:
+            pose.hands.1 = mugHand(at: t)
+            pose.eyesClosed = pose.eyesClosed || sipping(at: t) > 0.8
+            pose.look = CGPoint(x: 0.6, y: 0.5)
+        case .dance:
+            // Arms and feet taking turns, on top of the bop.
+            let swing = sin(time * 2 * .pi * 0.9)
+            pose.hands = (CGPoint(x: 4, y: 24 - 7 * swing), CGPoint(x: 36, y: 24 + 7 * swing))
+            pose.feet = (CGPoint(x: 14, y: 41 - max(swing, 0) * 2.5), CGPoint(x: 27, y: 41 - max(-swing, 0) * 2.5))
+            pose.look = CGPoint(x: 0.6 * sin(time * 1.1), y: -0.2)
+        }
+        return pose
+    }
+
+    /// Sat down, legs out in front.
+    private static func sit(_ pose: inout Pose) {
+        pose.lift -= 5
+        pose.feet = (CGPoint(x: 27, y: 36.5), CGPoint(x: 32, y: 35))
+    }
+
+    private static func blend(_ from: Pose, _ to: Pose, _ amount: CGFloat) -> Pose {
+        let f = amount * amount * (3 - 2 * amount)
+        var pose = to
+        pose.look = mix(from.look, to.look, f)
+        pose.hands = (mix(from.hands.0, to.hands.0, f), mix(from.hands.1, to.hands.1, f))
+        pose.feet = (mix(from.feet.0, to.feet.0, f), mix(from.feet.1, to.feet.1, f))
+        pose.lift = from.lift + (to.lift - from.lift) * f
+        pose.squash = from.squash + (to.squash - from.squash) * f
+        pose.eyesClosed = f < 0.5 ? from.eyesClosed : to.eyesClosed
+        return pose
+    }
+
+    private static func mix(_ from: CGPoint, _ to: CGPoint, _ f: CGFloat) -> CGPoint {
+        CGPoint(x: from.x + (to.x - from.x) * f, y: from.y + (to.y - from.y) * f)
+    }
+
+    private static func clamp(_ value: CGFloat) -> CGFloat { min(max(value, -1), 1) }
+
+    /// 1 from `start` to `end`, 0 otherwise, easing over `ease` seconds at each end.
+    private static func during(_ t: TimeInterval, _ start: TimeInterval, _ end: TimeInterval,
+                               ease: TimeInterval = 0.3) -> CGFloat {
+        let f = CGFloat(min(max(min(t - start, end - t) / ease, 0), 1))
+        return f * f * (3 - 2 * f)
+    }
+
+    // Butterfly
+
+    /// Where the butterfly it watches has flitted to, in the drawing space.
+    private var butterflySpot: CGPoint {
+        CGPoint(x: 64 + 20 * sin(time * 0.7), y: 18 + 8 * sin(time * 1.9))
+    }
+
+    private func butterfly(in context: GraphicsContext, at spot: CGPoint) {
+        let flap = 0.35 + 0.65 * abs(sin(time * 2 * .pi * 2.5))
+        for side: CGFloat in [-1, 1] {
+            let upper = 4.2 * flap, lower = 3 * flap
+            context.fill(Path(ellipseIn: CGRect(x: side < 0 ? spot.x - upper : spot.x, y: spot.y - 4, width: upper, height: 4.4)),
+                         with: .color(Self.blue))
+            context.fill(Path(ellipseIn: CGRect(x: side < 0 ? spot.x - lower : spot.x, y: spot.y - 0.4, width: lower, height: 3.4)),
+                         with: .color(Self.blue.opacity(0.8)))
+        }
+        context.fill(Path(roundedRect: CGRect(x: spot.x - 0.5, y: spot.y - 3, width: 1, height: 5.5), cornerRadius: 0.5),
+                     with: .color(Color(white: 0.9)))
+    }
+
+    // Ball
+
+    /// The ball it tosses up and catches (in its own box), and where its hand is.
+    private func tossedBall(at t: TimeInterval) -> (ball: CGPoint, hand: CGPoint) {
+        let p = t.truncatingRemainder(dividingBy: 1.5) / 1.5
+        let flight = CGFloat(min(max((p - 0.12) / 0.76, 0), 1))
+        // The hand dips to throw, and to catch.
+        let hand = CGPoint(x: 31, y: 29 + 2.5 * max(0, cos(p * 2 * .pi)))
+        let ball = CGPoint(x: hand.x + 2 + 6 * sin(flight * .pi), y: hand.y - 3 - 20 * 4 * flight * (1 - flight))
+        return (ball, hand)
+    }
+
+    private func ball(in context: GraphicsContext, at center: CGPoint) {
+        context.fill(Path(ellipseIn: CGRect(x: center.x - 2.8, y: center.y - 2.8, width: 5.6, height: 5.6)),
+                     with: .color(Oyl.hatOrange))
+        context.fill(Path(ellipseIn: CGRect(x: center.x - 1.9, y: center.y - 1.9, width: 1.6, height: 1.6)),
+                     with: .color(.white.opacity(0.55)))
+    }
+
+    // Dozing
+
+    /// Z's drifting up and away as it sleeps.
+    private func snores(in context: GraphicsContext) {
+        for index in 0..<3 {
+            let phase = CGFloat((time / 3.6 + Double(index) / 3).truncatingRemainder(dividingBy: 1))
+            let side = 2.4 + 3 * phase
+            let corner = CGPoint(x: 42 + 26 * phase, y: 21 - 16 * phase)
+            var z = Path()
+            z.move(to: corner)
+            z.addLine(to: CGPoint(x: corner.x + side, y: corner.y))
+            z.addLine(to: CGPoint(x: corner.x, y: corner.y + side))
+            z.addLine(to: CGPoint(x: corner.x + side, y: corner.y + side))
+            var faded = context
+            faded.opacity *= Double(sin(phase * .pi))
+            faded.stroke(z, with: .color(.white.opacity(0.85)),
+                         style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    // Waving
+
+    static func heart(in context: GraphicsContext, at center: CGPoint, size s: CGFloat = 3) {
+        let pink = GraphicsContext.Shading.color(Color(red: 1, green: 0.42, blue: 0.52))
+        for dx in [-0.45 * s, 0.45 * s] {
+            context.fill(Path(ellipseIn: CGRect(x: center.x + dx - 0.55 * s, y: center.y - 0.55 * s, width: 1.1 * s, height: 1.1 * s)),
+                         with: pink)
+        }
+        var point = Path()
+        point.move(to: CGPoint(x: center.x - 0.95 * s, y: center.y + 0.15 * s))
+        point.addLine(to: CGPoint(x: center.x + 0.95 * s, y: center.y + 0.15 * s))
+        point.addLine(to: CGPoint(x: center.x, y: center.y + 1.25 * s))
+        point.closeSubpath()
+        context.fill(point, with: pink)
+    }
+
+    // Reading
+
+    /// An open book held up in front, a page turning now and then.
+    private func book(in context: GraphicsContext, at t: TimeInterval) {
+        context.fill(Path(roundedRect: CGRect(x: 16.5, y: 25.5, width: 17, height: 9.6), cornerRadius: 1.2), with: .color(Self.blue))
+        for x in [17.5, 25.3] as [CGFloat] {
+            context.fill(Path(CGRect(x: x, y: 26.2, width: 7.2, height: 8.2)), with: .color(Self.paper))
+            for row in 0..<3 {
+                context.fill(Path(CGRect(x: x + 1.2, y: 28 + CGFloat(row) * 2, width: 4.8, height: 0.9)),
+                             with: .color(Color(white: 0.55)))
+            }
+        }
+        let turning = t.truncatingRemainder(dividingBy: 3.5)
+        if turning < 0.5 {
+            let width = 7.2 * cos(turning / 0.5 * .pi)
+            context.fill(Path(CGRect(x: min(25, 25 + width), y: 26.2, width: abs(width), height: 8.2)),
+                         with: .color(Color(white: 0.8)))
+        }
+    }
+
+    // Sipping
+
+    /// How far it's lifted its mug to drink, 0...1: a sip every 4 s.
+    private func sipping(at t: TimeInterval) -> CGFloat {
+        Self.during(t.truncatingRemainder(dividingBy: 4), 2.3, 3.7, ease: 0.4)
+    }
+
+    private func mugHand(at t: TimeInterval) -> CGPoint {
+        Self.mix(CGPoint(x: 31, y: 30), CGPoint(x: 23.5, y: 27), sipping(at: t))
+    }
+
+    /// A mug of something hot, steaming while it isn't drinking.
+    private func mug(in context: GraphicsContext, at t: TimeInterval) {
+        let hand = mugHand(at: t)
+        let cup = CGRect(x: hand.x - 1.5, y: hand.y - 5.5, width: 5.5, height: 6.2)
+        context.stroke(Path(ellipseIn: CGRect(x: cup.maxX - 1.6, y: cup.minY + 1.2, width: 3.6, height: 3.4)),
+                       with: .color(Self.blue), lineWidth: 1.2)
+        context.fill(Path(roundedRect: cup, cornerRadius: 1.2), with: .color(Self.blue))
+        guard sipping(at: t) < 0.2 else { return }
+        for index in 0..<2 {
+            let x = cup.minX + 1.5 + CGFloat(index) * 2.5, sway = 2 * sin(time * 3 + Double(index) * 2)
+            var steam = Path()
+            steam.move(to: CGPoint(x: x, y: cup.minY - 1))
+            steam.addCurve(to: CGPoint(x: x, y: cup.minY - 8),
+                           control1: CGPoint(x: x + sway, y: cup.minY - 3.5), control2: CGPoint(x: x - sway, y: cup.minY - 6))
+            context.stroke(steam, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        }
+    }
+
+    // Dancing
+
+    /// Music notes floating up and away as it dances.
+    private func notes(in context: GraphicsContext, from start: CGPoint = CGPoint(x: 50, y: 36), rise: CGFloat = 24) {
+        for index in 0..<2 {
+            let phase = CGFloat((time / 2.6 + Double(index) / 2).truncatingRemainder(dividingBy: 1))
+            let head = CGPoint(x: start.x + 30 * phase, y: start.y - rise * phase + 2 * sin(phase * 9))
+            var faded = context
+            faded.opacity *= Double(sin(phase * .pi))
+            faded.fill(Path(ellipseIn: CGRect(x: head.x - 2, y: head.y - 1.5, width: 4, height: 3)), with: .color(.white))
+            var stem = Path()
+            stem.move(to: CGPoint(x: head.x + 1.6, y: head.y - 0.4))
+            stem.addLine(to: CGPoint(x: head.x + 1.6, y: head.y - 8))
+            stem.addQuadCurve(to: CGPoint(x: head.x + 4.8, y: head.y - 4), control: CGPoint(x: head.x + 4.6, y: head.y - 6.6))
+            faded.stroke(stem, with: .color(.white), style: StrokeStyle(lineWidth: 1, lineCap: .round, lineJoin: .round))
+        }
+    }
+}
+
+// MARK: - Oyl's own jobs
+
+/// One of Oyl's own jobs for an Oyl, besides running an agent.
+enum OylDuty: Equatable {
+    /// Dancing by a boombox.
+    case music
+    /// By a clock filling in as time goes, warming to orange. An endless reminder holds up a
+    /// sticky note instead.
+    case timer(ReminderTimer)
+    /// Cyan and jittery, on energy drinks; with a stopwatch for a set time, or binoculars when
+    /// it's watching for an app to quit.
+    case awake(AwakeManager.Mode)
+    /// Grey and slumped by an empty battery; perking up, plugged in, as it fills.
+    case battery(PowerStatus)
+    /// In its pajamas with a candle, then in bed.
+    case bedtime(BedtimeStage)
+    /// Holding up the selfie just taken.
+    case selfie(NSImage)
+    /// At a microphone, singing along.
+    case singer
+
+    /// Its color for the job, if not white.
+    func skin(at date: Date) -> Color? {
+        switch self {
+        case .music:
+            return nil
+        case .timer(let timer):
+            guard !timer.isEndless else { return nil }
+            let gone = 1 - timer.fractionLeft(at: date)
+            return Color(red: 0.96 + 0.04 * gone, green: 0.96 - 0.34 * gone, blue: 0.96 - 0.62 * gone)
+        case .awake:
+            return Oyl.cyan
+        case .battery(.tired):
+            return Oyl.tired
+        case .battery(.recharging(let percent)):
+            // Greening up as it fills.
+            let full = CGFloat(min(max(Double(percent) / Double(PowerWatcher.recovered), 0), 1))
+            return Color(red: 0.8 - 0.2 * full, green: 0.82 + 0.11 * full, blue: 0.86 - 0.18 * full)
+        case .bedtime, .selfie, .singer:
+            return nil
+        }
+    }
+}
+
+extension Oyl {
+    static let noteYellow = Color(red: 1, green: 0.86, blue: 0.36)
+    static let tired = Color(red: 0.8, green: 0.82, blue: 0.86)
+    static let pajamas = Color(red: 0.74, green: 0.66, blue: 1)
+}
+
+extension OylDrawing {
+    /// At one of the app's own jobs: Oyl on the left, as at work, its things to the right.
+    func perform(_ duty: OylDuty) {
+        let date = Date(timeIntervalSinceReferenceDate: time)
+        var pose = restingPose()
+        var x: CGFloat = 6
+        switch duty {
+        case .music:
+            pose = self.pose(for: .dance, at: 0)
+        case .timer(let timer) where timer.isEndless:
+            pose.hands.1 = noteHand
+            pose.look = CGPoint(x: 0, y: 0.3)  // at you, holding it up
+        case .timer(let timer):
+            pose.look = CGPoint(x: 0.9, y: 0.2)  // at the clock
+            if !timer.isRunning {
+                Self.sit(&pose)
+            } else if timer.fractionLeft(at: date) < 0.1 {
+                // Nearly time: hopping, arms up.
+                pose.lift += abs(sin(time * .pi * 2.4)) * 4
+                pose.hands = (CGPoint(x: 9, y: 24), CGPoint(x: 31, y: 24))
+            } else {
+                // Tapping its foot.
+                pose.feet.1 = CGPoint(x: 31, y: 37 - 2.5 * max(0, sin(time * 2 * .pi * 1.4)))
+            }
+        case .awake(let mode):
+            pose.lid = 0.08  // wide awake
+            x += 0.6 * sin(time * 53) + 0.4 * sin(time * 31)  // can't keep still
+            if case .whileRunning = mode {
+                pose.hands = (CGPoint(x: 13, y: 21), CGPoint(x: 27, y: 21))  // binoculars up
+                pose.look = CGPoint(x: 0.6 * sin(time * 0.8), y: 0)
+            } else {
+                pose.hands.1 = canHand
+                if case .until = mode { pose.hands.0 = CGPoint(x: 9, y: 27) }  // its stopwatch
+            }
+        case .battery(.tired):
+            // Slumped, lids heavy, breathing slow.
+            Self.sit(&pose)
+            pose.lid = 0.62
+            pose.squash = 0.96 + 0.02 * sin(time * 2 * .pi / 5)
+            pose.hands = (CGPoint(x: 13, y: 35), CGPoint(x: 27, y: 35))
+            pose.look = CGPoint(x: 0.3, y: 0.7)
+            pose.eyesClosed = time.truncatingRemainder(dividingBy: 4) < 0.9  // nodding off
+        case .battery(.recharging(let percent)):
+            // Perkier as it fills, holding the cable.
+            pose.lid = 0.5 - 0.35 * CGFloat(min(Double(percent) / Double(PowerWatcher.recovered), 1))
+            pose.lift += abs(sin(time * .pi * 1.2)) * 1.2
+            pose.hands.1 = CGPoint(x: 32, y: 30)
+            pose.look = CGPoint(x: 0.9, y: 0.3)
+        case .bedtime(.candle):
+            pose.lid = 0.5
+            pose.hands.1 = CGPoint(x: 31, y: 29)
+            pose.look = CGPoint(x: 0.5 * sin(time * 0.4), y: 0.2)
+            pose.eyesClosed = time.truncatingRemainder(dividingBy: 9) < 1.2  // a yawn
+        case .bedtime(let stage):
+            // In bed: asleep, or sat up waving at you to come too.
+            Self.sit(&pose)
+            if stage == .remind {
+                pose.lid = 0.2
+                pose.hands.1 = CGPoint(x: 33 + 2 * sin(time * 2 * .pi * 1.6), y: 15)
+                pose.look = CGPoint(x: 0, y: 0.3)
+            } else {
+                pose.eyesClosed = true
+                pose.squash = 1 + 0.04 * sin(time * 2 * .pi / 4.5)
+            }
+        case .selfie:
+            pose.hands = (CGPoint(x: 31, y: 31), CGPoint(x: 37, y: 31))
+            pose.look = CGPoint(x: 0, y: 0.35)  // at you, proud
+        case .singer:
+            pose.hands.1 = CGPoint(x: 23, y: 26)  // the mic at its mouth
+            pose.hands.0 = CGPoint(x: 7, y: 20 + 3 * sin(time * 2))
+            pose.eyesClosed = sin(time * 1.3) > 0.6  // feeling it
+            x += 1.5 * sin(time * 2)  // swaying
+        }
+        let space = self.space
+        let body = body(in: space, at: x, pose: pose)
+        drawOyl(in: body, pose: pose, hat: false)
+        switch duty {
+        case .music:
+            boombox(in: space, at: CGRect(x: 54, y: 25, width: 36, height: 20))
+            notes(in: space, from: CGPoint(x: 60, y: 22), rise: 16)
+        case .timer(let timer) where timer.isEndless:
+            note(in: body, hand: pose.hands.1)
+        case .timer(let timer):
+            clock(in: space, at: CGPoint(x: 70, y: 28), radius: 11, timer: timer, date: date)
+        case .awake(let mode):
+            awakeProps(in: body, mode: mode, pose: pose)
+            buzz(in: space, around: x)
+        case .battery(let status):
+            battery(in: space, status: status)
+            if case .recharging = status { cable(in: space, from: CGPoint(x: x + pose.hands.1.x, y: 3 - pose.lift + pose.hands.1.y)) }
+        case .bedtime(.candle):
+            pajamas(in: body, pose: pose)
+            candle(in: body, hand: pose.hands.1)
+        case .bedtime(let stage):
+            bed(in: space, under: body, pose: pose)
+            if stage == .bed { snores(in: space) }
+        case .selfie(let image):
+            polaroid(in: space, at: CGRect(x: 43, y: 3, width: 28, height: 33), image: image)
+            sparkles(in: space)
+        case .singer:
+            microphone(in: body, hand: pose.hands.1)
+            notes(in: space, from: CGPoint(x: 46, y: 30), rise: 22)
+        }
+    }
+
+    /// Walking along the menu bar, carrying its things.
+    func walk(facingRight: Bool, hat: Bool, carrying duty: OylDuty?) {
+        var pose = pose(for: .idle, walking: true, surfing: false)
+        switch duty {
+        case .music?:
+            pose.hands.1 = CGPoint(x: 31, y: 21)  // holding it up on its shoulder
+        case .timer(let timer)? where timer.isEndless:
+            pose.hands.1 = noteHand
+        case .awake(let mode)?:
+            pose.lid = 0.08
+            if case .whileRunning = mode { pose.hands = (CGPoint(x: 13, y: 21), CGPoint(x: 27, y: 21)) }
+        case .battery(.tired)?:
+            pose.lid = 0.62
+            pose.lift -= 1.5  // dragging its feet
+        case .bedtime?:
+            pose.lid = 0.5
+        case .singer?:
+            pose.hands.1 = CGPoint(x: 23, y: 26)
+        default:
+            break
+        }
+        let body = body(in: space, at: 30, pose: pose, mirrored: !facingRight)
+        drawOyl(in: body, pose: pose, hat: hat)
+        switch duty {
+        case .music?:
+            boombox(in: body, at: CGRect(x: 29, y: 9, width: 18, height: 10))
+        case .timer(let timer)? where timer.isEndless:
+            note(in: body, hand: pose.hands.1)
+        case .timer(let timer)?:
+            clock(in: body, at: CGPoint(x: pose.hands.1.x + 2, y: pose.hands.1.y - 3.5), radius: 4.5, timer: timer,
+                  date: Date(timeIntervalSinceReferenceDate: time))
+        case .awake(let mode)?:
+            awakeProps(in: body, mode: mode, pose: pose)
+        case .bedtime?:
+            pajamas(in: body, pose: pose)
+            candle(in: body, hand: pose.hands.1)
+        case .selfie(let image)?:
+            polaroid(in: body, at: CGRect(x: pose.hands.1.x - 3, y: pose.hands.1.y - 13, width: 11, height: 13), image: image)
+        case .singer?:
+            microphone(in: body, hand: pose.hands.1)
+        case .battery?, nil:
+            break
+        }
+    }
+
+    /// Its job's done: jumping for joy, arms up, eyes shut tight. It's at the top of the screen,
+    /// so it crouches between hops rather than jumping out of sight.
+    func cheer(hat: Bool, since: TimeInterval, length: TimeInterval) {
+        var pose = restingPose()
+        let hop = abs(sin(min(since / length, 1) * 3 * .pi))  // three of them
+        pose.lift = -4 + 7 * hop
+        pose.squash = 0.9 + 0.14 * hop
+        pose.hands = (CGPoint(x: 6, y: 15 + 5 * (1 - hop)), CGPoint(x: 34, y: 15 + 5 * (1 - hop)))
+        pose.eyesClosed = true
+        drawOyl(in: body(in: space, at: 30, pose: pose), pose: pose, hat: hat)
+    }
+
+    // Boombox
+
+    /// A boombox, its speakers thumping with the bass.
+    private func boombox(in context: GraphicsContext, at box: CGRect) {
+        let u = box.width / 36  // drawn 36 wide
+        context.stroke(Path(roundedRect: CGRect(x: box.minX + 6 * u, y: box.minY - 5 * u, width: 24 * u, height: 8 * u),
+                            cornerRadius: 3 * u), with: .color(Color(white: 0.5)), lineWidth: 1.6 * u)
+        context.fill(Path(roundedRect: box, cornerRadius: 3 * u), with: .color(Color(white: 0.24)))
+        let thump = beat * 1.2
+        for x in [box.minX + 8.5 * u, box.maxX - 8.5 * u] {
+            let center = CGPoint(x: x, y: box.midY + u)
+            context.fill(Self.circle(center, (5.5 + thump) * u), with: .color(Color(white: 0.09)))
+            context.stroke(Self.circle(center, (5.5 + thump) * u), with: .color(Color(white: 0.5)), lineWidth: u)
+            context.fill(Self.circle(center, (2 + thump * 0.6) * u), with: .color(Color(white: 0.36)))
+        }
+        context.fill(Path(roundedRect: CGRect(x: box.midX - 3.5 * u, y: box.minY + 4 * u, width: 7 * u, height: 5 * u),
+                          cornerRadius: u), with: .color(Oyl.hatOrange))
+        context.fill(Path(roundedRect: CGRect(x: box.midX - 3 * u, y: box.maxY - 6 * u, width: 6 * u, height: 1.4 * u),
+                          cornerRadius: 0.7 * u), with: .color(Self.blue.opacity(0.5 + 0.5 * beat)))
+    }
+
+    // Clock
+
+    /// An alarm clock, the time that's gone filled in orange around its face.
+    private func clock(in context: GraphicsContext, at center: CGPoint, radius r: CGFloat, timer: ReminderTimer, date: Date) {
+        let gone = 1 - timer.fractionLeft(at: date)
+        let metal = Color(white: 0.42)
+        for side: CGFloat in [-1, 1] {
+            context.fill(Self.circle(CGPoint(x: center.x + side * r * 0.62, y: center.y - r * 0.9), r * 0.34), with: .color(metal))
+            var leg = Path()
+            leg.move(to: CGPoint(x: center.x + side * r * 0.45, y: center.y + r * 0.8))
+            leg.addLine(to: CGPoint(x: center.x + side * r * 0.72, y: center.y + r * 1.2))
+            context.stroke(leg, with: .color(metal), style: StrokeStyle(lineWidth: r * 0.16, lineCap: .round))
+        }
+        context.fill(Self.circle(center, r), with: .color(Color(white: 0.95)))
+        if gone > 0 {
+            var wedge = Path()
+            wedge.move(to: center)
+            wedge.addArc(center: center, radius: r * 0.86, startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * gone),
+                         clockwise: false)
+            wedge.closeSubpath()
+            context.fill(wedge, with: .color(Oyl.hatOrange.opacity(0.85)))
+        }
+        context.stroke(Self.circle(center, r), with: .color(metal), lineWidth: r * 0.16)
+        hand(in: context, at: center, angle: CGFloat((gone - 0.25) * 2 * .pi), length: r * 0.72, width: r * 0.12)
+    }
+
+    private func hand(in context: GraphicsContext, at center: CGPoint, angle: CGFloat, length: CGFloat, width: CGFloat) {
+        var hand = Path()
+        hand.move(to: center)
+        hand.addLine(to: CGPoint(x: center.x + cos(angle) * length, y: center.y + sin(angle) * length))
+        context.stroke(hand, with: .color(Self.ink), style: StrokeStyle(lineWidth: width, lineCap: .round))
+        context.fill(Self.circle(center, width), with: .color(Self.ink))
+    }
+
+    // Sticky note
+
+    /// Where its hand is holding the note up, swaying a little.
+    private var noteHand: CGPoint {
+        CGPoint(x: 33 + 1.2 * sin(time * 1.7), y: 14)
+    }
+
+    /// The endless reminder's mark: a sticky note held up over its head.
+    private func note(in context: GraphicsContext, hand: CGPoint) {
+        var stick = Path()
+        stick.move(to: CGPoint(x: hand.x, y: hand.y + 1))
+        stick.addLine(to: CGPoint(x: hand.x, y: hand.y - 5))
+        context.stroke(stick, with: .color(Color(white: 0.55)), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
+        let note = CGRect(x: hand.x - 5.5, y: hand.y - 15, width: 11, height: 10)
+        var paper = Path()
+        paper.move(to: note.origin)
+        paper.addLine(to: CGPoint(x: note.maxX, y: note.minY))
+        paper.addLine(to: CGPoint(x: note.maxX, y: note.maxY - 3))
+        paper.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY))
+        paper.addLine(to: CGPoint(x: note.minX, y: note.maxY))
+        paper.closeSubpath()
+        context.fill(paper, with: .color(Oyl.noteYellow))
+        context.fill(Path { $0.move(to: CGPoint(x: note.maxX, y: note.maxY - 3)); $0.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY - 3))
+                            $0.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY)) },
+                     with: .color(Color(red: 0.85, green: 0.68, blue: 0.2)))
+        for row in 0..<2 {
+            context.fill(Path(CGRect(x: note.minX + 2, y: note.minY + 3 + CGFloat(row) * 2.6, width: row == 0 ? 7 : 4.5, height: 0.9)),
+                         with: .color(Color(white: 0.35)))
+        }
+    }
+
+    // Energy drink
+
+    /// Where its hand is with the can: up for a swig every 3 s or so.
+    private var canHand: CGPoint {
+        let swig = Self.during(time.truncatingRemainder(dividingBy: 3.2), 1.8, 2.8, ease: 0.25)
+        return Self.mix(CGPoint(x: 31, y: 30), CGPoint(x: 24, y: 25), swig)
+    }
+
+    /// The can (and a stopwatch for a set time), or binoculars when watching for an app to quit.
+    private func awakeProps(in context: GraphicsContext, mode: AwakeManager.Mode, pose: Pose) {
+        if case .whileRunning = mode {
+            for eye in [CGPoint(x: 14.9, y: 18), CGPoint(x: 25.1, y: 18)] {
+                context.fill(Self.circle(eye, 4.1), with: .color(Color(white: 0.18)))
+                context.fill(Self.circle(eye, 2.6), with: .color(Self.blue.opacity(0.85)))
+                context.fill(Self.circle(CGPoint(x: eye.x - 0.9, y: eye.y - 0.9), 0.8), with: .color(.white.opacity(0.8)))
+            }
+            context.fill(Path(CGRect(x: 18.5, y: 16.8, width: 3, height: 2.4)), with: .color(Color(white: 0.18)))
+            return
+        }
+        can(in: context, hand: pose.hands.1)
+        if case .until = mode {
+            // A stopwatch, its hand going round.
+            let center = CGPoint(x: pose.hands.0.x - 0.5, y: pose.hands.0.y - 3.5)
+            context.fill(Path(CGRect(x: center.x - 0.7, y: center.y - 5.4, width: 1.4, height: 1.6)), with: .color(Color(white: 0.6)))
+            context.fill(Self.circle(center, 3.8), with: .color(Color(white: 0.95)))
+            context.stroke(Self.circle(center, 3.8), with: .color(AwakePage.tint), lineWidth: 0.9)
+            hand(in: context, at: center, angle: CGFloat(time.truncatingRemainder(dividingBy: 5) / 5 * 2 * .pi - .pi / 2),
+                 length: 2.8, width: 0.55)
+        }
+    }
+
+    /// An energy drink, with a lightning bolt on it.
+    private func can(in context: GraphicsContext, hand: CGPoint) {
+        let can = CGRect(x: hand.x - 1.2, y: hand.y - 7.5, width: 4.6, height: 8.5)
+        context.fill(Path(roundedRect: can, cornerRadius: 1), with: .color(Color(white: 0.16)))
+        context.fill(Path(CGRect(x: can.minX, y: can.minY + 0.8, width: can.width, height: 0.8)), with: .color(Color(white: 0.7)))
+        var bolt = Path()
+        bolt.move(to: CGPoint(x: can.midX + 0.9, y: can.minY + 2.4))
+        bolt.addLine(to: CGPoint(x: can.midX - 0.9, y: can.midY + 0.8))
+        bolt.addLine(to: CGPoint(x: can.midX + 0.6, y: can.midY + 0.8))
+        bolt.addLine(to: CGPoint(x: can.midX - 0.9, y: can.maxY - 1))
+        context.stroke(bolt, with: .color(AwakePage.tint), style: StrokeStyle(lineWidth: 0.8, lineCap: .round, lineJoin: .round))
+    }
+
+    /// Little lines buzzing either side of its head.
+    private func buzz(in context: GraphicsContext, around x: CGFloat) {
+        guard Int(time * 5) % 2 == 0 else { return }
+        for (edge, out) in [(x - 2, CGFloat(-1)), (x + 42, 1)] {
+            var lines = Path()
+            lines.move(to: CGPoint(x: edge, y: 13))
+            lines.addLine(to: CGPoint(x: edge + out * 2.5, y: 10))
+            lines.move(to: CGPoint(x: edge, y: 18))
+            lines.addLine(to: CGPoint(x: edge + out * 3, y: 18))
+            context.stroke(lines, with: .color(Oyl.cyan), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        }
+    }
+
+    fileprivate static func circle(_ center: CGPoint, _ radius: CGFloat) -> Path {
+        Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
+    }
+}
+
+// MARK: - The calendar
+
+extension OylDrawing {
+    /// Doing what the calendar says it's at: Oyl on the left, its things to the right or in hand.
+    func attend(_ activity: CalendarActivity) {
+        let space = self.space
+        switch activity {
+        case .computer:
+            draw(.coding, hat: false, walking: false, surfing: false)
+        case .reading:
+            let pose = pose(for: .read, at: time)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            book(in: body, at: time)
+        case .sleep:
+            let pose = pose(for: .doze, at: time)
+            drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
+            snores(in: space)
+        case .writing:
+            var pose = restingPose()
+            pose.hands = (CGPoint(x: 21, y: 31), penTip)
+            pose.look = CGPoint(x: 0.5, y: 0.9)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            clipboard(in: body)
+        case .party:
+            let pose = pose(for: .dance, at: time)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            partyHat(in: body)
+            confetti(in: space)
+        case .chat:
+            // Taking turns with a friend.
+            var pose = restingPose()
+            let talking = Int(time / 1.8) % 2 == 0
+            pose.look = CGPoint(x: 0.9, y: 0.1)
+            if talking { pose.hands.1 = CGPoint(x: 32, y: 24 + 2 * sin(time * 7)) }
+            drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
+            var friend = space
+            friend.translateBy(x: 62, y: 22.5 - (talking ? 0 : abs(sin(time * 5)) * 1.2))
+            friend.scaleBy(x: 0.6, y: 0.6)
+            OylDrawing(canvas: canvas, size: size, time: time, beat: beat, skin: Oyl.pastel(4), outline: outline)
+                .drawOyl(in: friend, pose: Pose(look: CGPoint(x: -0.8, y: 0.1)), hat: false)
+            speech(in: space, at: talking ? CGPoint(x: 42, y: 3) : CGPoint(x: 55, y: 7), fromLeft: talking)
+        case .eat:
+            var pose = restingPose()
+            let bite = Self.during(time.truncatingRemainder(dividingBy: 2.6), 1.4, 2.3, ease: 0.3)
+            pose.hands = (CGPoint(x: 15, y: 32), Self.mix(CGPoint(x: 27, y: 30), CGPoint(x: 22, y: 24), bite))
+            pose.eyesClosed = pose.eyesClosed || bite > 0.8
+            pose.look = CGPoint(x: 0.2, y: 0.8)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            bowl(in: body, spoon: pose.hands.1, bite: bite)
+        case .drive:
+            var pose = restingPose()
+            Self.sit(&pose)
+            pose.lift += abs(sin(time * 9)) * 0.6  // a bumpy road
+            pose.hands = (CGPoint(x: 29, y: 23), CGPoint(x: 33, y: 23))
+            pose.look = CGPoint(x: 0.9, y: 0)
+            road(in: space)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            car(in: body)
+        case .draw:
+            var pose = restingPose()
+            pose.hands.1 = CGPoint(x: 36 + 1.5 * sin(time * 2.3), y: 19 + 2 * sin(time * 3.1))
+            pose.look = CGPoint(x: 0.9, y: -0.2)
+            easel(in: space)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            brush(in: body, hand: pose.hands.1)
+        case .exercise:
+            // Curls, one arm then the other.
+            var pose = restingPose()
+            let curl = sin(time * 2 * .pi * 0.8)
+            pose.hands = (CGPoint(x: 8, y: 27 - 9 * max(curl, 0)), CGPoint(x: 32, y: 27 - 9 * max(-curl, 0)))
+            pose.look = CGPoint(x: 0, y: 0.3)
+            let body = body(in: space, at: 6, pose: pose)
+            drawOyl(in: body, pose: pose, hat: false)
+            dumbbell(in: body, at: pose.hands.0)
+            dumbbell(in: body, at: pose.hands.1)
+            sweat(in: body)
+        }
+    }
+
+    // Writing
+
+    /// Where its pencil is, writing line after line.
+    private var penTip: CGPoint {
+        let progress = (time * 3).truncatingRemainder(dividingBy: 21)  // three lines of 7
+        return CGPoint(x: 24.5 + CGFloat(progress.truncatingRemainder(dividingBy: 7)), y: 28 + CGFloat(Int(progress / 7)) * 2.6)
+    }
+
+    /// A clipboard held up in front, filling with writing, and the pencil.
+    private func clipboard(in context: GraphicsContext) {
+        context.fill(Path(roundedRect: CGRect(x: 22, y: 24.5, width: 12, height: 12), cornerRadius: 1.2),
+                     with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)))
+        context.fill(Path(CGRect(x: 23, y: 26, width: 10, height: 9.8)), with: .color(Self.paper))
+        context.fill(Path(roundedRect: CGRect(x: 25.5, y: 23.6, width: 5, height: 2), cornerRadius: 0.6), with: .color(Color(white: 0.7)))
+        let progress = (time * 3).truncatingRemainder(dividingBy: 21)
+        for row in 0..<3 {
+            let written = CGFloat(min(max(progress - Double(row) * 7, 0), 7))
+            guard written > 0 else { continue }
+            context.fill(Path(CGRect(x: 24.5, y: 27.6 + CGFloat(row) * 2.6, width: written, height: 0.8)), with: .color(Color(white: 0.3)))
+        }
+        let tip = penTip
+        var lead = Path()
+        lead.move(to: tip)
+        lead.addLine(to: CGPoint(x: tip.x + 0.6, y: tip.y - 1.2))
+        context.stroke(lead, with: .color(Self.ink), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        var pencil = Path()
+        pencil.move(to: CGPoint(x: tip.x + 0.6, y: tip.y - 1.2))
+        pencil.addLine(to: CGPoint(x: tip.x + 2.6, y: tip.y - 5.5))
+        context.stroke(pencil, with: .color(Oyl.noteYellow), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+    }
+
+    // Partying
+
+    private func partyHat(in context: GraphicsContext) {
+        var cone = Path()
+        cone.move(to: CGPoint(x: 16.5, y: 5.5))
+        cone.addLine(to: CGPoint(x: 26.5, y: 7.8))
+        cone.addLine(to: CGPoint(x: 26, y: -2.5))
+        cone.closeSubpath()
+        context.fill(cone, with: .color(Color(red: 1, green: 0.42, blue: 0.52)))
+        var band = Path()
+        band.move(to: CGPoint(x: 19.5, y: 2.2))
+        band.addLine(to: CGPoint(x: 26.3, y: 3.6))
+        context.stroke(band, with: .color(Oyl.noteYellow), lineWidth: 1.2)
+        context.fill(Self.circle(CGPoint(x: 26, y: -2.5), 1.6), with: .color(Oyl.noteYellow))
+    }
+
+    private func confetti(in context: GraphicsContext) {
+        let colors = [Oyl.noteYellow, Self.blue, Color(red: 1, green: 0.42, blue: 0.52), Color(red: 0.45, green: 0.85, blue: 0.5), Oyl.hatOrange]
+        for index in 0..<12 {
+            let fall = (time * (7 + Double(index % 4) * 2.5) + Double(index) * 9.7).truncatingRemainder(dividingBy: 54) - 4
+            var piece = context
+            piece.translateBy(x: 44 + CGFloat((index * 37) % 52) + 2 * sin(time * 2 + Double(index)), y: CGFloat(fall))
+            piece.rotate(by: .radians(time * 3 + Double(index)))
+            piece.fill(Path(CGRect(x: -0.9, y: -1.4, width: 1.8, height: 2.8)), with: .color(colors[index % colors.count]))
+        }
+    }
+
+    // Chatting
+
+    /// A speech bubble with dots bouncing in it; its tail toward whoever's talking.
+    private func speech(in context: GraphicsContext, at origin: CGPoint, fromLeft: Bool) {
+        let bubble = CGRect(x: origin.x, y: origin.y, width: 15, height: 9)
+        var shape = Path(roundedRect: bubble, cornerRadius: 4)
+        if fromLeft {
+            shape.move(to: CGPoint(x: bubble.minX + 2, y: bubble.maxY - 2))
+            shape.addLine(to: CGPoint(x: bubble.minX - 2.5, y: bubble.maxY + 3.5))
+            shape.addLine(to: CGPoint(x: bubble.minX + 6, y: bubble.maxY))
+        } else {
+            shape.move(to: CGPoint(x: bubble.maxX - 2, y: bubble.maxY - 2))
+            shape.addLine(to: CGPoint(x: bubble.maxX + 2.5, y: bubble.maxY + 3.5))
+            shape.addLine(to: CGPoint(x: bubble.maxX - 6, y: bubble.maxY))
+        }
+        shape.closeSubpath()
+        context.fill(shape, with: .color(Self.paper))
+        let bouncing = Int(time * 4) % 3
+        for dot in 0..<3 {
+            let center = CGPoint(x: bubble.midX + CGFloat(dot - 1) * 3.6, y: bubble.midY - (dot == bouncing ? 1 : 0))
+            context.fill(Self.circle(center, 0.95), with: .color(Color(white: 0.3)))
+        }
+    }
+
+    // Eating
+
+    /// A bowl of noodles held in front, and the spoon.
+    private func bowl(in context: GraphicsContext, spoon: CGPoint, bite: CGFloat) {
+        if bite < 0.2 {
+            for index in 0..<2 {
+                let x = 19 + CGFloat(index) * 4, sway = 1.5 * sin(time * 3 + Double(index) * 2)
+                var steam = Path()
+                steam.move(to: CGPoint(x: x, y: 26.5))
+                steam.addCurve(to: CGPoint(x: x, y: 20), control1: CGPoint(x: x + sway, y: 24.5), control2: CGPoint(x: x - sway, y: 22))
+                context.stroke(steam, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
+            }
+        }
+        context.fill(Path(ellipseIn: CGRect(x: 14.5, y: 27.4, width: 13, height: 3)), with: .color(Oyl.noteYellow))
+        var dish = Path()
+        dish.move(to: CGPoint(x: 13.5, y: 29))
+        dish.addQuadCurve(to: CGPoint(x: 28.5, y: 29), control: CGPoint(x: 21, y: 39))
+        dish.closeSubpath()
+        context.fill(dish, with: .color(Self.blue))
+        context.stroke(Path { $0.move(to: CGPoint(x: 13.5, y: 29)); $0.addLine(to: CGPoint(x: 28.5, y: 29)) },
+                       with: .color(.white.opacity(0.8)), lineWidth: 0.8)
+        var handle = Path()
+        handle.move(to: spoon)
+        handle.addLine(to: CGPoint(x: spoon.x - 2.6, y: spoon.y - 1.4))
+        context.stroke(handle, with: .color(Color(white: 0.85)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
+        context.fill(Path(ellipseIn: CGRect(x: spoon.x - 4.6, y: spoon.y - 2.6, width: 2.6, height: 1.8)), with: .color(Color(white: 0.85)))
+    }
+
+    // Driving
+
+    /// The road going by underneath.
+    private func road(in context: GraphicsContext) {
+        for dash in 0..<8 {
+            let x = (Double(dash) * 14 - time * 40).truncatingRemainder(dividingBy: 112)
+            context.fill(Path(roundedRect: CGRect(x: CGFloat(x < 0 ? x + 112 : x) - 6, y: 48, width: 6, height: 1.2), cornerRadius: 0.6),
+                         with: .color(.white.opacity(0.35)))
+        }
+    }
+
+    /// A little car around its lower half, wheels turning.
+    private func car(in context: GraphicsContext) {
+        let paint = Color(red: 0.95, green: 0.42, blue: 0.4)
+        context.stroke(Path { $0.move(to: CGPoint(x: 35, y: 25)); $0.addLine(to: CGPoint(x: 40, y: 17)) },
+                       with: .color(Self.blue.opacity(0.75)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        context.stroke(Path(ellipseIn: CGRect(x: 28.5, y: 20.5, width: 5, height: 5)), with: .color(Color(white: 0.25)), lineWidth: 1.2)
+        context.fill(Path(roundedRect: CGRect(x: 2, y: 25, width: 44, height: 11), cornerRadius: 4), with: .color(paint))
+        context.fill(Path(roundedRect: CGRect(x: 42.5, y: 27.5, width: 3, height: 2.2), cornerRadius: 1), with: .color(Oyl.noteYellow))
+        for x in [11, 37] as [CGFloat] {
+            let hub = CGPoint(x: x, y: 37)
+            context.fill(Self.circle(hub, 4.4), with: .color(Color(white: 0.12)))
+            context.fill(Self.circle(hub, 1.8), with: .color(Color(white: 0.6)))
+            let turn = CGFloat(time * 9)
+            var spoke = Path()
+            spoke.move(to: CGPoint(x: hub.x - cos(turn) * 3.6, y: hub.y - sin(turn) * 3.6))
+            spoke.addLine(to: CGPoint(x: hub.x + cos(turn) * 3.6, y: hub.y + sin(turn) * 3.6))
+            context.stroke(spoke, with: .color(Color(white: 0.45)), lineWidth: 0.7)
+        }
+    }
+
+    // Painting
+
+    /// An easel, with a little landscape coming along on it.
+    private func easel(in context: GraphicsContext) {
+        let wood = Color(red: 0.62, green: 0.45, blue: 0.3)
+        for (from, to) in [(CGPoint(x: 51, y: 47), CGPoint(x: 57, y: 14)), (CGPoint(x: 71, y: 47), CGPoint(x: 64, y: 14)),
+                           (CGPoint(x: 61, y: 47), CGPoint(x: 61, y: 24))] {
+            context.stroke(Path { $0.move(to: from); $0.addLine(to: to) }, with: .color(wood), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
+        }
+        let canvasRect = CGRect(x: 48.5, y: 9, width: 25, height: 17)
+        context.fill(Path(canvasRect), with: .color(Self.paper))
+        context.stroke(Path(canvasRect), with: .color(wood), lineWidth: 0.8)
+        let progress = time.truncatingRemainder(dividingBy: 10) / 8 * 3
+        var hill = Path()
+        hill.move(to: CGPoint(x: 50, y: 22))
+        hill.addQuadCurve(to: CGPoint(x: 72, y: 21), control: CGPoint(x: 60, y: 12))
+        var sun = Path(ellipseIn: CGRect(x: 65, y: 11, width: 4.6, height: 4.6))
+        sun = sun.trimmedPath(from: 0, to: min(max(progress - 1, 0), 1))
+        var ground = Path()
+        ground.move(to: CGPoint(x: 50, y: 24.5))
+        ground.addLine(to: CGPoint(x: 72, y: 24.5))
+        context.stroke(hill.trimmedPath(from: 0, to: min(max(progress, 0), 1)), with: .color(Self.blue), lineWidth: 1.4)
+        context.stroke(sun, with: .color(Oyl.noteYellow), lineWidth: 1.4)
+        context.stroke(ground.trimmedPath(from: 0, to: min(max(progress - 2, 0), 1)), with: .color(Color(red: 0.45, green: 0.85, blue: 0.5)),
+                       lineWidth: 1.4)
+    }
+
+    private func brush(in context: GraphicsContext, hand: CGPoint) {
+        var handle = Path()
+        handle.move(to: hand)
+        handle.addLine(to: CGPoint(x: hand.x + 4, y: hand.y - 4))
+        context.stroke(handle, with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+        let tips = [Self.blue, Oyl.noteYellow, Color(red: 0.45, green: 0.85, blue: 0.5)]
+        let tip = tips[min(Int(time.truncatingRemainder(dividingBy: 10) / 8 * 3), 2)]
+        context.fill(Self.circle(CGPoint(x: hand.x + 4.4, y: hand.y - 4.4), 1), with: .color(tip))
+    }
+
+    // Working out
+
+    private func dumbbell(in context: GraphicsContext, at hand: CGPoint) {
+        context.fill(Path(CGRect(x: hand.x - 4.5, y: hand.y - 0.6, width: 9, height: 1.2)), with: .color(Color(white: 0.6)))
+        for dx in [-5.6, 3.6] as [CGFloat] {
+            context.fill(Path(roundedRect: CGRect(x: hand.x + dx, y: hand.y - 3.2, width: 2, height: 6.4), cornerRadius: 0.6),
+                         with: .color(Self.blue))
+        }
+    }
+
+    private func sweat(in context: GraphicsContext) {
+        let phase = CGFloat((time / 1.6).truncatingRemainder(dividingBy: 1))
+        let drop = CGPoint(x: 32 + 2 * phase, y: 9 + 9 * phase)
+        var faded = context
+        faded.opacity *= Double(1 - phase)
+        faded.fill(Self.circle(drop, 1.1), with: .color(Self.blue))
+        faded.fill(Path { $0.move(to: CGPoint(x: drop.x - 1, y: drop.y - 0.3)); $0.addLine(to: CGPoint(x: drop.x, y: drop.y - 2.6))
+                         $0.addLine(to: CGPoint(x: drop.x + 1, y: drop.y - 0.3)) }, with: .color(Self.blue))
+    }
+}
+
+// MARK: - Battery, bedtime, selfies and songs
+
+extension OylDrawing {
+    /// The battery beside it: low and red, or filling green with a bolt.
+    private func battery(in context: GraphicsContext, status: PowerStatus) {
+        let shell = CGRect(x: 56, y: 22, width: 22, height: 12)
+        context.stroke(Path(roundedRect: shell, cornerRadius: 2.5), with: .color(Color(white: 0.75)), lineWidth: 1.4)
+        context.fill(Path(roundedRect: CGRect(x: shell.maxX + 0.8, y: shell.midY - 2.5, width: 2, height: 5), cornerRadius: 0.8),
+                     with: .color(Color(white: 0.75)))
+        let inner = shell.insetBy(dx: 2, dy: 2)
+        switch status {
+        case .tired(let percent):
+            let blink = Int(time * 1.5) % 2 == 0 ? 1.0 : 0.45
+            context.fill(Path(roundedRect: CGRect(x: inner.minX, y: inner.minY, width: max(inner.width * CGFloat(percent) / 100, 1.5),
+                                                  height: inner.height), cornerRadius: 1),
+                         with: .color(Color(red: 1, green: 0.36, blue: 0.32).opacity(blink)))
+        case .recharging(let percent):
+            // Filling, a shimmer running along it.
+            let level = CGFloat(percent) / 100
+            context.fill(Path(roundedRect: CGRect(x: inner.minX, y: inner.minY, width: inner.width * level, height: inner.height),
+                              cornerRadius: 1), with: .color(Color(red: 0.4, green: 0.88, blue: 0.5)))
+            let shimmer = CGFloat(time.truncatingRemainder(dividingBy: 1.4) / 1.4) * inner.width * level
+            context.fill(Path(CGRect(x: inner.minX + shimmer - 1, y: inner.minY, width: 2, height: inner.height)), with: .color(.white.opacity(0.5)))
+            var bolt = Path()
+            bolt.move(to: CGPoint(x: shell.midX + 1.6, y: shell.minY + 1.4))
+            bolt.addLine(to: CGPoint(x: shell.midX - 2.2, y: shell.midY + 0.6))
+            bolt.addLine(to: CGPoint(x: shell.midX + 0.6, y: shell.midY + 0.6))
+            bolt.addLine(to: CGPoint(x: shell.midX - 1.6, y: shell.maxY - 1.4))
+            context.stroke(bolt, with: .color(Oyl.noteYellow), style: StrokeStyle(lineWidth: 1.3, lineCap: .round, lineJoin: .round))
+        }
+    }
+
+    /// The charging cable, from its hand round to the battery.
+    private func cable(in context: GraphicsContext, from hand: CGPoint) {
+        var cable = Path()
+        cable.move(to: hand)
+        cable.addCurve(to: CGPoint(x: 56, y: 28), control1: CGPoint(x: hand.x + 6, y: 46), control2: CGPoint(x: 48, y: 40))
+        context.stroke(cable, with: .color(Color(white: 0.7)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+    }
+
+    /// Striped pajamas, and a droopy nightcap.
+    private func pajamas(in context: GraphicsContext, pose: Pose) {
+        let stripe = Oyl.pajamas
+        for (hip, foot) in [(CGPoint(x: 17, y: 33), pose.feet.0), (CGPoint(x: 23, y: 33), pose.feet.1)] {
+            var leg = Path()
+            leg.move(to: hip)
+            leg.addLine(to: CGPoint(x: hip.x + (foot.x - hip.x) * 0.75, y: hip.y + (foot.y - hip.y) * 0.75))
+            context.stroke(leg, with: .color(stripe), style: StrokeStyle(lineWidth: 3.8, lineCap: .round))
+        }
+        let belly = Path(ellipseIn: CGRect(x: 14, y: 24, width: 12, height: 11))
+        context.fill(belly, with: .color(stripe.opacity(0.55)))
+        var stripes = context
+        stripes.clip(to: belly)
+        for row in 0..<4 {
+            stripes.fill(Path(CGRect(x: 13, y: 25 + CGFloat(row) * 2.8, width: 14, height: 1.2)), with: .color(stripe))
+        }
+        var cap = Path()
+        cap.move(to: CGPoint(x: 10.5, y: 8.4))
+        cap.addQuadCurve(to: CGPoint(x: 26, y: 3), control: CGPoint(x: 15, y: -2))
+        cap.addQuadCurve(to: CGPoint(x: 35, y: 12), control: CGPoint(x: 33, y: 2))
+        cap.addQuadCurve(to: CGPoint(x: 29.5, y: 8.6), control: CGPoint(x: 31, y: 8))
+        cap.closeSubpath()
+        context.fill(cap, with: .color(stripe))
+        context.fill(Path(roundedRect: CGRect(x: 9.6, y: 7.4, width: 20.8, height: 2.8), cornerRadius: 1.4), with: .color(.white.opacity(0.9)))
+        context.fill(Self.circle(CGPoint(x: 35, y: 12.5), 1.9), with: .color(.white))
+    }
+
+    /// A candle in its hand, flickering, with a warm glow round it.
+    private func candle(in context: GraphicsContext, hand: CGPoint) {
+        let flicker = CGFloat(0.85 + 0.15 * sin(time * 17) * sin(time * 7.3))
+        let flame = CGPoint(x: hand.x + 1, y: hand.y - 10)
+        context.fill(Self.circle(flame, 10 * flicker), with: .radialGradient(
+            Gradient(colors: [Oyl.noteYellow.opacity(0.55), Oyl.noteYellow.opacity(0)]), center: flame, startRadius: 0, endRadius: 10 * flicker))
+        context.fill(Path(roundedRect: CGRect(x: hand.x - 3, y: hand.y - 1, width: 8, height: 2), cornerRadius: 1), with: .color(Color(white: 0.55)))
+        context.fill(Path(CGRect(x: hand.x - 0.4, y: hand.y - 8, width: 2.8, height: 7.5)), with: .color(Color(white: 0.97)))
+        var drop = Path()
+        drop.move(to: CGPoint(x: flame.x, y: flame.y - 4.4 * flicker))
+        drop.addQuadCurve(to: CGPoint(x: flame.x, y: flame.y + 2), control: CGPoint(x: flame.x + 3.2, y: flame.y))
+        drop.addQuadCurve(to: CGPoint(x: flame.x, y: flame.y - 4.4 * flicker), control: CGPoint(x: flame.x - 3.2, y: flame.y))
+        context.fill(drop, with: .color(Color(red: 1, green: 0.62, blue: 0.2)))
+        context.fill(Self.circle(CGPoint(x: flame.x, y: flame.y + 0.4), 0.9), with: .color(Oyl.noteYellow))
+    }
+
+    /// A bed: headboard behind, a pillow, and a quilt pulled up over its middle (drawn over
+    /// `body`, so it covers it).
+    private func bed(in space: GraphicsContext, under body: GraphicsContext, pose: Pose) {
+        let wood = Color(red: 0.62, green: 0.45, blue: 0.3)
+        space.fill(Path(roundedRect: CGRect(x: 1, y: 22, width: 6, height: 26), cornerRadius: 2), with: .color(wood))
+        space.fill(Path(roundedRect: CGRect(x: 56, y: 32, width: 4, height: 16), cornerRadius: 1.5), with: .color(wood))
+        space.fill(Path(roundedRect: CGRect(x: 4, y: 38, width: 54, height: 7), cornerRadius: 2), with: .color(Color(white: 0.9)))
+        var quilt = Path(roundedRect: CGRect(x: 10, y: 30.5, width: 48, height: 12), cornerRadius: 4)
+        quilt.addEllipse(in: CGRect(x: 30, y: 28.5, width: 18, height: 8))  // its feet under it
+        space.fill(quilt, with: .color(Oyl.pajamas))
+        for column in 0..<4 {
+            space.fill(Path(CGRect(x: 14 + CGFloat(column) * 11, y: 31, width: 1, height: 11)), with: .color(.white.opacity(0.35)))
+        }
+        // Its nightcap, still on.
+        var cap = Path()
+        cap.move(to: CGPoint(x: 10.5, y: 8.4))
+        cap.addQuadCurve(to: CGPoint(x: 26, y: 3), control: CGPoint(x: 15, y: -2))
+        cap.addQuadCurve(to: CGPoint(x: 35, y: 12), control: CGPoint(x: 33, y: 2))
+        cap.addQuadCurve(to: CGPoint(x: 29.5, y: 8.6), control: CGPoint(x: 31, y: 8))
+        cap.closeSubpath()
+        body.fill(cap, with: .color(Oyl.pajamas))
+        body.fill(Self.circle(CGPoint(x: 35, y: 12.5), 1.9), with: .color(.white))
+    }
+
+    /// The selfie, in a polaroid.
+    private func polaroid(in context: GraphicsContext, at frame: CGRect, image: NSImage) {
+        var tilted = context
+        tilted.translateBy(x: frame.midX, y: frame.midY)
+        tilted.rotate(by: .degrees(4 * sin(time * 1.4)))
+        tilted.translateBy(x: -frame.midX, y: -frame.midY)
+        tilted.fill(Path(roundedRect: frame, cornerRadius: 1.5), with: .color(.white))
+        let photo = CGRect(x: frame.minX + frame.width * 0.08, y: frame.minY + frame.width * 0.08,
+                           width: frame.width * 0.84, height: frame.height * 0.7)
+        var inside = tilted
+        inside.clip(to: Path(photo))
+        let size = image.size
+        let fill = max(photo.width / max(size.width, 1), photo.height / max(size.height, 1))
+        inside.draw(Image(nsImage: image), in: CGRect(x: photo.midX - size.width * fill / 2, y: photo.midY - size.height * fill / 2,
+                                                       width: size.width * fill, height: size.height * fill))
+    }
+
+    private func sparkles(in context: GraphicsContext) {
+        for (index, spot) in [CGPoint(x: 78, y: 8), CGPoint(x: 40, y: 6), CGPoint(x: 80, y: 30)].enumerated() {
+            let twinkle = CGFloat(max(0, sin(time * 3 + Double(index) * 2.1)))
+            guard twinkle > 0.05 else { continue }
+            var star = Path()
+            let r = 2.6 * twinkle
+            star.move(to: CGPoint(x: spot.x, y: spot.y - r))
+            star.addQuadCurve(to: CGPoint(x: spot.x + r, y: spot.y), control: spot)
+            star.addQuadCurve(to: CGPoint(x: spot.x, y: spot.y + r), control: spot)
+            star.addQuadCurve(to: CGPoint(x: spot.x - r, y: spot.y), control: spot)
+            star.addQuadCurve(to: CGPoint(x: spot.x, y: spot.y - r), control: spot)
+            context.fill(star, with: .color(Oyl.noteYellow))
+        }
+    }
+
+    /// A microphone at its mouth.
+    private func microphone(in context: GraphicsContext, hand: CGPoint) {
+        var handle = Path()
+        handle.move(to: CGPoint(x: hand.x + 1, y: hand.y + 3))
+        handle.addLine(to: CGPoint(x: hand.x - 1.5, y: hand.y - 2))
+        context.stroke(handle, with: .color(Color(white: 0.2)), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
+        context.fill(Self.circle(CGPoint(x: hand.x - 2.2, y: hand.y - 3.4), 2.3), with: .color(Color(white: 0.55)))
+        for row in 0..<2 {
+            context.fill(Path(CGRect(x: hand.x - 4, y: hand.y - 4.2 + CGFloat(row) * 1.4, width: 3.6, height: 0.5)),
+                         with: .color(Color(white: 0.3)))
+        }
+    }
+
+    /// Nothing else on today: peering ahead down the timeline through a magnifying glass.
+    func peek() {
+        var pose = restingPose()
+        pose.hands.1 = CGPoint(x: 36, y: 27)
+        pose.look = CGPoint(x: 0.9, y: 0.05)
+        let space = self.space
+        drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
+        // Held up, sweeping slowly back and forth.
+        let lens = CGPoint(x: 56 + 3 * sin(time * 0.9), y: 20 + 1.2 * sin(time * 1.1)), radius: CGFloat = 10
+        var handle = Path()
+        handle.move(to: CGPoint(x: 42, y: 30))
+        handle.addLine(to: CGPoint(x: lens.x - radius * 0.72, y: lens.y + radius * 0.68))
+        space.stroke(handle, with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)), style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+        space.fill(Self.circle(lens, radius), with: .color(Self.blue.opacity(0.18)))
+        space.stroke(Self.circle(lens, radius), with: .color(Color(white: 0.78)), lineWidth: 2)
+        var glint = Path()
+        glint.addArc(center: lens, radius: radius - 3.5, startAngle: .degrees(200), endAngle: .degrees(245), clockwise: false)
+        space.stroke(glint, with: .color(.white.opacity(0.55)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+    }
+}
