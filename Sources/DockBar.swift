@@ -4,7 +4,8 @@ import SwiftUI
 
 /// Oyl's Dock: along the bottom of the screen, in the notch's look, over the macOS Dock (which
 /// hides itself, and comes up behind it, covered). Like the notch, it comes up as the pointer
-/// reaches it (the bottom edge, under where it'd be) and goes once the pointer leaves. Click an
+/// reaches it (the bottom edge, under where it'd be) and goes once the pointer's left it (with
+/// some room round it and a moment's grace, more with a shelf up; see `nearArea`). Click an
 /// app to open it or switch to it, right-click for the rest; the shelf (the latest screenshots,
 /// and files kept to convert or drag out) is a tile past the apps, opening over the bar, with
 /// another next to it for what's just been saved. Which icon the pointer's on is worked out from
@@ -81,6 +82,21 @@ final class DockController {
         }) {
             monitors.append(monitor)
         }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] event in
+            MainActor.assumeIsolated {
+                if let self, event.window === self.panel { self.pressedOn = true }
+            }
+            return event
+        }) {
+            monitors.append(monitor)
+        }
+    }
+
+    /// Pressed on it, and not let go yet: it stays up wherever the pointer's got to meanwhile.
+    private var pressedOn = false
+    private var isPressed: Bool {
+        if pressedOn, NSEvent.pressedMouseButtons & 1 == 0 { pressedOn = false }
+        return pressedOn
     }
 
     private func pointerMoved() {
@@ -89,7 +105,7 @@ final class DockController {
         if model.isOpen {
             let over = isOver(location)
             hover(at: location)
-            if over || model.isHeld {
+            if isNear(location) || model.isHeld || isPressed {
                 closing?.cancel()
                 closing = nil
             } else {
@@ -137,17 +153,26 @@ final class DockController {
         Haptics.perform(.levelChange, performanceTime: .now)
     }
 
+    /// Off it, it waits a moment (see `grace`) in case the pointer's coming back.
     private func scheduleClose() {
         guard closing == nil else { return }
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 self?.closing = nil
-                guard let self, !self.model.isHeld, !self.isOver(NSEvent.mouseLocation) else { return }
+                guard let self, !self.model.isHeld, !self.isPressed, !self.isNear(NSEvent.mouseLocation) else { return }
                 self.close()
             }
         }
         closing = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        let grace = Self.grace(shelving: model.isShelving, sinceLetGo: model.letGo.map { Date().timeIntervalSince($0) })
+        DispatchQueue.main.asyncAfter(deadline: .now() + grace, execute: work)
+    }
+
+    /// How long the pointer can be off it before it goes: a moment, longer with a shelf up (being
+    /// used), and longer still just after a menu or the file picker's gone, which may have left
+    /// the pointer off it.
+    nonisolated static func grace(shelving: Bool, sinceLetGo: TimeInterval?) -> TimeInterval {
+        max(shelving ? 0.5 : 0.3, 1.2 - (sinceLetGo ?? .infinity))
     }
 
     private func close() {
@@ -236,6 +261,21 @@ final class DockController {
         barRect().contains(location) || (model.isShelving && cardRect().contains(location))
     }
 
+    /// Near enough to stay up (see `nearArea`).
+    private func isNear(_ location: NSPoint) -> Bool {
+        Self.nearArea(bar: barRect(), card: model.isShelving ? cardRect() : nil).contains(location)
+    }
+
+    /// Where the pointer can go with it staying up: the bar and a way round it; with a shelf up,
+    /// the bar, the card and everything between (beside the bar, under the card, too), and further
+    /// round them, so a slip off an edge or past the card's top while using it doesn't put it away.
+    /// (Clicks there still go through to what's under it.)
+    nonisolated static func nearArea(bar: NSRect, card: NSRect?) -> NSRect {
+        guard let card else { return NSRect(x: bar.minX - 18, y: bar.minY, width: bar.width + 36, height: bar.height + 18) }
+        let both = bar.union(card)
+        return NSRect(x: both.minX - 36, y: both.minY, width: both.width + 72, height: both.height + 32)
+    }
+
     /// Where the shelf's card is.
     private func cardRect() -> NSRect {
         guard let screen else { return .zero }
@@ -264,7 +304,11 @@ final class DockModel: ObservableObject {
     /// An app being dragged along the bar to a new place, and how far it's been dragged.
     @Published var reordering: (id: String, offset: CGFloat)?
     /// A menu's up, or an app's being dragged: stay up.
-    var isHeld = false
+    var isHeld = false {
+        didSet { if oldValue, !isHeld { letGo = Date() } }
+    }
+    /// When it was last let go.
+    private(set) var letGo: Date?
     var toggleShelf: (Shelf.Source) -> Void = { _ in }
 
     var cardWidth: CGFloat { min(560, screenWidth - 80) }
