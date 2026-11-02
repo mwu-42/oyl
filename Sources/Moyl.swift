@@ -577,6 +577,13 @@ fileprivate struct MoylLook {
                 surface = .icy
                 sparkles = true
                 spin = 12
+            case .notes:
+                // Taking notes: a banded world, ruled like paper, a little moon going busily round
+                // it for the pen, and a glow coming and going as it listens.
+                surface = .banded
+                moon = .circling(period: 4.5, tone: .white, orbit: 0.2)
+                glow = 0.08 + 0.1 * (0.5 - 0.5 * cos(time * 2 * .pi / 3.2))
+                spin = 7
             }
         }
     }

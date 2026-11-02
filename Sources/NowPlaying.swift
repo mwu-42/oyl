@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 
 // MARK: - Players
 
@@ -211,8 +212,18 @@ final class NowPlaying: ObservableObject {
     private var artworkCache: [String: NSImage] = [:]
     private var lyricsTask: Task<Void, Never>?
     private var lyricsCache: [String: Lyrics?] = [:]  // nil: looked up, and none
+    private var analyzing: AnyCancellable?
 
     init() {
+        // The visualizer turned on or off: its sound's analyzed, or not, straight away.
+        analyzing = Features.shared.changed
+            .filter { $0.0 == .visualizer }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.spectrum.follow(self.isPlaying && Feature.visualizer.isOn ? self.player : nil)
+                }
+            }
         notificationObserver = DistributedObserver { [weak self] name, userInfo in
             let playing = (userInfo?["Player State"] as? String) == "Playing"
             MainActor.assumeIsolated {
@@ -253,7 +264,7 @@ final class NowPlaying: ObservableObject {
         guard let player else { return }
         setAnchor(position(at: Date()))
         isPlaying.toggle()
-        spectrum.follow(isPlaying ? player : nil)
+        spectrum.follow(isPlaying && Feature.visualizer.isOn ? player : nil)
         perform("playpause", on: player)
     }
 
@@ -385,7 +396,7 @@ final class NowPlaying: ObservableObject {
             // Covers skips made in the player itself, and one song running into the next.
             spectrum.easeNextChange()
         }
-        spectrum.follow(isPlaying ? chosen : nil)
+        spectrum.follow(isPlaying && Feature.visualizer.isOn ? chosen : nil)
     }
 
     private func clear() {

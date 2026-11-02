@@ -12,12 +12,17 @@ struct OylsPage: View {
     @ObservedObject var awake: AwakeManager
     @ObservedObject var agents: AgentMonitor
     @ObservedObject var bedtime: Bedtime
+    @ObservedObject var radar = AgentRadar.shared
 
     var body: some View {
         VStack(spacing: 0) {
             list
             settings
-            if agents.offersChats { chatsFooter }
+            if agents.offersChats {
+                chatsFooter
+            } else if let suggestion = radar.suggestions.first {
+                suggestionFooter(suggestion)
+            }
         }
     }
 
@@ -51,8 +56,21 @@ struct OylsPage: View {
                 if midnight {
                     option("Stay open", isOn: state.isPinned) { state.isPinned.toggle() }
                 }
-                option("Oyl's Dock", isOn: state.showsDock) { state.showsDock.toggle() }
                 Spacer(minLength: 0)
+                // Everything else, and more of these.
+                Button { withAnimation(NotchView.open) { state.page = .settings } } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "gearshape")
+                            .notchSymbol(size: 11, weight: .semibold)
+                        Text("Settings")
+                            .notchFont(size: 11, weight: .medium)
+                    }
+                    .foregroundStyle(.white.opacity(0.75))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .help("Turn any of Oyl on or off")
+                .padding(.trailing, 10)
                 // Quits, and stays off (not opening at login) till it's opened again.
                 Button { Quitting.turnOff(awake) } label: {
                     HStack(spacing: 5) {
@@ -102,6 +120,40 @@ struct OylsPage: View {
         .padding(.horizontal, 16)
         .padding(.top, 6)
         .animation(NotchView.open, value: rows.map(\.id) + timers.history.map(\.id.uuidString))
+    }
+
+    /// An app that seems to use AI (see `AgentDiscovery`): watch it as an agent, or never ask again.
+    private func suggestionFooter(_ agent: RadarAgent) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sparkle.magnifyingglass")
+                .notchSymbol(size: 10, weight: .semibold)
+                .foregroundStyle(.white.opacity(0.7))
+            Text("\(agent.name) seems to use AI. Watch it as an agent?")
+                .notchFont(size: 11)
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button { radar.decline(agent) } label: {
+                Text("No")
+                    .notchFont(size: 11, weight: .semibold)
+                    .padding(.horizontal, 10)
+                    .frame(height: 20)
+                    .notchPill(.white.opacity(0.14), text: .white, bright: false)
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(PressableStyle())
+            Button { radar.add(agent) } label: {
+                Text("Watch")
+                    .notchFont(size: 11, weight: .semibold)
+                    .padding(.horizontal, 10)
+                    .frame(height: 20)
+                    .notchPill(.white, text: .black)
+                    .contentShape(Capsule())
+            }
+            .buttonStyle(PressableStyle())
+        }
+        .padding(.horizontal, 24)
+        .frame(height: Layout.chatsFooterHeight, alignment: .top)
     }
 
     /// Chats in the Claude app need Accessibility; this asks for it.
@@ -163,6 +215,9 @@ struct OylsPage: View {
         case .selfie(let selfie):
             NSWorkspace.shared.open(selfie.url)
             return
+        case .notes(let app):
+            NoteTakers.show(app)
+            return
         case .hangout, .battery, .bedtime:
             return
         case .music: page = .music
@@ -210,6 +265,8 @@ struct OylsPage: View {
                    : stage == .bed ? "In bed since 1 am" : "Telling you to go to bed") { Oyl(duty: .bedtime(stage)) }
         case .selfie(let selfie):
             OylRow(title: "Selfie", subtitle: "Just taken. Click to open it") { Oyl(duty: .selfie(selfie.image)) }
+        case .notes(let app):
+            OylRow(title: app, tag: "Notes", subtitle: "Taking notes on what's being said") { Oyl(duty: .notes(app: app)) }
         }
     }
 

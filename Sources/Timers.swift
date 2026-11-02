@@ -237,7 +237,7 @@ final class TimerStore: ObservableObject {
         stopChime()
         chimePlays = 0
         playChime()
-        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        Haptics.perform(.levelChange, performanceTime: .now)
         chime = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.playChime() }
         }

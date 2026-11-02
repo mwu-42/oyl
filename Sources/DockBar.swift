@@ -49,6 +49,22 @@ final class DockController {
         state.$showsDock.sink { [weak self] shown in
             if !shown { self?.close() }
         }.store(in: &cancellables)
+        // A shelf turned off goes from the bar (and stops watching), its card with it.
+        Features.shared.changed
+            .filter { $0.0 == .screenshotsShelf || $0.0 == .savedShelf }
+            .sink { [weak self] change in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let shelf = change.0 == .savedShelf ? state.saved : state.shelf
+                    if !change.1 {
+                        shelf.stopWatching()
+                        if self.model.shelving == shelf.source { self.toggleShelf(shelf.source) }
+                    }
+                    self.apps.objectWillChange.send()
+                    if self.model.isOpen { self.fit() }
+                }
+            }
+            .store(in: &cancellables)
         // An app opening or quitting changes its width.
         apps.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
             MainActor.assumeIsolated { if self?.model.isOpen == true { self?.fit() } }
@@ -118,7 +134,7 @@ final class DockController {
         panel.ignoresMouseEvents = false
         model.isOpen = true
         hover(at: NSEvent.mouseLocation)
-        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        Haptics.perform(.levelChange, performanceTime: .now)
     }
 
     private func scheduleClose() {
@@ -302,7 +318,7 @@ struct DockLayout: Equatable {
 
     @MainActor
     init(apps: DockApps, screenWidth: CGFloat) {
-        self.init(tiles: 2 + apps.apps.count + apps.others.count, firstOther: apps.apps.count, tile: apps.tile,
+        self.init(tiles: DockView.shelves.count + apps.apps.count + apps.others.count, firstOther: apps.apps.count, tile: apps.tile,
                   screenWidth: screenWidth)
     }
 
@@ -325,10 +341,16 @@ struct DockView: View {
     /// seen. (And without fading, which would show it through.)
     static let close = Animation.easeInOut(duration: 0.45)
 
+    /// The shelves turned on, in the bar past its line.
+    @MainActor
+    static var shelves: [Shelf.Source] {
+        [Shelf.Source.screenshots, .saved].filter { $0 == .saved ? Feature.savedShelf.isOn : Feature.screenshotsShelf.isOn }
+    }
+
     /// What's in the bar, left to right, as `DockLayout.frames` places it.
     @MainActor
     static func ids(_ apps: DockApps) -> [String] {
-        apps.apps.map(\.id) + [shelfID, savedID] + apps.others.map(\.id)
+        apps.apps.map(\.id) + shelves.map { $0 == .saved ? savedID : shelfID } + apps.others.map(\.id)
     }
 
     var body: some View {
@@ -385,7 +407,7 @@ struct DockView: View {
     /// Where a shelf's tile is, as a point on its card (off its foot, over the bar): the card's
     /// as wide as it likes, and both are in the middle.
     private func anchor(of source: Shelf.Source, in layout: DockLayout) -> UnitPoint {
-        let index = apps.apps.count + (source == .saved ? 1 : 0)
+        let index = apps.apps.count + (Self.shelves.firstIndex(of: source) ?? 0)
         guard index < layout.frames.count, model.cardWidth > 0 else { return .bottom }
         let tile = layout.frames[index]
         return UnitPoint(x: 0.5 + (tile.midX - layout.size.width / 2) / model.cardWidth,
@@ -428,8 +450,9 @@ private struct DockBar: View {
             }
             // The apps; then past the line the shelves, and the rest after them.
             let shelfIndex = apps.apps.count
+            let shelves = DockView.shelves
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                let place = index < shelfIndex ? index : index + 2
+                let place = index < shelfIndex ? index : index + shelves.count
                 if place < layout.frames.count {
                     let frame = layout.frames[place]
                     let held = model.reordering?.id == item.id
@@ -442,15 +465,12 @@ private struct DockBar: View {
                         .animation(held ? nil : .spring(response: 0.28, dampingFraction: 0.82), value: place)
                 }
             }
-            if shelfIndex < layout.frames.count {
-                let frame = layout.frames[shelfIndex]
-                ShelfDockTile(model: model, shelf: shelf, tile: layout.tile)
-                    .position(x: frame.midX, y: frame.midY)
-            }
-            if shelfIndex + 1 < layout.frames.count {
-                let frame = layout.frames[shelfIndex + 1]
-                ShelfDockTile(model: model, shelf: saved, tile: layout.tile)
-                    .position(x: frame.midX, y: frame.midY)
+            ForEach(Array(shelves.enumerated()), id: \.element) { offset, source in
+                if shelfIndex + offset < layout.frames.count {
+                    let frame = layout.frames[shelfIndex + offset]
+                    ShelfDockTile(model: model, shelf: source == .saved ? saved : shelf, tile: layout.tile)
+                        .position(x: frame.midX, y: frame.midY)
+                }
             }
         }
         .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)

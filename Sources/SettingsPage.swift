@@ -1,0 +1,360 @@
+import AppKit
+import ServiceManagement
+import SwiftUI
+
+/// The settings' sections, along the top of their page.
+enum SettingsSection: String, CaseIterable {
+    case notch = "Notch", oyls = "Oyls", agents = "Agents", hands = "Hands", keys = "Keys", dock = "Dock", oyl = "Oyl"
+}
+
+/// One setting: on or off (or, for a few, a button), what it does, and for an agent you added,
+/// a way to take it off the list.
+struct SettingItem: Identifiable {
+    let id: String
+    let title: String
+    let hint: String
+    var isOn = false
+    var action: () -> Void
+    /// A button (Quit, Turn off…), not a switch.
+    var isButton = false
+    var remove: (() -> Void)?
+}
+
+/// Every setting there is, a section at a time, two to a row (each says what it does when
+/// pointed at); past as many rows as fit, they scroll. Opened from the Oyls page, or a right-click
+/// on the notch. Under them, what Oyl stands for.
+struct SettingsPage: View {
+    @ObservedObject var state: NotchState
+    @ObservedObject var radar = AgentRadar.shared
+    @ObservedObject var features = Features.shared
+
+    var body: some View {
+        SettingsLayout(section: $state.settingsSection, items: Self.items(state.settingsSection, state: state))
+    }
+
+    // MARK: What's in each section
+
+    /// Every setting in `section` that does something in this look and on this Mac.
+    @MainActor
+    static func items(_ section: SettingsSection, state: NotchState) -> [SettingItem] {
+        let midnight = state.theme == .midnight
+        let oyl = midnight ? "Moyl" : "Oyl"
+        func feature(_ feature: Feature, _ title: String, _ hint: String) -> SettingItem {
+            SettingItem(id: feature.rawValue, title: title, hint: hint, isOn: feature.isOn) { Features.shared.toggle(feature) }
+        }
+        switch section {
+        case .notch:
+            var items = [
+                feature(.musicPage, "Music page", "The song, its cover and controls"),
+                SettingItem(id: "lyrics", title: "Lyrics", hint: "Under the song, sung by its \(oyl), from song to song",
+                            isOn: state.showsLyrics) { state.showsLyrics.toggle() },
+                feature(.visualizer, "Visualizer", "Listens to the music, for the wave and the beat"),
+                feature(.songTitleOpensPlayer, "Song name opens player", "Click the song's name for Spotify or Music"),
+                feature(.timersPage, "Timers page", "Timers and reminders"),
+                feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
+                feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
+            ]
+            if !midnight {
+                items.append(SettingItem(id: "mirror", title: "Mirror", hint: "The camera, for a look at yourself before a call",
+                                         isOn: state.showsMirror) { state.showsMirror.toggle() })
+            }
+            items.append(feature(.haptics, "Haptics", "A tap of the trackpad as the notch pops and opens"))
+            if state.dictation.isAvailable {
+                items.append(feature(.wisprFlow, "Wispr Flow", "When it's listening, in the notch, and its button"))
+            }
+            return items
+        case .oyls:
+            var items = [
+                SettingItem(id: "oyls", title: midnight ? "Moyls" : "Oyls on the bar", hint: "Every \(oyl), out for what's going on",
+                            isOn: state.oylsVisible) { state.oylsVisible.toggle() },
+                SettingItem(id: "countdowns", title: "Countdowns", hint: "Beside timers' \(oyl)s all the time, not just at the end",
+                            isOn: state.showsCountdowns) { state.showsCountdowns.toggle() },
+            ]
+            if !midnight {
+                items.append(SettingItem(id: "dim", title: "Dim the bar", hint: "The menu bar goes dark behind the Oyls",
+                                         isOn: state.dimsMenuBar) { state.dimsMenuBar.toggle() })
+                items.append(SettingItem(id: "calendar", title: "Calendar bar", hint: "Today's events, right of the notch",
+                                         isOn: state.showsCalendar) { state.showsCalendar.toggle() })
+            }
+            items += [
+                feature(.agentOyls, "Agents' \(oyl)s", "One for each agent at work"),
+                feature(.musicOyl, "Music \(oyl)", "Dancing (or reading) to what's playing"),
+                feature(.timerOyls, "Timers' \(oyl)s", "One for each timer and reminder"),
+                feature(.awakeOyl, "Keep-awake \(oyl)", "On energy drinks while the Mac's kept awake"),
+                feature(.batteryOyl, "Battery \(oyl)", "Tired when the battery's low"),
+                SettingItem(id: "bedtime", title: "Bedtime \(oyl)", hint: "Up past midnight, then off to bed; at two, telling you to go too",
+                            isOn: state.bedtime.isEnabled) { state.bedtime.isEnabled.toggle() },
+                feature(.selfieOyl, "Selfie \(oyl)", "Holding up a selfie just taken"),
+                feature(.hangoutOyl, "Hanging-out \(oyl)", "Out when nothing else is going on"),
+            ]
+            return items
+        case .agents:
+            var items = [
+                feature(.claudeCode, "Claude Code", "In a terminal, an editor or the Claude app's Code tab"),
+                feature(.approvals, "Answer Claude Code here", "Allow or deny its requests from the notch, or with a thumbs up"),
+                feature(.claudeChats, "Claude app chats", "The chat showing in the Claude app"),
+                feature(.cowork, "Cowork tasks", "Each of the Claude app's Cowork tasks"),
+            ]
+            let radar = AgentRadar.shared
+            for agent in radar.all {
+                items.append(SettingItem(id: agent.id, title: agent.title, hint: hint(for: agent), isOn: radar.isOn(agent),
+                                         action: { radar.set(agent, on: !radar.isOn(agent)) },
+                                         remove: agent.added ? { radar.remove(agent) } : nil))
+            }
+            for agent in radar.suggestions {
+                items.append(SettingItem(id: "suggested " + agent.id, title: "\(agent.name)?",
+                                         hint: "Seems to use AI. Click to watch it as an agent", action: { radar.add(agent) },
+                                         remove: { radar.decline(agent) }))
+            }
+            items.append(feature(.discovery, "Find new agents", "Offer to watch apps that talk to an AI service"))
+            if let front = state.front, !radar.knows(front.id) {
+                items.append(SettingItem(id: "front", title: "Watch \(front.name)", hint: "As an agent: \(hint(for: front))",
+                                         action: { radar.add(front) }, isButton: true))
+            }
+            return items
+        case .hands:
+            let gestures = state.gestures
+            var items = [
+                SettingItem(id: "gestures", title: "Hand gestures", hint: "The camera watches for them while the notch is open",
+                            isOn: gestures?.isEnabled ?? false) { gestures?.isEnabled.toggle() },
+                feature(.palmGesture, "✋ Play or pause", "A raised hand (stops a timer that's ringing, too)"),
+                feature(.pointGesture, "👉 Skip", "Point left or right for the song before or next"),
+                feature(.pinchGesture, "🤏 Volume and scrub", "Pinch and twist; with the pinky up, drag to scrub"),
+                feature(.peaceGesture, "✌️ Selfie", "Saved in Pictures, beside your screen"),
+                feature(.hornsGesture, "🤟 Keep awake", "Keeps the Mac awake, or stops"),
+                feature(.pinkyGesture, "Pinky: lyrics", "Shows the lyrics, and the music \(oyl) sings"),
+                feature(.thumbsUpGesture, "👍 Allow", "Answers Claude Code's request yes"),
+                feature(.oylsGesture, "\(oyl)s' gestures", "Thumb on the ring finger: they say what they're doing; tip it to line them up or send them off"),
+            ]
+            if midnight {
+                items.append(feature(.rockGesture, "🤘 Hand pointer", "The rock sign: your hands become the mouse"))
+            }
+            return items
+        case .keys:
+            return [
+                feature(.screenshotTaps, "⌃⌃ Screenshot", "Control twice: a screenshot of part of the screen"),
+                feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
+                feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
+                feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
+            ]
+        case .dock:
+            return [
+                SettingItem(id: "dock", title: "Oyl's Dock", hint: "Along the bottom, over the macOS Dock", isOn: state.showsDock) {
+                    state.showsDock.toggle()
+                },
+                feature(.screenshotsShelf, "Screenshots shelf", "Your latest screenshots, to drag anywhere"),
+                feature(.savedShelf, "Recently Saved shelf", "What's just been downloaded, AirDropped or saved from a text"),
+                feature(.labelScreenshots, "Label screenshots", "Named for what's in them, read on the Mac"),
+            ]
+        case .oyl:
+            var items = [
+                SettingItem(id: "midnight", title: "Midnight Oyl", hint: "A celestial atlas, for looking at", isOn: midnight) {
+                    state.theme = midnight ? .standard : .midnight
+                },
+            ]
+            if midnight {
+                items.append(SettingItem(id: "pinned", title: "Stay open", hint: "On display, as clicking the moon does",
+                                         isOn: state.isPinned) { state.isPinned.toggle() })
+            }
+            items += [
+                SettingItem(id: Feature.openAtLogin.rawValue, title: "Open at login", hint: "Oyl starts with the Mac",
+                            isOn: Feature.openAtLogin.isOn) { LoginItem.set(!Feature.openAtLogin.isOn) },
+                SettingItem(id: "quit", title: "Quit Oyl", hint: "Till it's opened again, or the next login",
+                            action: { Quitting.quit(state.awake) }, isButton: true),
+                SettingItem(id: "off", title: "Turn off Oyl", hint: "Quits, and doesn't open at login till you open it again",
+                            action: { Quitting.turnOff(state.awake) }, isButton: true),
+            ]
+            return items
+        }
+    }
+
+    private static func hint(for agent: RadarAgent) -> String {
+        switch agent.tell {
+        case .tab: return "At \(agent.target), in the browser"
+        case .window: return "Its windows, while one offers to stop"
+        case .process: return "Run as “\(agent.target)”, while it's busy"
+        case .microphone: return "Taking notes while it has the microphone"
+        }
+    }
+}
+
+/// The settings page's look: its sections along the top, the section's settings two to a row
+/// (scrolling past as many as fit), and the motto under them.
+struct SettingsLayout: View {
+    @Binding var section: SettingsSection
+    let items: [SettingItem]
+    @Environment(\.notchTheme) private var theme
+    @Namespace private var chips
+
+    var body: some View {
+        let rows = (items.count + 1) / 2
+        VStack(alignment: .leading, spacing: 0) {
+            sections
+                .frame(height: Layout.settingsChipsHeight)
+                .padding(.bottom, Layout.settingsGap)
+            Group {
+                if rows <= Layout.settingsRowsFit {
+                    grid
+                } else {
+                    ScrollView(.vertical, showsIndicators: false) { grid }
+                }
+            }
+            .frame(height: Layout.settingsRows(min(rows, Layout.settingsRowsFit)), alignment: .top)
+            .id(section)
+            .transition(NotchView.swap)
+            motto
+                .frame(maxWidth: .infinity)
+                .frame(height: Layout.settingsMottoHeight, alignment: .bottom)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        .animation(NotchView.open, value: section)
+    }
+
+    private var sections: some View {
+        let midnight = theme == .midnight
+        return HStack(spacing: 4) {
+            ForEach(SettingsSection.allCases, id: \.self) { each in
+                let chosen = section == each
+                Button {
+                    withAnimation(NotchView.open) { section = each }
+                } label: {
+                    Text(each.rawValue)
+                        .notchFont(size: 11, weight: .semibold)
+                        .foregroundStyle(chosen ? (midnight ? Midnight.white : .black) : .white.opacity(midnight ? 0.55 : 0.6))
+                        .padding(.horizontal, 9)
+                        .frame(height: 20)
+                        .background {
+                            if chosen {
+                                Capsule()
+                                    .fill(midnight ? Midnight.silver.opacity(0.14) : .white.opacity(0.9))
+                                    .overlay(Capsule().strokeBorder(Midnight.silver.opacity(midnight ? 0.7 : 0), lineWidth: 0.75))
+                                    .matchedGeometryEffect(id: "chip", in: chips)
+                            }
+                        }
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(PressableStyle())
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Two to a row, the columns half the page each.
+    private var grid: some View {
+        let pairs = stride(from: 0, to: items.count, by: 2).map { Array(items[$0..<min($0 + 2, items.count)]) }
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(pairs.enumerated()), id: \.element.first!.id) { row, pair in
+                HStack(spacing: 12) {
+                    ForEach(pair) { item in
+                        SettingRow(item: item)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if pair.count == 1 { Color.clear.frame(maxWidth: .infinity) }
+                }
+                .frame(height: Layout.settingsRowHeight)
+                .modifier(Cascade(row: row, on: theme == .midnight))
+            }
+        }
+    }
+
+    /// What Oyl stands for: in Oyl's own look, quietly; in Midnight Oyl's, engraved, in its flourish.
+    private var motto: some View {
+        HStack(spacing: 6) {
+            Text(Motto.name.uppercased())
+                .notchFont(size: 9.5, weight: .bold)
+                .tracking(theme == .midnight ? 0 : 1.2)
+            Text(theme == .midnight ? "·" : "—")
+                .notchFont(size: 10)
+            Text(Motto.words)
+                .font(theme == .midnight ? Midnight.flourish(11.5) : .system(size: 10.5, weight: .medium))
+        }
+        .foregroundStyle(.white.opacity(theme == .midnight ? 0.62 : 0.4))
+    }
+}
+
+/// In Midnight Oyl, a section's rows drift in one after another, out of a blur, as it comes up.
+private struct Cascade: ViewModifier {
+    let row: Int
+    let on: Bool
+    @StateObject private var shown = LocalState(false)
+
+    func body(content: Content) -> some View {
+        let hidden = on && !shown.value
+        content
+            .opacity(hidden ? 0 : 1)
+            .blur(radius: hidden ? 3 : 0)
+            .offset(x: hidden ? -6 : 0)
+            .onAppear {
+                guard on else { return }
+                withAnimation(.easeOut(duration: 0.4).delay(0.06 + Double(row) * 0.04)) { shown.value = true }
+            }
+    }
+}
+
+/// A setting: a switch (or a button), and for one you added, an × to take it off the list.
+struct SettingRow: View {
+    let item: SettingItem
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Button(action: item.action) {
+                HStack(spacing: 5) {
+                    Image(systemName: item.isButton ? "arrow.right.circle" : item.isOn ? "checkmark.circle.fill" : "circle")
+                        .notchSymbol(size: 11, weight: .semibold)
+                        .foregroundStyle(item.isOn ? Color.white : Color.white.opacity(item.isButton ? 0.6 : 0.4))
+                    Text(item.title)
+                        .notchFont(size: 11, weight: .medium)
+                        .foregroundStyle(.white.opacity(item.isOn ? 0.9 : item.isButton ? 0.75 : 0.55))
+                        .lineLimit(1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(PressableStyle())
+            .help(item.hint)
+            if let remove = item.remove {
+                Button(action: remove) {
+                    Image(systemName: "xmark")
+                        .notchSymbol(size: 8, weight: .bold)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .frame(width: 14, height: 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .help("Take it off the list")
+            }
+            Spacer(minLength: 0)
+        }
+        .animation(.easeOut(duration: 0.15), value: item.isOn)
+    }
+}
+
+/// Opening at login, as a login item.
+@MainActor
+enum LoginItem {
+    static func set(_ on: Bool) {
+        Features.shared.set(.openAtLogin, on)
+        apply()
+    }
+
+    /// Registered if it's to open at login (and again when the app has moved, since Login Items
+    /// remembers where it was), unregistered if not.
+    static func apply() {
+        let path = Bundle.main.bundlePath
+        let defaults = UserDefaults.standard
+        guard Feature.openAtLogin.isOn else {
+            if SMAppService.mainApp.status == .enabled { try? SMAppService.mainApp.unregister() }
+            return
+        }
+        let moved = defaults.string(forKey: "loginItemPath") != path
+        guard moved || SMAppService.mainApp.status != .enabled else { return }
+        do {
+            if moved { try? SMAppService.mainApp.unregister() }
+            try SMAppService.mainApp.register()
+            defaults.set(path, forKey: "loginItemPath")
+        } catch {
+            NSLog("Oyl couldn't add itself to Login Items: \(error)")
+        }
+    }
+}

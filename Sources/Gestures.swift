@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import Combine
 import CoreImage
 import os
 import ScreenCaptureKit
@@ -108,7 +109,7 @@ extension NotchState {
         output.set(before + radians * 0.35)
         // A tick every 10%, like pulling on the cover.
         if Int((before * 10).rounded()) != Int((output.volume * 10).rounded()) {
-            NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now)
+            Haptics.perform(.alignment, performanceTime: .now)
         }
     }
 
@@ -248,10 +249,16 @@ final class GestureWatcher: ObservableObject {
     /// Just after the pointer's put down: the shape the hand's in then doesn't act, only the next.
     private var quietUntil: TimeInterval = 0
 
+    private var pointerSwitch: AnyCancellable?
+
     init() {
         pointer = PointerMode()
         // No hand for a while: it's put down by itself.
         pointer.ended = { [weak self] in self?.pointerEnded() }
+        // Turned off with the pointer in hand: it's put down.
+        pointerSwitch = Features.shared.changed
+            .filter { $0 == (.rockGesture, false) }
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.endPointing() } }
     }
 
     private func liveCamera() -> HandCamera {
@@ -294,7 +301,9 @@ final class GestureWatcher: ObservableObject {
 
     /// The rock sign counts: in Midnight Oyl, with gestures on, while the band's up or the pointer's
     /// in hand (wherever it's pointing then).
-    private var rockCounts: Bool { midnight && isEnabled && !dismissed && (pointer.isOn || displaying || hovering) }
+    private var rockCounts: Bool {
+        midnight && isEnabled && Feature.rockGesture.isOn && !dismissed && (pointer.isOn || displaying || hovering)
+    }
 
     /// The hand becomes the pointer: what it was doing as a gesture is let go, and the camera stays
     /// on, reading every frame, until it's put down.
@@ -459,6 +468,7 @@ final class GestureWatcher: ObservableObject {
     /// of it, so you can move your hand back and grab again to keep going, as you would with a
     /// real knob.
     private func follow(_ reading: HandShape.Reading) {
+        guard Feature.pinchGesture.isOn else { return }
         guard var anchor = gripAnchor else {
             gripAnchor = (reading.angle, reading.x)
             return
@@ -494,6 +504,8 @@ final class GestureWatcher: ObservableObject {
     }
 
     private func fire(_ gesture: HandGesture) {
+        // One that's been turned off does nothing.
+        if let feature = Feature(gesture), !feature.isOn { return }
         // Without the pointer over the notch, the camera is only on for a thumbs up.
         switch gesture {
         case .thumbsUp:
@@ -507,7 +519,7 @@ final class GestureWatcher: ObservableObject {
         case .peace:
             takeSelfie()
         case .pinch:
-            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            Haptics.perform(.levelChange, performanceTime: .now)
             return  // moving it does the work, and the indicator shows it while held
         case .announce:
             // Back upright after a tilt: that's to allow the next tilt, not to announce.
@@ -555,7 +567,7 @@ final class GestureWatcher: ObservableObject {
 
     /// A tap of the trackpad, and the gesture's symbol shown for a moment.
     private func acknowledge(_ gesture: HandGesture) {
-        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        Haptics.perform(.levelChange, performanceTime: .now)
         let sighting = Sighting(gesture: gesture)
         self.sighting = sighting
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in

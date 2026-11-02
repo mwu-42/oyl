@@ -1,5 +1,4 @@
 import AppKit
-import ServiceManagement
 
 @main
 enum OylApp {
@@ -27,20 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-        // Open at login. Every launch checks, so it comes back if it was taken out of Login Items,
-        // and registers again when the app has moved (Login Items remembers where it was).
-        let path = Bundle.main.bundlePath
-        let defaults = UserDefaults.standard
-        let moved = defaults.string(forKey: "loginItemPath") != path
-        if moved || SMAppService.mainApp.status != .enabled {
-            do {
-                if moved { try? SMAppService.mainApp.unregister() }
-                try SMAppService.mainApp.register()
-                defaults.set(path, forKey: "loginItemPath")
-            } catch {
-                NSLog("Oyl couldn't add itself to Login Items: \(error)")
-            }
-        }
+        // Open at login, unless that's turned off. Every launch checks, so it comes back if it was
+        // taken out of Login Items, and registers again when the app has moved.
+        LoginItem.apply()
 
         // Created only once we know this is the sole copy: it resets lid sleep left over from a crash.
         let awake = AwakeManager()

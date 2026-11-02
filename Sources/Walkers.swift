@@ -901,6 +901,8 @@ struct Walker: Identifiable, Equatable {
         case battery(PowerStatus)
         case bedtime(BedtimeStage)
         case selfie(Selfie)
+        /// An app (Granola) taking notes on what it hears, by its name.
+        case notes(String)
 
         var id: String {
             switch self {
@@ -912,6 +914,7 @@ struct Walker: Identifiable, Equatable {
             case .battery: return "battery"
             case .bedtime: return "bedtime"
             case .selfie(let selfie): return "selfie \(selfie.url.lastPathComponent)"
+            case .notes(let app): return "notes \(app)"
             }
         }
 
@@ -924,6 +927,7 @@ struct Walker: Identifiable, Equatable {
             case .battery(let status): return .battery(status)
             case .bedtime(let stage): return .bedtime(stage)
             case .selfie(let selfie): return .selfie(selfie.image)
+            case .notes(let app): return .notes(app: app)
             }
         }
 
@@ -937,6 +941,7 @@ struct Walker: Identifiable, Equatable {
         var group: Int {
             switch self {
             case .agent: return 0
+            case .notes: return 4
             case .timer: return 1
             case .awake: return 2
             case .music: return 3

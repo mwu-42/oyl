@@ -2,7 +2,8 @@ import AppKit
 import ApplicationServices
 
 /// Agents that work in a browser tab, which (like the Claude app's chats) have no hooks: Meta's
-/// Muse, at muse.ai. Its tab's found by asking the browser which of its tabs are on the site
+/// Muse, at muse.ai, ChatGPT, Gemini and the rest the radar has (see `AgentRadar`), and any site
+/// you've added. Its tab's found by asking the browser which of its tabs are on the site
 /// (Chrome and the browsers built like it, and Safari; macOS asks the first time whether Oyl may);
 /// and while it's the tab showing in its window, its page is read through Accessibility, as the
 /// Claude app's window is (see `ClaudeAppChats`): working while it offers to stop or pause what
@@ -15,16 +16,17 @@ import ApplicationServices
 /// Kept light: every couple of seconds, on its own queue, one question to each browser that's
 /// open; the page is read only while it's showing, a few searches the browser answers itself.
 final class WebAgents: @unchecked Sendable {
-    struct Site: Sendable {
+    struct Site: Equatable, Sendable {
         let host: String
         let name: String
+        /// Its Oyl's hat, as "#rrggbb".
+        var hat: String?
     }
-
-    static let sites = [Site(host: "muse.ai", name: "Muse")]
 
     struct Agent: Equatable, Sendable {
         let host: String
         let name: String
+        let hat: String?
         /// The browser it's in.
         let pid: pid_t
         let browser: String
@@ -37,6 +39,22 @@ final class WebAgents: @unchecked Sendable {
         let name: String
         /// Safari's tab's `current tab`; the rest, Chrome's `active tab`.
         let safari: Bool
+    }
+
+    static func isBrowser(_ bundleID: String) -> Bool { browsers.contains { $0.id == bundleID } }
+
+    /// The address of the tab showing in the browser's front window, if it'll say.
+    static func frontTab(of bundleID: String) -> String? {
+        guard let browser = browsers.first(where: { $0.id == bundleID }) else { return nil }
+        let source = """
+            tell application id "\(browser.id)"
+                if (count of windows) is 0 then return ""
+                return URL of \(browser.safari ? "current tab" : "active tab") of front window
+            end tell
+            """
+        var error: NSDictionary?
+        let address = NSAppleScript(source: source)?.executeAndReturnError(&error).stringValue
+        return error == nil ? address : nil
     }
 
     private static let browsers = [
@@ -56,6 +74,7 @@ final class WebAgents: @unchecked Sendable {
     private let report: @Sendable ([Agent]) -> Void
     // Only touched on `queue`.
     private var timer: DispatchSourceTimer?
+    private var sites: [Site] = []
     private var scripts: [String: NSAppleScript] = [:]
     /// Browsers that wouldn't let Oyl ask, and when, so they're asked again only now and then.
     private var refused: [String: Date] = [:]
@@ -71,10 +90,18 @@ final class WebAgents: @unchecked Sendable {
         self.report = report
     }
 
-    /// Looks while access is allowed; stops, with none, once it isn't.
+    /// The sites to look for.
+    func watch(_ sites: [Site]) {
+        queue.async { [weak self] in self?.sites = sites }
+    }
+
+    /// Looks while access is allowed (and there's a site to look for); stops, with none, once it
+    /// isn't.
     func follow(allowed: Bool) {
         queue.async { [weak self] in
-            guard let self, allowed != (self.timer != nil) else { return }
+            guard let self else { return }
+            let allowed = allowed && !self.sites.isEmpty
+            guard allowed != (self.timer != nil) else { return }
             self.timer?.cancel()
             self.timer = nil
             guard allowed else {
@@ -122,7 +149,7 @@ final class WebAgents: @unchecked Sendable {
             guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.id).first,
                   Date().timeIntervalSince(refused[browser.id] ?? .distantPast) > 60,
                   let windows = tabs(in: browser) else { continue }
-            for site in Self.sites {
+            for site in sites {
                 let showing = windows.filter { Self.isOn(site, $0.showing) }
                 guard !showing.isEmpty || windows.contains(where: { $0.all.contains { Self.isOn(site, $0) } }) else { continue }
                 let key = "\(browser.id) \(site.host)"
@@ -142,7 +169,7 @@ final class WebAgents: @unchecked Sendable {
                 workingSince = workingSince.filter { pages.contains($0.key) }
                 askingPages = askingPages.filter { pages.contains($0) }
                 let working = pages.contains { workingSince[$0].map { Date().timeIntervalSince($0) < Self.answering } ?? false }
-                found[key] = Agent(host: site.host, name: site.name, pid: app.processIdentifier, browser: browser.name,
+                found[key] = Agent(host: site.host, name: site.name, hat: site.hat, pid: app.processIdentifier, browser: browser.name,
                                    isWorking: working, needsYou: pages.contains { askingPages.contains($0) })
             }
         }

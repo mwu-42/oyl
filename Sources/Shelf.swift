@@ -96,7 +96,7 @@ final class Shelf: ObservableObject {
         labels = UserDefaults.standard.dictionary(forKey: Self.key("labels", source)) as? [String: String] ?? [:]
         if UserDefaults.standard.object(forKey: "shelf.renamingSince") == nil { UserDefaults.standard.set(Date(), forKey: "shelf.renamingSince") }
         renamingSince = UserDefaults.standard.object(forKey: "shelf.renamingSince") as? Date ?? Date()
-        if UserDefaults.standard.bool(forKey: Self.key("watching", source)) { watch(asking: false) }
+        if UserDefaults.standard.bool(forKey: Self.key("watching", source)), isOn { watch(asking: false) }
         refresh()
     }
 
@@ -107,9 +107,23 @@ final class Shelf: ObservableObject {
 
     private func key(_ name: String) -> String { Self.key(name, source) }
 
+    /// The shelf is in the Dock (it can be turned off).
+    var isOn: Bool { (source == .saved ? Feature.savedShelf : Feature.screenshotsShelf).isOn }
+
+    /// Turned off: its folders (and Photos) aren't watched, till it's back and opened again.
+    func stopWatching() {
+        watchers.forEach { $0.cancel() }
+        watchers = []
+        folders = []
+        photos?.stop()
+        photos = nil
+        scanning?.cancel()
+    }
+
     /// Watches its folders (again, if where screenshots go has changed), and for what's been saved,
     /// Photos too: asking to see it, if it hasn't yet, only once the shelf's opened (`asking`).
     func watch(asking: Bool = true) {
+        guard isOn else { return }
         UserDefaults.standard.set(true, forKey: key("watching"))
         if source == .saved {
             if photos == nil {
@@ -272,7 +286,7 @@ final class Shelf: ObservableObject {
 
     /// Off the main thread, in the background, one at a time.
     private func labelNext() {
-        guard labeling == nil, let item = unlabeled.first else { return }
+        guard labeling == nil, Feature.labelScreenshots.isOn, let item = unlabeled.first else { return }
         unlabeled.removeFirst()
         let url = item.url, movie = item.kind == .recording
         labeling = url

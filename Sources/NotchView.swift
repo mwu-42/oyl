@@ -34,6 +34,22 @@ struct NotchView: View {
             }
         }
         .contextMenu {
+            Text("\(Motto.name) · \(Motto.words)")
+            Divider()
+            // The app (or the site) in front, as an agent.
+            if let front = state.front {
+                let radar = AgentRadar.shared
+                if radar.knows(front.id), radar.isOn(front) {
+                    Button("Stop Watching \(front.name)") { radar.remove(front) }
+                } else {
+                    Button("Watch \(front.name) as an Agent") { radar.add(front) }
+                }
+                Divider()
+            }
+            Button("Settings…") {
+                state.page = .settings
+                state.isRevealing = true
+            }
             Toggle("Midnight Oyl", isOn: Binding { state.theme == .midnight } set: { state.theme = $0 ? .midnight : .standard })
             Toggle("Oyl's Dock", isOn: $state.showsDock)
             Divider()
@@ -170,7 +186,7 @@ struct ExpandedNotch: View {
             HStack(spacing: 0) {
                 if !state.isAlerting, agents.approvals.isEmpty {
                     PageTabs(page: $state.page, agent: agents.lead?.activity,
-                             skin: agents.lead.map { Oyl.pastel($0.skin) } ?? Oyl.white, mirror: state.showsMirrorTab)
+                             skin: agents.lead.map { Oyl.pastel($0.skin) } ?? Oyl.white, tabs: state.tabs)
                 }
                 Spacer(minLength: state.inFullscreen ? 16 : notch.width + 16)
                 if timers.ringing == nil {
@@ -192,7 +208,7 @@ struct ExpandedNotch: View {
                                 .notchSymbol(size: 11, weight: .semibold)
                                 .foregroundStyle(theme.tint(AwakePage.tint))
                         }
-                        if state.dictation.isAvailable { DictationToggle(dictation: state.dictation) }
+                        if state.dictation.isAvailable, Feature.wisprFlow.isOn { DictationToggle(dictation: state.dictation) }
                         GestureToggle(gestures: gestures)
                     }
                     .transition(.opacity)
@@ -236,6 +252,9 @@ struct ExpandedNotch: View {
                     case .mirror:
                         MirrorPage(gestures: gestures)
                             .transition(NotchView.swap)
+                    case .settings:
+                        SettingsPage(state: state)
+                            .transition(NotchView.swap)
                     }
                 }
             }
@@ -250,8 +269,8 @@ struct PageTabs: View {
     /// What the lead agent is doing, if any is running; its tab acts it out.
     let agent: AgentActivity?
     let skin: Color
-    /// The mirror's tab too.
-    let mirror: Bool
+    /// Those turned on, Oyl's first.
+    let tabs: [NotchPage]
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
@@ -264,11 +283,11 @@ struct PageTabs: View {
                     .frame(width: 36, height: 19)
                     .opacity(agent == nil && page != .agents ? 0.6 : 1)
             }
-            tab(.music, symbol: "music.note")
-            tab(.timers, symbol: "timer")
-            tab(.awake, symbol: AwakePage.symbol)
-            tab(.activity, symbol: "cpu")
-            if mirror { tab(.mirror, symbol: "camera.fill") }
+            if tabs.contains(.music) { tab(.music, symbol: "music.note") }
+            if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
+            if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
+            if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
+            if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }
         }
         .padding(2)
         // Midnight Oyl's is engraved: an outline, not a fill.

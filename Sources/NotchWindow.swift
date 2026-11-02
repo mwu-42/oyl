@@ -18,6 +18,16 @@ enum Layout {
     static let oylRowHeight: CGFloat = 34
     static let maxVisibleOyls = 4
     static let chatsFooterHeight: CGFloat = 26
+    // The settings page: its sections, then its settings two to a row, then the motto.
+    static let settingsChipsHeight: CGFloat = 22
+    static let settingsGap: CGFloat = 8
+    static let settingsRowHeight: CGFloat = 22
+    static let settingsRowsFit = 7
+    static let settingsMottoHeight: CGFloat = 26
+    static func settingsRows(_ rows: Int) -> CGFloat { CGFloat(rows) * settingsRowHeight }
+    static func settingsHeight(rows: Int) -> CGFloat {
+        6 + settingsChipsHeight + settingsGap + settingsRows(min(rows, settingsRowsFit)) + settingsMottoHeight + 12
+    }
     /// The Oyls tab's settings: the Oyls' row, the calendar's (Gargoyle's alone), then the look's.
     static func oylSettingsHeight(rows: Int) -> CGFloat { 22 * CGFloat(rows) }
     static let fullscreenStripHeight: CGFloat = 28       // the tabs' row, under the menu bar's band
@@ -55,6 +65,8 @@ enum NotchMode {
 
 enum NotchPage {
     case music, timers, awake, agents, activity, mirror
+    /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
+    case settings
 }
 
 struct NotchMetrics: Equatable {
@@ -133,6 +145,11 @@ final class NotchState: ObservableObject {
     /// How tall the timers' rows stand, and for how many: a long name wraps, so they're measured
     /// as they're laid out (see `TimersPage`).
     @Published var timerRowsMeasure: (count: Int, height: CGFloat)?
+    /// The settings' section showing.
+    @Published var settingsSection = SettingsSection.notch
+    /// What could be watched as an agent in the app in front (its tab's site, in a browser),
+    /// worked out as the pointer comes to the notch.
+    @Published var front: RadarAgent?
     @Published var inFullscreen = false  // a fullscreen app is in front
     /// The lyrics: under the song in the notch, and sung by the music Oyl on the menu bar, for
     /// every song that has some, until they're turned off (a song without any in between just
@@ -188,6 +205,10 @@ final class NotchState: ObservableObject {
     let power: PowerWatcher
     let bedtime: Bedtime
     let dictation: Dictation
+    /// Apps taking notes (Granola), each with an Oyl writing it down.
+    let notes = NoteTakers()
+    /// The hand gestures, for their settings. Set by the controller.
+    weak var gestures: GestureWatcher?
     /// Recent screenshots, and what's just been saved, and files kept on either to convert or drag out.
     let shelf = Shelf(.screenshots)
     let saved = Shelf(.saved)
@@ -207,8 +228,36 @@ final class NotchState: ObservableObject {
         self.dictation = dictation
         // The battery's Oyl is on the Oyls page, which redraws with this; dictating changes the
         // closed notch.
-        forwarding = Publishers.Merge(power.objectWillChange, dictation.objectWillChange)
+        forwarding = Publishers.Merge4(power.objectWillChange, dictation.objectWillChange, Features.shared.objectWillChange,
+                                       AgentRadar.shared.objectWillChange.merge(with: notes.objectWillChange))
             .sink { [weak self] _ in self?.objectWillChange.send() }
+        // A page turned off while it's showing: to Oyl's own.
+        pageSwitch = Features.shared.changed
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, !self.shows(self.page) else { return }
+                    self.page = .agents
+                }
+            }
+    }
+
+    private var pageSwitch: AnyCancellable?
+
+    /// The pages with tabs, in order: Oyl's own (always), then those turned on.
+    var tabs: [NotchPage] {
+        [.agents, .music, .timers, .awake, .activity, .mirror].filter(shows)
+    }
+
+    /// Whether `page` is one of the notch's now (settings always are, though tabless).
+    func shows(_ page: NotchPage) -> Bool {
+        switch page {
+        case .agents, .settings: return true
+        case .music: return Feature.musicPage.isOn
+        case .timers: return Feature.timersPage.isOn
+        case .awake: return Feature.awakePage.isOn
+        case .activity: return Feature.activityPage.isOn
+        case .mirror: return showsMirrorTab
+        }
     }
 
     /// A timer's gone off or it's two in the morning: the notch pops open to say so.
@@ -245,24 +294,26 @@ final class NotchState: ObservableObject {
     var isAnnouncing: Bool { isAlerting && !isHovering && agents.approvals.isEmpty }
 
     var compact: CompactLayout {
-        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening)
+        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn)
     }
 
     /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
     /// each timer and reminder, staying awake, a low battery, a late night, a selfie; or with
     /// none of those, just to hang out.
     var oylJobs: [Walker.Job] {
-        var jobs: [Walker.Job] = agents.working.map { .agent($0) }
-        if let track = nowPlaying.track, nowPlaying.isPlaying {
+        // Each kind turned off stays in.
+        var jobs: [Walker.Job] = Feature.agentOyls.isOn ? agents.working.map { .agent($0) } : []
+        if let track = nowPlaying.track, nowPlaying.isPlaying, Feature.musicOyl.isOn {
             let listening: OylDuty.Listening = track.isAudiobook ? .reading : showsLyrics && nowPlaying.lyrics != nil ? .singing : .dj
             jobs.append(.music(cover: nowPlaying.artwork, listening: listening))
         }
-        jobs += timers.timers.map { .timer($0) }
-        if let mode = awake.mode { jobs.append(.awake(mode)) }
-        if let status = power.status { jobs.append(.battery(status)) }
+        if Feature.timerOyls.isOn { jobs += timers.timers.map { .timer($0) } }
+        jobs += notes.taking.map { .notes($0) }
+        if let mode = awake.mode, Feature.awakeOyl.isOn { jobs.append(.awake(mode)) }
+        if let status = power.status, Feature.batteryOyl.isOn { jobs.append(.battery(status)) }
         if let stage = bedtime.stage { jobs.append(.bedtime(stage)) }
-        if let selfie { jobs.append(.selfie(selfie)) }
-        return jobs.isEmpty ? [.hangout] : jobs
+        if let selfie, Feature.selfieOyl.isOn { jobs.append(.selfie(selfie)) }
+        return jobs.isEmpty && Feature.hangoutOyl.isOn ? [.hangout] : jobs
     }
 
     /// Oyls whose work is done, as opposed to called off: agents that have finished, timers that
@@ -283,10 +334,13 @@ final class NotchState: ObservableObject {
 
     /// How many rows the Oyls page has: those, then timers that have gone off, and the calendar's.
     var oylRowCount: Int { oylRows.count + timers.history.count }
+    /// A line under the Oyls page: asking to read the Claude app's chats, or offering to watch an
+    /// app that seems to use AI.
+    var hasOylsFooter: Bool { agents.offersChats || !AgentRadar.shared.suggestions.isEmpty }
     /// Midnight Oyl has no calendar bar, so no row of its settings.
     var oylSettingsRows: Int { theme == .midnight ? 2 : 3 }
 
-    var expandedWidth: CGFloat { max(Layout.expandedWidth, metrics.size.width + 2 * Layout.tabsWing(tabs: showsMirrorTab ? 6 : 5)) }
+    var expandedWidth: CGFloat { max(Layout.expandedWidth, metrics.size.width + 2 * Layout.tabsWing(tabs: tabs.count)) }
 
     /// The open notch's width. A timer's alarm, which has no tabs to fit, pops out 15% smaller
     /// than the notch would be with every tab standard width (Oyl's is wider).
@@ -307,9 +361,11 @@ final class NotchState: ObservableObject {
         case .agents:
             // The settings go under them all.
             return Layout.oylsHeight(rows: oylRowCount) + Layout.oylSettingsHeight(rows: oylSettingsRows)
-                + (agents.offersChats ? Layout.chatsFooterHeight : 0)
+                + (hasOylsFooter ? Layout.chatsFooterHeight : 0)
         case .activity: return Layout.activityHeight
         case .mirror: return Layout.mirrorHeight
+        case .settings:
+            return Layout.settingsHeight(rows: (SettingsPage.items(settingsSection, state: self).count + 1) / 2)
         }
     }
 
@@ -373,7 +429,8 @@ final class NotchState: ObservableObject {
     var windowSize: CGSize {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
-                          Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight)
+                          Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
+                          Layout.settingsHeight(rows: Layout.settingsRowsFit))
         let size = CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
                           height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
         guard theme == .midnight else { return size }
@@ -515,6 +572,7 @@ final class NotchController {
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
+        state.gestures = gestures
         dock = DockController(state: state)
 
         let center = NotificationCenter.default
@@ -695,18 +753,19 @@ final class NotchController {
         // Oyl's off; three times, Oyl off, or back on.
         controlTaps = TapWatcher(.control, actions: [
             2: { [weak self] in
-                guard self?.state.isOff == false else { return }
+                guard self?.state.isOff == false, Feature.screenshotTaps.isOn else { return }
                 AreaScreenshot.take()
             },
             3: { [weak self] in
-                guard let self else { return }
+                // Turned off, the taps can still switch Oyl back on.
+                guard let self, self.state.isOff || Feature.offTaps.isOn else { return }
                 self.switchOff(!self.state.isOff)
             },
         ])
-        missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing) }
+        missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }
         // Control-Option and an arrow: the next song, or the one before, while there's one on.
         songKeys = SongKeys { [weak self] forward in
-            guard let self, !self.state.isOff, self.state.nowPlaying.player != nil else { return false }
+            guard let self, !self.state.isOff, Feature.songKeys.isOn, self.state.nowPlaying.player != nil else { return false }
             if forward { self.state.nowPlaying.next() } else { self.state.nowPlaying.previous() }
             return true
         }
@@ -773,6 +832,7 @@ final class NotchController {
         gestures.isSuspended = resting
         state.nowPlaying.resting = resting
         state.dictation.resting = resting
+        state.notes.resting = resting
         if resting { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
     }
 
@@ -810,7 +870,7 @@ final class NotchController {
     /// The closed notch pops out, as under the pointer, and back in; then `done`.
     private func blink(then done: @escaping @MainActor () -> Void = {}) {
         state.isPopped = true
-        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        Haptics.perform(.generic, performanceTime: .now)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -832,7 +892,7 @@ final class NotchController {
         let now = Date()
         switch job {
         case .hangout:
-            return "Just hanging out"
+            return "Just hanging out. Own your life!"
         case .agent(let session):
             return "\(session.project): \(session.summary)"
         case .music(_, .singing):
@@ -863,6 +923,8 @@ final class NotchController {
             return "Go to bed!"
         case .selfie:
             return "Nice selfie! Click to see it"
+        case .notes(let app):
+            return "Taking notes for \(app)…"
         }
     }
 
@@ -983,10 +1045,11 @@ final class NotchController {
         updatePassThrough(at: location)
         hoverWork?.cancel()
         if inside {
+            lookAtFront()
             // Like Atoll: the closed notch pops right away, then opens after a short rest.
             if state.mode != .expanded {
                 state.isPopped = true
-                NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+                Haptics.perform(.generic, performanceTime: .now)
             }
             // Back over a notch that hadn't closed yet.
             if state.isHovering { gestures.hovering = true }
@@ -996,6 +1059,20 @@ final class NotchController {
             // off as soon as it leaves.
             gestures.hovering = false
             schedule(after: 0.15) { [weak self] in self?.close() }
+        }
+    }
+
+    /// What's in front, to be offered as an agent on the notch's right-click and in the settings:
+    /// the app you were in (Oyl never takes its place), or in a browser, the site its tab's on.
+    private func lookAtFront() {
+        let app = NSWorkspace.shared.frontmostApplication
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let front = AgentRadar.front(app: app)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if self?.state.front != front { self?.state.front = front }
+                }
+            }
         }
     }
 
@@ -1009,13 +1086,16 @@ final class NotchController {
         guard pointerInside, !state.isHovering else { return }
         // Midnight Oyl held open on display is open already: the pointer's just passing over it.
         if !(state.isPinned && state.theme == .midnight) {
-            // Land on the page that has something to show.
-            if state.page == .music && state.nowPlaying.track == nil {
+            // Land on the page that has something to show (settings are only for when they're
+            // asked for).
+            if state.page == .settings || !state.shows(state.page) {
+                state.page = .agents
+            } else if state.page == .music && state.nowPlaying.track == nil && state.shows(.timers) {
                 state.page = .timers
-            } else if state.page == .timers && state.timers.timers.isEmpty && state.nowPlaying.track != nil {
+            } else if state.page == .timers && state.timers.timers.isEmpty && state.nowPlaying.track != nil && state.shows(.music) {
                 state.page = .music
             }
-            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+            Haptics.perform(.levelChange, performanceTime: .now)
         }
         state.isHovering = true
         // Opening the notch watches the camera for hand gestures, until an OK or the pointer leaves.
@@ -1036,10 +1116,10 @@ final class NotchController {
     /// it), for a few seconds, or for as long as the pointer then spends over it.
     private func reveal(_ job: Walker.Job) {
         switch job {
-        case .music:
+        case .music where state.shows(.music):
             state.page = .music
             state.pickedTimer = nil
-        case .timer(let timer):
+        case .timer(let timer) where state.shows(.timers):
             state.page = .timers
             state.pickedTimer = timer.id
         default:

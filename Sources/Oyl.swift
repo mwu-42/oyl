@@ -765,6 +765,9 @@ enum OylDuty: Equatable {
     case bedtime(BedtimeStage)
     /// Holding up the selfie just taken.
     case selfie(NSImage)
+    /// Taking notes on a meeting for an app (Granola) that's listening in: a notepad in one hand,
+    /// scribbling away with the other, looking up now and then at what's being said.
+    case notes(app: String)
 
     /// Its color for the job, if not white.
     func skin(at date: Date) -> Color? {
@@ -785,12 +788,17 @@ enum OylDuty: Equatable {
             return Color(red: 0.8 - 0.2 * full, green: 0.82 + 0.11 * full, blue: 0.86 - 0.18 * full)
         case .bedtime, .selfie:
             return nil
+        case .notes:
+            return Oyl.sage
         }
     }
 }
 
 extension Oyl {
     static let noteYellow = Color(red: 1, green: 0.86, blue: 0.36)
+    /// Taking notes: a sage Oyl, its notepad bound in green.
+    static let sage = Color(red: 0.8, green: 0.9, blue: 0.72)
+    static let notesGreen = Color(red: 0.42, green: 0.72, blue: 0.36)
     /// A timer's blue: clear of staying awake's sea green and Claude's orange.
     static let timerBlue = Color(red: 0.28, green: 0.56, blue: 1)
 
@@ -876,6 +884,10 @@ extension OylDrawing {
         case .selfie:
             pose.hands = (CGPoint(x: 31, y: 31), CGPoint(x: 37, y: 31))
             pose.look = CGPoint(x: 0, y: 0.35)  // at you, proud
+        case .notes:
+            // Its pad held up, scribbling away, and now and then looking up at what's being said.
+            pose.hands = (Self.padHand, pencil)
+            pose.look = Self.mix(CGPoint(x: 0.55, y: 0.7), CGPoint(x: 0.95, y: -0.2), listening)
         }
         let space = self.space
         let body = body(in: space, at: x, pose: pose)
@@ -911,6 +923,9 @@ extension OylDrawing {
         case .selfie(let image):
             polaroid(in: space, at: CGRect(x: 43, y: 3, width: 28, height: 33), image: image)
             sparkles(in: space)
+        case .notes:
+            notepad(in: body, writing: writing, pencil: pose.hands.1)
+            hearing(in: space)
         }
     }
 
@@ -935,6 +950,8 @@ extension OylDrawing {
             pose.lift -= 1.5  // dragging its feet
         case .bedtime?:
             pose.lid = 0.5
+        case .notes?:
+            pose.hands.0 = Self.padHand
         default:
             break
         }
@@ -972,6 +989,8 @@ extension OylDrawing {
             candle(in: body, hand: pose.hands.1)
         case .selfie(let image)?:
             polaroid(in: body, at: CGRect(x: pose.hands.1.x - 3, y: pose.hands.1.y - 13, width: 11, height: 13), image: image)
+        case .notes?:
+            notepad(in: body, writing: 2.6, pencil: nil)
         case .battery?, nil:
             break
         }
@@ -1070,6 +1089,83 @@ extension OylDrawing {
         hand.addLine(to: CGPoint(x: center.x + cos(angle) * length, y: center.y + sin(angle) * length))
         context.stroke(hand, with: .color(Self.ink), style: StrokeStyle(lineWidth: width, lineCap: .round))
         context.fill(Self.circle(center, width), with: .color(Self.ink))
+    }
+
+    // Notepad
+
+    /// Where it holds its notepad up, in front of it.
+    private static let padHand = CGPoint(x: 25, y: 35)
+    /// The pad tipped back a little, as it's held.
+    private static let padTilt = -8 * CGFloat.pi / 180
+    private static let padLines = 4
+
+    /// How much it's written on the page: a line at a time, then a fresh page (with a pause
+    /// while it looks up, every so often).
+    private var writing: Double {
+        (time * 0.85).truncatingRemainder(dividingBy: Double(Self.padLines) + 1.2)
+    }
+
+    /// 0...1, looking up from its notes at what's being said, every seven seconds or so.
+    private var listening: CGFloat {
+        Self.during(time.truncatingRemainder(dividingBy: 7.3), 4.6, 6.2, ease: 0.35)
+    }
+
+    /// A point on the pad (from its top left, as written on), where it is in its 40 × 44 box.
+    private static func onPad(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: padHand.x + point.x * cos(padTilt) - point.y * sin(padTilt),
+                y: padHand.y + point.x * sin(padTilt) + point.y * cos(padTilt))
+    }
+
+    /// Where its pencil is: along the line it's on, wobbling as it writes.
+    private var pencil: CGPoint {
+        let line = min(Int(writing), Self.padLines - 1)
+        let along = Double(line) < writing.rounded(.down) ? 1 : writing - Double(line)
+        let width = line == Self.padLines - 1 ? 6.5 : 9.5
+        let tip = Self.onPad(CGPoint(x: -0.2 + 1.8 + width * along, y: -13 + 4.8 + CGFloat(line) * 2.8 + 0.8 * sin(time * 31)))
+        return CGPoint(x: tip.x + 2.4, y: tip.y + 3.6 * (1 - listening))
+    }
+
+    /// The notepad held up, bound in green, its lines written in as it goes; and with `pencil`,
+    /// the pencil in its other hand.
+    private func notepad(in context: GraphicsContext, writing: Double, pencil: CGPoint?) {
+        var pad = context
+        pad.translateBy(x: Self.padHand.x, y: Self.padHand.y)
+        pad.rotate(by: .radians(Self.padTilt))
+        let sheet = CGRect(x: -2, y: -13, width: 13.5, height: 16)
+        pad.fill(Path(roundedRect: sheet, cornerRadius: 1.5), with: .color(Self.paper))
+        pad.fill(Path(roundedRect: CGRect(x: sheet.minX, y: sheet.minY, width: sheet.width, height: 2.8), cornerRadius: 1.2),
+                 with: .color(Oyl.notesGreen))
+        for row in 0..<Self.padLines {
+            let filled = min(max(writing - Double(row), 0), 1)
+            guard filled > 0 else { continue }
+            let width = (row == Self.padLines - 1 ? 6.5 : 9.5) * filled
+            pad.fill(Path(CGRect(x: sheet.minX + 1.8, y: sheet.minY + 4.8 + CGFloat(row) * 2.8, width: width, height: 0.9)),
+                     with: .color(Color(white: 0.38)))
+        }
+        guard let pencil else { return }
+        // Held in its hand, its point on the paper (lifted while it listens).
+        let tip = CGPoint(x: pencil.x - 2.4, y: pencil.y - 3.6)
+        var stick = Path()
+        stick.move(to: CGPoint(x: pencil.x + 1.6, y: pencil.y + 1.8))
+        stick.addLine(to: tip)
+        context.stroke(stick, with: .color(Oyl.noteYellow), style: StrokeStyle(lineWidth: 1.7, lineCap: .round))
+        context.fill(Path(ellipseIn: CGRect(x: tip.x - 0.8, y: tip.y - 0.8, width: 1.6, height: 1.6)), with: .color(Color(white: 0.25)))
+    }
+
+    /// What's being said, coming in from the right: rings of sound spreading its way, one after
+    /// another.
+    private func hearing(in context: GraphicsContext) {
+        let center = CGPoint(x: 88, y: 24)
+        for ring in 0..<3 {
+            let phase = CGFloat((time / 1.8 + Double(ring) / 3).truncatingRemainder(dividingBy: 1))
+            let radius = 3 + 11 * phase
+            var arc = Path()
+            arc.addArc(center: center, radius: radius, startAngle: .degrees(140), endAngle: .degrees(220), clockwise: false)
+            context.stroke(arc, with: .color(.white.opacity(0.75 * Double(sin(phase * .pi)))),
+                           style: StrokeStyle(lineWidth: 1.6, lineCap: .round))
+        }
+        context.fill(Path(ellipseIn: CGRect(x: center.x - 1.6, y: center.y - 1.6, width: 3.2, height: 3.2)),
+                     with: .color(.white.opacity(0.5)))
     }
 
     // Sticky note
@@ -1319,9 +1415,10 @@ extension OylDrawing {
 }
 
 extension AgentSession {
-    /// Its Oyl's hat: Claude's orange always; Muse's black while it's at work; else none.
+    /// Its Oyl's hat: Claude's orange always; another agent's own color (or Muse's black) while
+    /// it's at work; else none.
     var cap: Color? {
         if isClaude { return Oyl.hatOrange }
-        return activity == .idle || activity == .done ? nil : Oyl.museBlack
+        return activity == .idle || activity == .done ? nil : hat ?? Oyl.museBlack
     }
 }

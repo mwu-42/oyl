@@ -19,7 +19,7 @@ struct MusicPage: View {
 
                     VStack(alignment: .leading, spacing: 0) {
                         // The song's name: a click shows it in the player it's playing in.
-                        Button(action: nowPlaying.showPlayer) {
+                        Button { if Feature.songTitleOpensPlayer.isOn { nowPlaying.showPlayer() } } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(track.title)
                                     .notchFont(size: 14, weight: .semibold)
@@ -32,7 +32,7 @@ struct MusicPage: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(PressableStyle())
-                        .help(nowPlaying.player.map { "Open \($0.name)" } ?? "")
+                        .help(Feature.songTitleOpensPlayer.isOn ? nowPlaying.player.map { "Open \($0.name)" } ?? "" : "")
                         SpectrumCurve(spectrum: nowPlaying.spectrum, color: theme.tint(nowPlaying.accent),
                                       engraved: theme == .midnight, palette: nowPlaying.palette)
                             .frame(maxWidth: .infinity)
@@ -431,7 +431,7 @@ final class ArtworkGestures: ObservableObject {
         let step = Int((volume * 10).rounded())
         if step != volumeStep {
             // A tick every 10%, a firmer one at the ends.
-            NSHapticFeedbackManager.defaultPerformer.perform(step == 0 || step == 10 ? .levelChange : .alignment,
+            Haptics.perform(step == 0 || step == 10 ? .levelChange : .alignment,
                                                              performanceTime: .now)
             volumeStep = step
         }
@@ -441,7 +441,7 @@ final class ArtworkGestures: ObservableObject {
     private func skip(forward: Bool) {
         guard let nowPlaying else { return }
         if forward { nowPlaying.next() } else { nowPlaying.previous() }
-        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
+        Haptics.perform(.levelChange, performanceTime: .now)
         show(forward ? "forward.fill" : "backward.fill")
     }
 

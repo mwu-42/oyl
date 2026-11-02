@@ -40,6 +40,14 @@ final class SavedPhotos: NSObject, PHPhotoLibraryChangeObserver {
         }
     }
 
+    /// Stops looking at the library.
+    func stop() {
+        looking?.cancel()
+        guard observing else { return }
+        observing = false
+        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+    }
+
     private func begin() {
         if !observing {
             observing = true
@@ -152,7 +160,7 @@ final class SavedPhotos: NSObject, PHPhotoLibraryChangeObserver {
                 if error == nil {
                     lock.withLock { made.append((url, added)) }
                 } else {
-                    try? files.removeItem(at: url)
+                    try? FileManager.default.removeItem(at: url)
                 }
                 group.leave()
             }
