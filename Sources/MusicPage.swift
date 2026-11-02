@@ -4,6 +4,9 @@ struct MusicPage: View {
     @ObservedObject var nowPlaying: NowPlaying
     @ObservedObject var state: NotchState
     let hands: GestureWatcher
+    /// 0...1 while the surfer's being dragged along the wave.
+    @StateObject private var scrub = LocalState<Double?>(nil)
+    @Environment(\.notchTheme) private var theme
 
     var body: some View {
         if let track = nowPlaying.track {
@@ -15,22 +18,29 @@ struct MusicPage: View {
                     }
 
                     VStack(alignment: .leading, spacing: 0) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(track.title)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.white)
-                            Text(track.artist.isEmpty ? track.album : track.artist)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.white.opacity(0.55))
+                        // The song's name: a click shows it in the player it's playing in.
+                        Button(action: nowPlaying.showPlayer) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(track.title)
+                                    .notchFont(size: 14, weight: .semibold)
+                                    .foregroundStyle(.white)
+                                Text(track.artist.isEmpty ? track.album : track.artist)
+                                    .notchFont(size: 12)
+                                    .foregroundStyle(.white.opacity(0.55))
+                            }
+                            .lineLimit(1)
+                            .contentShape(Rectangle())
                         }
-                        .lineLimit(1)
-                        SpectrumCurve(spectrum: nowPlaying.spectrum, color: nowPlaying.accent)
+                        .buttonStyle(PressableStyle())
+                        .help(nowPlaying.player.map { "Open \($0.name)" } ?? "")
+                        SpectrumCurve(spectrum: nowPlaying.spectrum, color: theme.tint(nowPlaying.accent),
+                                      engraved: theme == .midnight, palette: nowPlaying.palette)
                             .frame(maxWidth: .infinity)
                             .frame(height: 36)
-                            .overlay { SurfingOyl(spectrum: nowPlaying.spectrum, nowPlaying: nowPlaying) }
+                            .overlay { SurfingOyl(spectrum: nowPlaying.spectrum, nowPlaying: nowPlaying, hands: hands, scrub: scrub) }
                             .padding(.top, 6)
                         Spacer(minLength: 0)
-                        ProgressRow(nowPlaying: nowPlaying, hands: hands)
+                        ProgressRow(nowPlaying: nowPlaying, hands: hands, scrub: scrub)
                     }
                     .frame(height: Layout.artSize)
                 }
@@ -45,14 +55,14 @@ struct MusicPage: View {
         } else {
             VStack(spacing: 4) {
                 Image(systemName: "music.note")
-                    .font(.system(size: 20, weight: .medium))
+                    .notchSymbol(size: 20, weight: .medium)
                     .foregroundStyle(.white.opacity(0.3))
                     .padding(.bottom, 2)
                 Text("Nothing playing")
-                    .font(.system(size: 13, weight: .semibold))
+                    .notchFont(size: 13, weight: .semibold)
                     .foregroundStyle(.white.opacity(0.7))
                 Text("Play something in Music or Spotify")
-                    .font(.system(size: 11))
+                    .notchFont(size: 11)
                     .foregroundStyle(.white.opacity(0.4))
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -66,7 +76,7 @@ struct MusicPage: View {
         if nowPlaying.lyrics != nil {
             Button(action: state.toggleLyrics) {
                 Image(systemName: state.showsLyrics ? "chevron.compact.up" : "chevron.compact.down")
-                    .font(.system(size: 13, weight: .semibold))
+                    .notchSymbol(size: 13, weight: .semibold)
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(width: Layout.artSize, height: 14)
                     .contentShape(Rectangle())
@@ -77,35 +87,67 @@ struct MusicPage: View {
     }
 }
 
-/// Oyl riding the visualizer's wave on a surfboard, bobbing up and down with the song and
-/// tipping with the slope, drifting a little back and forth.
-/// Oyl riding the visualizer's wave, as far along it as the song is along.
+/// Oyl riding the visualizer's wave on a surfboard, as far along it as the song is along,
+/// bobbing up and down with the song and tipping with the slope; in Midnight Oyl, a bright star
+/// on the wave's crest, in its galaxy (`SurfingStar`). It's the song's scrubber: click the wave
+/// or drag Oyl along it, and the song goes there once you let go. A pinch on the camera that's
+/// scrubbing moves it too.
 private struct SurfingOyl: View {
     let spectrum: AudioSpectrum
     let nowPlaying: NowPlaying
+    let hands: GestureWatcher
+    @ObservedObject var scrub: LocalState<Double?>
+    @Environment(\.notchTheme) private var theme
 
     private static let size = CGSize(width: 60, height: 30)
+    /// How far in from each end it rides, so it's all on the wave.
+    private static let ends = 0.05
 
     var body: some View {
         GeometryReader { geometry in
             TimelineView(.animation(minimumInterval: 1.0 / 15)) { context in
                 let curve = spectrum.frames.value.curve
                 let duration = nowPlaying.track?.duration ?? 0
-                let progress = duration > 0 ? nowPlaying.position(at: context.date) / duration : 0
-                // Kept a little in from the ends, so it's all on the wave.
-                let along = 0.05 + 0.9 * min(max(progress, 0), 1)
+                let elapsed = ProgressRow.elapsed(nowPlaying, at: context.date, scrub: scrub.value, hands: hands)
+                let progress = duration > 0 ? elapsed / duration : 0
+                let along = Self.ends + (1 - 2 * Self.ends) * min(max(progress, 0), 1)
                 let (height, slope) = Self.wave(curve, at: along)
                 // The curve's top there, measured as the visualizer draws it.
                 let inset: CGFloat = 1.5
                 let top = geometry.size.height - inset - (geometry.size.height - 2 * inset) * height
                 let rise = slope * (geometry.size.height - 2 * inset) / max(geometry.size.width, 1)
-                Oyl(surfing: true)
-                    .frame(width: Self.size.width, height: Self.size.height)
-                    .rotationEffect(.radians(-atan(rise) * 0.8), anchor: .bottom)
-                    .position(x: along * geometry.size.width, y: top - Self.size.height / 2 + 2)
+                if theme == .midnight {
+                    SurfingStar(time: context.date.timeIntervalSinceReferenceDate, beat: CGFloat(max(Beat.level - 0.3, 0) / 0.7),
+                                color: nowPlaying.palette.first ?? nowPlaying.accent)
+                        .frame(width: SurfingStar.side, height: SurfingStar.side)
+                        .position(x: along * geometry.size.width, y: top + 1)
+                } else {
+                    Oyl(surfing: true)
+                        .frame(width: Self.size.width, height: Self.size.height)
+                        .rotationEffect(.radians(-atan(rise) * 0.8), anchor: .bottom)
+                        .position(x: along * geometry.size.width, y: top - Self.size.height / 2 + 2)
+                }
             }
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        // Radio streams have no duration to scrub.
+                        guard (nowPlaying.track?.duration ?? 0) > 0 else { return }
+                        scrub.value = Self.progress(at: value.location.x, width: geometry.size.width)
+                    }
+                    .onEnded { value in
+                        let duration = nowPlaying.track?.duration ?? 0
+                        if duration > 0 { nowPlaying.seek(to: Self.progress(at: value.location.x, width: geometry.size.width) * duration) }
+                        scrub.value = nil
+                    }
+            )
         }
-        .allowsHitTesting(false)
+    }
+
+    /// How far into the song (0...1) a point `x` along the wave stands for.
+    private static func progress(at x: CGFloat, width: CGFloat) -> Double {
+        min(max((Double(x / max(width, 1)) - ends) / (1 - 2 * ends), 0), 1)
     }
 
     /// The curve's value (0...1) at `along` (0...1 across), and its slope there.
@@ -119,6 +161,60 @@ private struct SurfingOyl: View {
     }
 }
 
+/// Midnight Oyl's surfer: a bright four-pointed star on the wave's crest, in its galaxy. Its four
+/// long fine arms reach out on the beat and turn a little, twinkling, shorter fainter ones between;
+/// a halo and a fringe of the cover's color are round it, and it sheds star dust behind it as it goes.
+struct SurfingStar: View {
+    static let side: CGFloat = 44
+    let time: TimeInterval
+    /// 0...1, as the beat's felt.
+    let beat: CGFloat
+    let color: NSColor
+
+    var body: some View {
+        Canvas { canvas, size in
+            let c = CGPoint(x: size.width / 2, y: size.height / 2), tone = Tone.pale(Color(nsColor: color))
+            let twinkle = CGFloat(0.92 + 0.08 * sin(time * 5.3) * sin(time * 2.1))
+            let reach = (15 + 6 * beat) * twinkle
+            canvas.fill(MoylDrawing.circle(c, reach * 0.7),
+                        with: .radialGradient(Gradient(colors: [tone.color(0.5), tone.color(0)]), center: c, startRadius: 0, endRadius: reach * 0.7))
+            // The dust shed behind it, drifting back and up, fading.
+            for mote in 0..<6 {
+                let age = (time * 0.7 + Double(mote) / 6).truncatingRemainder(dividingBy: 1), gone = CGFloat(age)
+                let spot = CGPoint(x: c.x - 3 - gone * 17, y: c.y - gone * 5 + CGFloat(sin(Double(mote) * 2.4 + time * 1.3)) * 2.5)
+                canvas.fill(MoylDrawing.circle(spot, 0.3 + 0.7 * (1 - gone)), with: .color(tone.mix(.white, 0.6).color(0.75 * (1 - age))))
+            }
+            var arms = canvas
+            arms.translateBy(x: c.x, y: c.y)
+            arms.rotate(by: .radians(sin(time * 0.7) * 0.12))
+            arms.fill(Self.arms(reach * 0.4, width: 0.5, turned: .pi / 4), with: .color(Midnight.white.opacity(0.55)))
+            arms.fill(Self.arms(reach + 1.5, width: 1.7), with: .color(tone.color(0.55)))
+            arms.fill(Self.arms(reach, width: 0.95), with: .color(Midnight.white))
+            MoylDrawing.star(in: arms, at: .zero, size: 4.5 + beat, tone: .white)
+            canvas.fill(MoylDrawing.circle(c, 4 + beat),
+                        with: .radialGradient(Gradient(colors: [Midnight.white.opacity(0.9), Midnight.white.opacity(0)]), center: c,
+                                              startRadius: 0, endRadius: 4 + beat))
+            canvas.fill(MoylDrawing.circle(c, 1.6 + 0.5 * beat), with: .color(Midnight.white))
+        }
+    }
+
+    /// Four arms `length` long from the middle, `width` across there and tapering to points,
+    /// straight up, down and across (or `turned`).
+    private static func arms(_ length: CGFloat, width: CGFloat, turned: Double = 0) -> Path {
+        var path = Path()
+        for quarter in 0..<4 {
+            let angle = turned + Double(quarter) * .pi / 2
+            let along = CGPoint(x: cos(angle) * length, y: sin(angle) * length)
+            let across = CGPoint(x: -sin(angle) * width, y: cos(angle) * width)
+            path.move(to: CGPoint(x: across.x, y: across.y))
+            path.addLine(to: along)
+            path.addLine(to: CGPoint(x: -across.x, y: -across.y))
+            path.closeSubpath()
+        }
+        return path
+    }
+}
+
 /// The album cover is the whole control: click to play or pause, swipe left for the next track
 /// (like flicking the cover away) and right for the previous one, pull down or up for volume.
 /// Works with click-and-drag and with two-finger trackpad swipes. It also shows the volume
@@ -127,16 +223,18 @@ struct ArtworkControl: View {
     @ObservedObject var nowPlaying: NowPlaying
     let hands: GestureWatcher
     @StateObject private var gestures = ArtworkGestures()
+    @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        let accent = Color(nsColor: nowPlaying.accent)
+        let accent = theme.tint(Color(nsColor: nowPlaying.accent))
+        let midnight = theme == .midnight
 
         ArtworkView(image: nowPlaying.artwork, cornerRadius: 11)
             .frame(width: Layout.artSize, height: Layout.artSize)
             .overlay {
                 if let flash = gestures.flash {
                     Image(systemName: flash.symbol)
-                        .font(.system(size: 24, weight: .bold))
+                        .notchSymbol(size: 24, weight: .bold)
                         .foregroundStyle(.white)
                         .frame(width: 52, height: 52)
                         .background(Circle().fill(.black.opacity(0.5)))
@@ -146,7 +244,7 @@ struct ArtworkControl: View {
             }
             .overlay(alignment: .bottom) {
                 if gestures.showsVolume {
-                    VolumeReadout(volume: nowPlaying.volume)
+                    VolumeReadout(output: nowPlaying.output)
                         .padding(8)
                         .transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
                 }
@@ -155,7 +253,15 @@ struct ArtworkControl: View {
             .onReceive(hands.$isTurning.removeDuplicates()) { gestures.showVolume(while: $0) }
             .scaleEffect(gestures.isActive ? 0.96 : (nowPlaying.isPlaying ? 1 : 0.9))
             .opacity(nowPlaying.isPlaying || gestures.isActive ? 1 : 0.75)
-            .shadow(color: accent.opacity(nowPlaying.isPlaying ? 0.45 : 0), radius: 14)
+            // Midnight Oyl's: a faint cast, not a glow, and a hairline frame as on a plate.
+            .shadow(color: accent.opacity(nowPlaying.isPlaying ? (midnight ? 0.18 : 0.45) : 0), radius: 14)
+            .overlay {
+                if midnight {
+                    RoundedRectangle(cornerRadius: 13.5, style: .continuous)
+                        .stroke(Midnight.silver.opacity(0.5), lineWidth: 0.6)
+                        .padding(-2.5)
+                }
+            }
             .offset(gestures.offset)
             .animation(.spring(response: 0.4, dampingFraction: 0.7), value: nowPlaying.isPlaying)
             // Tight while held (sticky), loose and bouncy on release (the magnetic snap back).
@@ -270,7 +376,7 @@ final class ArtworkGestures: ObservableObject {
         case .vertical:
             offset = CGSize(width: 0, height: Self.pullNudge * tanh(scrollTravel.height / 60))
             // Scrolling moves the volume directly: about 300 points for the full range.
-            changeVolume(to: nowPlaying.volume - Double(input.fingerDelta.height) / 300)
+            changeVolume(to: nowPlaying.output.volume - Double(input.fingerDelta.height) / 300)
         case nil:
             break
         }
@@ -297,7 +403,9 @@ final class ArtworkGestures: ObservableObject {
         hideVolume?.cancel()
         hideVolume = nil
         showsVolume = true
-        volumeStep = nowPlaying.map { Int(($0.volume * 10).rounded()) }
+        // From where it really is: the volume keys may have moved it since.
+        nowPlaying?.output.refresh()
+        volumeStep = nowPlaying.map { Int(($0.output.volume * 10).rounded()) }
         guard rateDriven, volumeTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.applyPull() }
@@ -313,13 +421,13 @@ final class ArtworkGestures: ObservableObject {
         let deflection = max(abs(pull) - Self.deadZone, 0) / (1 - Self.deadZone)
         guard deflection > 0 else { return }
         let speed = Self.fullSpeed * pow(deflection, 1.5)
-        changeVolume(to: nowPlaying.volume + (pull > 0 ? -speed : speed) / 30)
+        changeVolume(to: nowPlaying.output.volume + (pull > 0 ? -speed : speed) / 30)
     }
 
     private func changeVolume(to target: Double) {
         guard let nowPlaying else { return }
         let volume = min(max(target, 0), 1)
-        guard volume != nowPlaying.volume else { return }
+        guard volume != nowPlaying.output.volume else { return }
         let step = Int((volume * 10).rounded())
         if step != volumeStep {
             // A tick every 10%, a firmer one at the ends.
@@ -327,7 +435,7 @@ final class ArtworkGestures: ObservableObject {
                                                              performanceTime: .now)
             volumeStep = step
         }
-        nowPlaying.setVolume(volume)
+        nowPlaying.output.set(volume)
     }
 
     private func skip(forward: Bool) {
@@ -447,13 +555,15 @@ final class ScrollReaderView: NSView {
     }
 }
 
+/// The Mac's volume, while it's being turned.
 private struct VolumeReadout: View {
-    let volume: Double
+    @ObservedObject var output: SystemVolume
 
     var body: some View {
+        let volume = output.volume
         HStack(spacing: 6) {
             Image(systemName: volume < 0.01 ? "speaker.slash.fill" : volume < 0.5 ? "speaker.wave.1.fill" : "speaker.wave.3.fill")
-                .font(.system(size: 9, weight: .bold))
+                .notchSymbol(size: 9, weight: .bold)
                 .frame(width: 14, alignment: .leading)
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
@@ -470,35 +580,35 @@ private struct VolumeReadout: View {
     }
 }
 
+/// The time gone and the time left, under the wave (the surfer on it is the scrubber).
 struct ProgressRow: View {
     @ObservedObject var nowPlaying: NowPlaying
-    /// A pinch dragged sideways on the camera scrubs too; the bar shows where it'll land.
+    /// A pinch dragged sideways on the camera scrubs too; the times show where it'll land.
     @ObservedObject var hands: GestureWatcher
-    @StateObject private var scrub = LocalState<Double?>(nil)  // 0...1 while the bar is being dragged
+    /// Where the surfer's being dragged to, if it is.
+    @ObservedObject var scrub: LocalState<Double?>
 
     var body: some View {
         let duration = nowPlaying.track?.duration ?? 0
         TimelineView(.periodic(from: .now, by: 0.5)) { context in
-            let playing = nowPlaying.position(at: context.date)
-            let elapsed = scrub.value.map { $0 * duration }
-                ?? hands.scrubOffset.map { min(max(playing + $0, 0), duration) } ?? playing
+            let elapsed = Self.elapsed(nowPlaying, at: context.date, scrub: scrub.value, hands: hands)
             HStack(spacing: 8) {
                 Text(Self.format(elapsed))
-                    .frame(width: 36, alignment: .leading)
-                ScrubBar(fraction: duration > 0 ? elapsed / duration : 0,
-                         onChanged: { scrub.value = $0 },
-                         onEnded: { fraction in
-                             nowPlaying.seek(to: fraction * duration)
-                             scrub.value = nil
-                         })
+                Spacer(minLength: 8)
                 Text("-" + Self.format(max(duration - elapsed, 0)))
-                    .frame(width: 40, alignment: .trailing)
             }
-            .font(.system(size: 10.5, weight: .medium).monospacedDigit())
+            .notchFont(size: 10.5, weight: .medium, digits: true)
             .foregroundStyle(.white.opacity(0.55))
         }
         // Radio streams have no duration.
         .opacity(duration > 0 ? 1 : 0)
+    }
+
+    /// How far into the song it is, in seconds: where it's being scrubbed to, if it is (`scrub`,
+    /// 0...1, by the surfer, or a pinch on the camera), else where it's playing.
+    static func elapsed(_ nowPlaying: NowPlaying, at date: Date, scrub: Double?, hands: GestureWatcher) -> Double {
+        let duration = nowPlaying.track?.duration ?? 0, playing = nowPlaying.position(at: date)
+        return scrub.map { $0 * duration } ?? hands.scrubOffset.map { min(max(playing + $0, 0), duration) } ?? playing
     }
 
     static func format(_ seconds: Double) -> String {

@@ -3,7 +3,7 @@ import Combine
 import CoreAudio
 import Foundation
 
-/// One analysis frame; every value is 0...1.
+/// One analysis frame; every level is 0...1.
 struct SpectrumFrame: Sendable {
     static let barCount = 4
     static let curveCount = 48
@@ -11,6 +11,7 @@ struct SpectrumFrame: Sendable {
     var bars: [Float]   // closed notch: bass, low mids, high mids, treble
     var curve: [Float]  // open notch: log-spaced spectrum, 40 Hz to 16 kHz
     var hold: [Float]   // slower-falling outline of `curve`
+    var pulse: Pulse?   // the beat, once there's a steady one
 
     static let silent = SpectrumFrame(bars: .init(repeating: 0, count: barCount),
                                       curve: .init(repeating: 0, count: curveCount),
@@ -52,9 +53,18 @@ final class AudioSpectrum: ObservableObject {
         }
     }
 
+    /// Nothing that shows it can be seen (the lid's shut): the tap's off till it's back.
+    var resting = false {
+        didSet {
+            guard resting != oldValue else { return }
+            engine.follow(resting ? nil : player?.bundleID)
+            if resting { startDecay() } else { changedAt = Self.now }
+        }
+    }
+
     /// Taps `player` while it's playing; pass nil to stop.
     func follow(_ player: Player?) {
-        engine.follow(player?.bundleID)
+        engine.follow(resting ? nil : player?.bundleID)
         guard player != self.player else { return }
         self.player = player
         changedAt = Self.now
@@ -83,6 +93,8 @@ final class AudioSpectrum: ObservableObject {
         step(toward: frame, at: now, time: easing(at: now))
         frames.send(shown)
         Beat.level = shown.bars[0]
+        Beat.bars = shown.bars
+        Beat.pulse = frame.pulse
     }
 
     /// Runs until the shown frame has fallen to rest, or the analyzer takes over again.
@@ -105,6 +117,8 @@ final class AudioSpectrum: ObservableObject {
         }
         frames.send(shown)
         Beat.level = shown.bars[0]
+        Beat.bars = shown.bars
+        Beat.pulse = nil
     }
 
     private func easing(at now: TimeInterval) -> TimeInterval {
@@ -178,7 +192,7 @@ private final class TapEngine: @unchecked Sendable {
     }
 }
 
-private enum AudioProcess {
+enum AudioProcess {
     /// Core Audio process objects whose bundle ID starts with `bundleID`, so helpers count too.
     static func objects(matching bundleID: String) -> [AudioObjectID] {
         let system = AudioObjectID(kAudioObjectSystemObject)
@@ -190,6 +204,16 @@ private enum AudioProcess {
         var objects = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
         guard AudioObjectGetPropertyData(system, &address, 0, nil, &size, &objects) == noErr else { return [] }
         return objects.filter { self.bundleID(of: $0)?.hasPrefix(bundleID) == true }.sorted()
+    }
+
+    /// Whether it has the microphone (or any input) open.
+    static func isTakingInput(_ object: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningInput,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        var running: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        return AudioObjectGetPropertyData(object, &address, 0, nil, &size, &running) == noErr && running != 0
     }
 
     private static func bundleID(of object: AudioObjectID) -> String? {
@@ -295,6 +319,7 @@ private final class SpectrumAnalyzer: @unchecked Sendable {
     private var barPeaks = [Float](repeating: -120, count: SpectrumFrame.barCount)
     private var curvePeak: Float = -40
     private var frame = SpectrumFrame.silent
+    private var beats: BeatTracker
 
     init(sampleRate: Double, publish: @escaping @Sendable (SpectrumFrame, Bool) -> Void) {
         setup = vDSP_create_fftsetup(Self.log2n, FFTRadix(kFFTRadix2))!
@@ -314,6 +339,7 @@ private final class SpectrumAnalyzer: @unchecked Sendable {
             Float(4.5 * log2(sqrt(edge(Double(index)) * edge(Double(index) + 1)) / 1000))
         }
         hop = max(Self.fftSize / 2, Int(sampleRate / 30))
+        beats = BeatTracker(sampleRate: sampleRate)
         self.publish = publish
         samples.reserveCapacity(Self.fftSize * 2)
     }
@@ -347,6 +373,8 @@ private final class SpectrumAnalyzer: @unchecked Sendable {
             let scale = 1 / Float(channelCount)
             for index in start..<samples.count { samples[index] *= scale }
         }
+        // The beat goes out with the next frame.
+        frame.pulse = beats.listen(to: samples[start...], at: Date().timeIntervalSinceReferenceDate)
 
         // Keep the latest window and analyze it every `hop` new samples (windows overlap).
         if samples.count > Self.fftSize { samples.removeFirst(samples.count - Self.fftSize) }

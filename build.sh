@@ -7,8 +7,10 @@ cd "$(dirname "$0")"
 
 APP=build/Oyl.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/Info.plist"
+# Drawn by Icon/make.sh.
+cp Icon/Oyl.icns "$APP/Contents/Resources/Oyl.icns"
 
 swiftc -O -swift-version 5 -parse-as-library \
     -target "$(uname -m)-apple-macos14.2" \

@@ -1,3 +1,4 @@
+import ServiceManagement
 import SwiftUI
 
 struct NotchView: View {
@@ -20,21 +21,47 @@ struct NotchView: View {
     static let swap = AnyTransition(.blurReplace).animation(.interactiveSpring(dampingFraction: 1.2))
 
     var body: some View {
-        let mode = state.mode
+        // In Midnight Oyl, open is the bloom, over the notch, which stays as it is closed. (With
+        // the lid shut, there's no bloom either.)
+        ZStack(alignment: .top) {
+            notch(state.isBlooming ? state.closedMode : state.mode)
+            if state.isBlooming && !state.isResting {
+                MidnightNotch(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
+                              bedtime: bedtime, gestures: gestures, stats: stats)
+                    .frame(width: state.bloomSize.width, height: state.bloomSize.height, alignment: .top)
+                    // It blooms by itself as it comes, and wilts as it goes.
+                    .transition(MidnightNotch.transition)
+            }
+        }
+        .contextMenu {
+            Toggle("Midnight Oyl", isOn: Binding { state.theme == .midnight } set: { state.theme = $0 ? .midnight : .standard })
+            Toggle("Oyl's Dock", isOn: $state.showsDock)
+            Divider()
+            Button("Quit Oyl") { Quitting.quit(awake) }
+            Button("Turn Off Oyl") { Quitting.turnOff(awake) }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        // The pages both looks share set their type and accents by it.
+        .environment(\.notchTheme, state.theme)
+    }
+
+    /// Oyl's own notch: black, flared into the menu bar at the top, rounded at the bottom.
+    private func notch(_ mode: NotchMode) -> some View {
         let size = state.size(for: mode)
         let topRadius = NotchState.topRadius(mode)
         let lifted = mode == .expanded || state.isPopped
 
-        // Content is laid out at its final size and revealed by the growing clip shape.
-        ZStack(alignment: .top) {
-            switch mode {
+        // Content is laid out at its final size and revealed by the growing clip shape. With the
+        // lid shut, there's none (so none of it animates for no one).
+        return ZStack(alignment: .top) {
+            switch state.isResting ? .idle : mode {
             case .expanded:
                 ExpandedNotch(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
                               bedtime: bedtime, gestures: gestures, stats: stats)
                     .transition(Self.swap)
             case .compact:
                 CompactNotch(layout: state.compact, size: size, notchWidth: state.metrics.size.width,
-                             nowPlaying: nowPlaying)
+                             dictation: state.dictation)
                     .transition(Self.swap)
             case .idle:
                 EmptyView()
@@ -46,16 +73,13 @@ struct NotchView: View {
         // Shadow only while lifted (popped or open).
         .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? (mode == .expanded ? 14 : 6) : 0, y: lifted ? 4 : 0)
         .opacity(mode == .idle && !state.isPopped ? 0 : 1)
-        .contextMenu {
-            Button("Quit Oyl") { NSApp.terminate(nil) }
-        }
         // Innermost wins when several change at once: opening/closing beats the pop.
         .animation(mode == .expanded ? (state.isAnnouncing ? Self.announce : Self.open) : Self.close, value: mode)
         .animation(Self.pop, value: state.isPopped)
         .animation(Self.open, value: size)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
+
 
 /// Flat top with flared corners that blend into the menu bar, rounded bottom corners.
 struct NotchShape: Shape {
@@ -97,37 +121,20 @@ struct CompactNotch: View {
     let layout: CompactLayout
     let size: CGSize
     let notchWidth: CGFloat
-    @ObservedObject var nowPlaying: NowPlaying
+    let dictation: Dictation
 
     var body: some View {
         HStack(spacing: 0) {
-            HStack(spacing: CompactLayout.gap) {
-                if layout.showsMusic {
-                    ArtworkView(image: nowPlaying.artwork, cornerRadius: layout.art * 0.21)
-                        .frame(width: layout.art, height: layout.art)
-                }
-                if let timer = layout.timer {
-                    Countdown(timer: timer) { _, left in
-                        TimerRing(fraction: left, lineWidth: 2.5, color: timer.tint(fractionLeft: left))
-                    }
-                    .frame(width: CompactLayout.ringSize, height: CompactLayout.ringSize)
-                }
+            if layout.dictating {
+                Image(systemName: "mic.fill")
+                    .notchSymbol(size: layout.art * 0.55, weight: .semibold)
+                    .foregroundStyle(Dictation.tint)
+                    .frame(width: layout.art, height: layout.art)
             }
             Spacer(minLength: notchWidth)
-            HStack(spacing: CompactLayout.gap) {
-                if layout.showsMusic {
-                    SpectrumBars(spectrum: nowPlaying.spectrum, isPlaying: nowPlaying.isPlaying,
-                                 color: nowPlaying.accent, barWidth: 2.5, height: layout.art * 0.65)
-                        .frame(width: layout.art)
-                }
-                if let timer = layout.timer {
-                    Countdown(timer: timer) { remaining, left in
-                        Text(ReminderTimer.format(remaining))
-                            .font(.system(size: 14, weight: .semibold, design: .rounded).monospacedDigit())
-                            .foregroundStyle(timer.tint(fractionLeft: left))
-                    }
-                    .frame(width: layout.countdownWidth, alignment: .trailing)
-                }
+            if layout.dictating {
+                VoiceBars(dictation: dictation, barWidth: 2.5, height: layout.art * 0.65)
+                    .frame(width: layout.art)
             }
         }
         .padding(.horizontal, layout.inset)
@@ -146,6 +153,7 @@ struct ExpandedNotch: View {
     @ObservedObject var bedtime: Bedtime
     let gestures: GestureWatcher
     let stats: SystemStats
+    @Environment(\.notchTheme) private var theme
 
     var body: some View {
         let notch = state.metrics.size
@@ -161,28 +169,30 @@ struct ExpandedNotch: View {
             // awake indicator (unless their own page is showing), then the hand gestures toggle.
             HStack(spacing: 0) {
                 if !state.isAlerting, agents.approvals.isEmpty {
-                    PageTabs(page: $state.page, awake: awake.isActive, agent: agents.lead?.activity,
-                             skin: agents.lead.map { Oyl.pastel($0.skin) } ?? Oyl.white)
+                    PageTabs(page: $state.page, agent: agents.lead?.activity,
+                             skin: agents.lead.map { Oyl.pastel($0.skin) } ?? Oyl.white, mirror: state.showsMirrorTab)
                 }
                 Spacer(minLength: state.inFullscreen ? 16 : notch.width + 16)
                 if timers.ringing == nil {
                     HStack(spacing: 6) {
                         if state.page != .timers, let next = timers.next {
                             Countdown(timer: next) { remaining, left in
+                                let tint = next.tint(fractionLeft: left, theme: theme)
                                 HStack(spacing: 5) {
-                                    TimerRing(fraction: left, lineWidth: 2, color: next.tint(fractionLeft: left))
+                                    TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2, color: tint)
                                         .frame(width: 13, height: 13)
                                     Text(ReminderTimer.format(remaining))
-                                        .font(.system(size: 12, weight: .semibold, design: .rounded).monospacedDigit())
-                                        .foregroundStyle(next.tint(fractionLeft: left))
+                                        .notchFont(size: 12, weight: .semibold, design: .rounded, digits: true)
+                                        .foregroundStyle(tint)
                                 }
                             }
                         }
                         if state.page != .awake, awake.isActive {
                             Image(systemName: AwakePage.symbol)
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(AwakePage.tint)
+                                .notchSymbol(size: 11, weight: .semibold)
+                                .foregroundStyle(theme.tint(AwakePage.tint))
                         }
+                        if state.dictation.isAvailable { DictationToggle(dictation: state.dictation) }
                         GestureToggle(gestures: gestures)
                     }
                     .transition(.opacity)
@@ -218,10 +228,13 @@ struct ExpandedNotch: View {
                             .transition(NotchView.swap)
                     case .agents:
                         OylsPage(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
-                                 calendar: state.calendar, bedtime: bedtime)
+                                 bedtime: bedtime)
                             .transition(NotchView.swap)
                     case .activity:
                         ActivityPage(stats: stats)
+                            .transition(NotchView.swap)
+                    case .mirror:
+                        MirrorPage(gestures: gestures)
                             .transition(NotchView.swap)
                     }
                 }
@@ -234,14 +247,18 @@ struct ExpandedNotch: View {
 
 struct PageTabs: View {
     @Binding var page: NotchPage
-    let awake: Bool
     /// What the lead agent is doing, if any is running; its tab acts it out.
     let agent: AgentActivity?
     let skin: Color
+    /// The mirror's tab too.
+    let mirror: Bool
+    @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        HStack(spacing: 2) {
-            // Oyl's own tab, first, wide enough to see what he's up to.
+        let midnight = theme == .midnight
+        return HStack(spacing: 2) {
+            // Oyl's own tab, first, wide enough to see what he's up to; in Midnight Oyl, his moyl,
+            // turning as the lead agent works.
             tab(.agents, width: Layout.oylsTabWidth) {
                 Oyl(activity: agent ?? .idle, hat: agent != nil, skin: skin)
                     .frame(width: 36, height: 19)
@@ -249,19 +266,23 @@ struct PageTabs: View {
             }
             tab(.music, symbol: "music.note")
             tab(.timers, symbol: "timer")
-            tab(.awake, symbol: AwakePage.symbol, lit: awake ? AwakePage.tint : nil)
-            tab(.activity, symbol: "cpu", lit: ActivityPage.tint.opacity(0.8))
+            tab(.awake, symbol: AwakePage.symbol)
+            tab(.activity, symbol: "cpu")
+            if mirror { tab(.mirror, symbol: "camera.fill") }
         }
         .padding(2)
-        .background(Capsule().fill(.white.opacity(0.08)))
+        // Midnight Oyl's is engraved: an outline, not a fill.
+        .background(Capsule().fill(.white.opacity(midnight ? 0 : 0.08)))
+        .overlay(Capsule().strokeBorder(Midnight.silver.opacity(midnight ? 0.22 : 0), lineWidth: 0.5))
     }
 
-    /// `lit` tints an unselected tab: cyan while the Mac is kept awake, green for Activity.
-    private func tab(_ target: NotchPage, symbol: String, lit: Color? = nil) -> some View {
+    /// All alike, unselected; staying awake has its own indicator at the other end of the strip.
+    private func tab(_ target: NotchPage, symbol: String) -> some View {
         tab(target) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(page == target ? Color.black : lit ?? Color.white.opacity(0.6))
+                .notchSymbol(size: 11, weight: .semibold)
+                .foregroundStyle(page == target ? (theme == .midnight ? Midnight.white : Color.black)
+                                 : Color.white.opacity(theme == .midnight ? 0.55 : 0.6))
         }
     }
 
@@ -272,11 +293,20 @@ struct PageTabs: View {
         } label: {
             icon()
                 .frame(width: width, height: 20)
-                // White Oyl would vanish on the usual white highlight.
-                .background(Capsule().fill(.white.opacity(page == target ? (target == .agents ? 0.25 : 0.9) : 0)))
+                // White Oyl would vanish on the usual white highlight. Midnight Oyl's is an
+                // outline round a faint fill, so the icon stays white.
+                .background(Capsule().fill(selection(target)))
+                .overlay(Capsule().strokeBorder(Midnight.silver.opacity(theme == .midnight && page == target ? 0.7 : 0),
+                                                lineWidth: 0.75))
                 .contentShape(Capsule())
         }
         .buttonStyle(PressableStyle())
+    }
+
+    private func selection(_ target: NotchPage) -> Color {
+        guard page == target else { return .clear }
+        if theme == .midnight { return Midnight.silver.opacity(0.14) }
+        return .white.opacity(target == .agents ? 0.25 : 0.9)
     }
 }
 
@@ -284,6 +314,49 @@ struct PageTabs: View {
 
 /// Top right of the open notch: turns hand gestures on and off. It pulses while the camera
 /// watches, and shows each gesture as it's acted on (a pinch for as long as it's held).
+/// Wispr Flow's hands-free dictation, on and off: orange, pulsing, while it's listening (however
+/// it was started).
+struct DictationToggle: View {
+    @ObservedObject var dictation: Dictation
+
+    var body: some View {
+        Button(action: dictation.toggle) {
+            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
+                .foregroundStyle(dictation.isListening ? Dictation.tint : .white.opacity(0.55))
+                .symbolEffect(.pulse, isActive: dictation.isListening)
+                .notchSymbol(size: 12, weight: .semibold)
+                .frame(width: 16, height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .help(dictation.isListening ? "Stop Wispr Flow" : "Dictate with Wispr Flow")
+    }
+}
+
+/// Your voice while Wispr Flow takes it down: bars rising and falling with it, each a little
+/// differently, or without the microphone, swaying gently on their own.
+struct VoiceBars: View {
+    let dictation: Dictation
+    var barWidth: CGFloat = 3
+    var height: CGFloat = 16
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            let level = CGFloat(dictation.level ?? Float(0.35 + 0.15 * sin(time * 2.4)))
+            HStack(alignment: .center, spacing: barWidth * 0.7) {
+                ForEach(0..<4, id: \.self) { bar in
+                    let sway = 0.55 + 0.45 * sin(time * (6 + 1.7 * Double(bar)) + 1.3 * Double(bar))
+                    Capsule()
+                        .fill(Dictation.tint)
+                        .frame(width: barWidth, height: max(barWidth, height * min(level * CGFloat(sway) * 1.3, 1)))
+                }
+            }
+        }
+        .frame(width: barWidth * (4 + 3 * 0.7), height: height)
+    }
+}
+
 struct GestureToggle: View {
     @ObservedObject var gestures: GestureWatcher
 
@@ -317,7 +390,7 @@ struct GestureToggle: View {
                         .foregroundStyle(.white.opacity(0.35))
                 }
             }
-            .font(.system(size: 12, weight: .semibold))
+            .notchFont(size: 12, weight: .semibold)
             .frame(width: 16, height: 18)
             .contentShape(Rectangle())
         }
@@ -347,7 +420,7 @@ struct ArtworkView: View {
                                startPoint: .topLeading, endPoint: .bottomTrailing)
                 GeometryReader { geometry in
                     Image(systemName: "music.note")
-                        .font(.system(size: geometry.size.width * 0.42, weight: .medium))
+                        .notchSymbol(size: geometry.size.width * 0.42, weight: .medium)
                         .foregroundStyle(.white.opacity(0.45))
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -367,45 +440,25 @@ struct PressableStyle: ButtonStyle {
     }
 }
 
-/// Thin capsule slider for the seek bar; thickens while dragged.
-struct ScrubBar: View {
-    let fraction: Double
-    let onChanged: (Double) -> Void
-    let onEnded: (Double) -> Void
-    @StateObject private var dragging = LocalState(false)
+/// Stands in for `@State`: the Command Line Tools SDK ships SwiftUI's `@State` macro without
+/// its compiler plugin, so `@State` doesn't build outside Xcode.
+/// Quitting Oyl, for now or for good.
+@MainActor
+enum Quitting {
+    /// Quits, ending any keep-awake (it opens again at login).
+    static func quit(_ awake: AwakeManager) {
+        awake.stop()
+        NSApp.terminate(nil)
+    }
 
-    var body: some View {
-        GeometryReader { geometry in
-            let fraction = min(max(fraction, 0), 1)
-            let position = { (x: CGFloat) in min(max(x / geometry.size.width, 0), 1) }
-            ZStack(alignment: .leading) {
-                Capsule().fill(.white.opacity(0.18))
-                Capsule()
-                    .fill(.white.opacity(dragging.value ? 1 : 0.85))
-                    .frame(width: geometry.size.width * fraction)
-            }
-            .frame(height: dragging.value ? 7 : 5)
-            .frame(maxHeight: .infinity)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        dragging.value = true
-                        onChanged(position(value.location.x))
-                    }
-                    .onEnded { value in
-                        onEnded(position(value.location.x))
-                        dragging.value = false
-                    }
-            )
-            .animation(.easeOut(duration: 0.15), value: dragging.value)
-        }
-        .frame(height: 14)
+    /// Off altogether: quits, and leaves Login Items till it's opened again by hand (which puts it
+    /// back).
+    static func turnOff(_ awake: AwakeManager) {
+        try? SMAppService.mainApp.unregister()
+        quit(awake)
     }
 }
 
-/// Stands in for `@State`: the Command Line Tools SDK ships SwiftUI's `@State` macro without
-/// its compiler plugin, so `@State` doesn't build outside Xcode.
 final class LocalState<Value>: ObservableObject {
     @Published var value: Value
 

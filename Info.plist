@@ -6,6 +6,8 @@
 	<string>en</string>
 	<key>CFBundleExecutable</key>
 	<string>Oyl</string>
+	<key>CFBundleIconFile</key>
+	<string>Oyl</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.nott</string>
 	<key>CFBundleInfoDictionaryVersion</key>
@@ -30,8 +32,18 @@
 	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
 	<key>NSCalendarsUsageDescription</key>
 	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>While Wispr Flow takes down what you say, Oyl shows your voice in the notch. It only listens then, and keeps nothing.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Oyl watches for hand gestures while your pointer is over the open notch.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Oyl keeps your latest screenshots, and what you've saved there from Messages and elsewhere, on its shelves, to drag into other apps, and saves files it converts beside the originals.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Oyl saves files it converts beside the originals.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Oyl's Recently Saved shelf shows what you've just saved to Downloads, to drag into other apps, and Oyl saves files it converts beside the originals.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Oyl's Recently Saved shelf shows the photos and videos you've saved from Messages and other apps, to drag into other apps.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Oyl reads the current song from Music and Spotify and controls playback.</string>
 	<key>NSHighResolutionCapable</key>

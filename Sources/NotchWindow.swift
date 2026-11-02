@@ -8,15 +8,18 @@ enum Layout {
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
     static let activityHeight: CGFloat = 148
+    static let mirrorSize = CGSize(width: 240, height: 180)  // the camera's 4:3, about the size it's taken at
+    static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
     static let awakeHeight: CGFloat = 124
     static let alertHeight: CGFloat = 72
     static let approvalHeight: CGFloat = 84
     static let timerRowHeight: CGFloat = 30
-    static let maxVisibleTimers = 3
+    static let maxVisibleTimers = 3                      // at least; as many as fit (see `timerRowsFit`)
     static let oylRowHeight: CGFloat = 34
     static let maxVisibleOyls = 4
     static let chatsFooterHeight: CGFloat = 26
-    static let oylSettingsHeight: CGFloat = 24
+    /// The Oyls tab's settings: the Oyls' row, the calendar's (Gargoyle's alone), then the look's.
+    static func oylSettingsHeight(rows: Int) -> CGFloat { 22 * CGFloat(rows) }
     static let fullscreenStripHeight: CGFloat = 28       // the tabs' row, under the menu bar's band
     static let popGrowth: CGFloat = 8                    // how far the closed notch pops on hover
     static let shadowPadding: CGFloat = 30
@@ -24,14 +27,15 @@ enum Layout {
     static let tabWidth: CGFloat = 26
     static let oylsTabWidth: CGFloat = 38                // wider, for Oyl
 
-    /// What the page tabs need left of the hardware notch: padding, the tabs, then a gap.
-    static var tabsWing: CGFloat {
-        let count = CGFloat(NotchPage.allCases.count)
+    /// What `count` page tabs need left of the hardware notch: padding, the tabs, then a gap.
+    static func tabsWing(tabs count: Int) -> CGFloat {
+        let count = CGFloat(count)
         return stripPadding + (count - 1) * tabWidth + oylsTabWidth + (count - 1) * 2 + 4 + 8
     }
 
-    static func timersHeight(rows: Int) -> CGFloat {
-        let visible = min(rows, maxVisibleTimers)
+    /// With up to `fit` rows showing; past that, they scroll.
+    static func timersHeight(rows: Int, fit: Int) -> CGFloat {
+        let visible = min(rows, fit)
         let list = visible == 0 ? 20 : CGFloat(visible) * timerRowHeight + CGFloat(visible - 1) * 4
         return 6 + 28 + 10 + list + 16
     }
@@ -48,20 +52,27 @@ enum NotchMode {
     case expanded  // pages, shown while the pointer is over the notch (or a timer is ringing)
 }
 
-enum NotchPage: CaseIterable {
-    case music, timers, awake, agents, activity
+enum NotchPage {
+    case music, timers, awake, agents, activity, mirror
 }
 
 struct NotchMetrics: Equatable {
     var size: CGSize
     var centerX: CGFloat
     var hasNotch: Bool
+    /// From the top of the screen down to the Dock (or the bottom), for the open notch to grow into.
+    var room: CGFloat
+    /// The screen's width, which Midnight Oyl's bloom has to fit in.
+    var screenWidth: CGFloat
 
-    static let fallback = NotchMetrics(size: CGSize(width: 185, height: 32), centerX: 0, hasNotch: false)
+    static let fallback = NotchMetrics(size: CGSize(width: 185, height: 32), centerX: 0, hasNotch: false, room: 600,
+                                       screenWidth: 1440)
 
     @MainActor
     init(screen: NSScreen) {
         let frame = screen.frame
+        room = frame.maxY - screen.visibleFrame.minY
+        screenWidth = frame.width
         if screen.safeAreaInsets.top > 0, let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea {
             let width = frame.width - left.width - right.width
             size = CGSize(width: width, height: screen.safeAreaInsets.top)
@@ -76,48 +87,32 @@ struct NotchMetrics: Equatable {
         }
     }
 
-    private init(size: CGSize, centerX: CGFloat, hasNotch: Bool) {
+    private init(size: CGSize, centerX: CGFloat, hasNotch: Bool, room: CGFloat, screenWidth: CGFloat) {
         self.size = size
         self.centerX = centerX
         self.hasNotch = hasNotch
+        self.room = room
+        self.screenWidth = screenWidth
     }
 }
 
-/// What the closed notch shows on each side, and how wide each side needs to be. Music puts
-/// artwork left and bars right; a timer adds a ring left and its countdown right, like iOS.
-/// (Oyls are out on the menu bar; see `WalkerOverlay`.)
+/// What the closed notch shows on each side, and how wide each side needs to be: while Wispr Flow
+/// takes down what you say, a microphone left and your voice right. (The song, timers, agents and
+/// the rest are Oyls out on the menu bar; see `WalkerOverlay`.)
 struct CompactLayout {
-    static let ringSize: CGFloat = 18
-    static let gap: CGFloat = 8
-
-    let showsMusic: Bool
-    let timer: ReminderTimer?
+    let dictating: Bool
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, showsMusic: Bool, timer: ReminderTimer?) {
-        self.showsMusic = showsMusic
-        self.timer = timer
+    init(notchHeight: CGFloat, dictating: Bool) {
+        self.dictating = dictating
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    let countdownWidth: CGFloat = 46  // "59:59", or "72:00" for hours and minutes
+    var isEmpty: Bool { !dictating }
 
-    var isEmpty: Bool { !showsMusic && timer == nil }
-
-    var wing: CGFloat {
-        var left: CGFloat = 0, right: CGFloat = 0
-        if showsMusic {
-            left += art
-            right += art
-        }
-        if timer != nil {
-            left += (left > 0 ? Self.gap : 0) + Self.ringSize
-            right += (right > 0 ? Self.gap : 0) + countdownWidth
-        }
-        return inset + max(left, right) + 10
-    }
+    var wing: CGFloat { inset + (isEmpty ? 0 : art) + 10 }
 }
 
 @MainActor
@@ -127,20 +122,58 @@ final class NotchState: ObservableObject {
     @Published var isPopped = false     // pointer resting on the closed notch
     @Published var isEditing = false    // a text field has the keyboard
     @Published var isHeld = false       // a menu is open, so stay open
+    @Published var isRevealing = false  // opened by a click on an Oyl, for a moment
+    @Published var isResting = false    // the lid's shut with no other screen, or Oyl's off: nothing's drawn
+    @Published var isOff = false        // switched off by three taps of control, till three more
+    @Published var isViewingDesktops = false  // Mission Control's up: the top of the screen is its
+    /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
+    @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
     @Published var inFullscreen = false  // a fullscreen app is in front
-    @Published var showsLyrics = false {  // under the song, when it has some
-        didSet { if !showsLyrics { singing = false } }  // and its singer goes with them
+    /// The lyrics: under the song in the notch, and sung by the music Oyl on the menu bar, for
+    /// every song that has some, until they're turned off (a song without any in between just
+    /// shows none). Remembered across launches.
+    @Published var showsLyrics = UserDefaults.standard.bool(forKey: "music.lyrics") {
+        didSet { UserDefaults.standard.set(showsLyrics, forKey: "music.lyrics") }
     }
-    @Published var singing = false       // an Oyl on the menu bar singing the lyrics
     @Published var selfie: Selfie?       // just taken: its Oyl holds it up for a bit
     /// Oyls (and the calendar bar) on the menu bar at all.
     @Published var oylsVisible = UserDefaults.standard.object(forKey: "oyls.visible") as? Bool ?? true {
         didSet { UserDefaults.standard.set(oylsVisible, forKey: "oyls.visible") }
     }
-    /// The menu bar goes 80% black behind the Oyls while the pointer's on it.
+    /// The menu bar goes 80% black behind the Oyls, fullscreen app or not.
     @Published var dimsMenuBar = UserDefaults.standard.bool(forKey: "oyls.dimsMenuBar") {
         didSet { UserDefaults.standard.set(dimsMenuBar, forKey: "oyls.dimsMenuBar") }
+    }
+    /// The calendar bar, right of the notch.
+    @Published var showsCalendar = UserDefaults.standard.object(forKey: "oyls.calendar") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showsCalendar, forKey: "oyls.calendar") }
+    }
+    /// The look: Oyl's own, or Midnight Oyl (see `Midnight`). Remembered.
+    @Published var theme = NotchTheme(rawValue: UserDefaults.standard.string(forKey: "notch.theme") ?? "") ?? .standard {
+        didSet {
+            UserDefaults.standard.set(theme.rawValue, forKey: "notch.theme")
+            if theme != .midnight { isPinned = false }
+            // Midnight Oyl has no camera page: it shows the hands, always, and no picture.
+            if theme == .midnight, page == .mirror { page = .music }
+        }
+    }
+    /// Oyl's own Dock along the bottom, over the macOS Dock (see `DockController`).
+    @Published var showsDock = UserDefaults.standard.object(forKey: "dock.shown") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showsDock, forKey: "dock.shown") }
+    }
+    /// Midnight Oyl held open, to be looked at (its moon clicked), till it's clicked again.
+    @Published var isPinned = false
+    /// The mirror's tab, a camera preview, among the notch's pages.
+    @Published var showsMirror = UserDefaults.standard.object(forKey: "notch.mirror") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(showsMirror, forKey: "notch.mirror")
+            if !showsMirror, page == .mirror { page = .agents }
+        }
+    }
+    /// The Oyls' countdowns beside them, all the time; off, only in their last three minutes.
+    @Published var showsCountdowns = UserDefaults.standard.object(forKey: "oyls.countdowns") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showsCountdowns, forKey: "oyls.countdowns") }
     }
 
     let nowPlaying: NowPlaying
@@ -150,12 +183,16 @@ final class NotchState: ObservableObject {
     let calendar: DayCalendar
     let power: PowerWatcher
     let bedtime: Bedtime
+    let dictation: Dictation
+    /// Recent screenshots, and what's just been saved, and files kept on either to convert or drag out.
+    let shelf = Shelf(.screenshots)
+    let saved = Shelf(.saved)
     /// Gives the keyboard back to the app you were using. Set by the controller.
     var resignKeyboard: () -> Void = {}
     private var forwarding: AnyCancellable?
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor, calendar: DayCalendar,
-         power: PowerWatcher, bedtime: Bedtime) {
+         power: PowerWatcher, bedtime: Bedtime, dictation: Dictation) {
         self.nowPlaying = nowPlaying
         self.timers = timers
         self.awake = awake
@@ -163,35 +200,58 @@ final class NotchState: ObservableObject {
         self.calendar = calendar
         self.power = power
         self.bedtime = bedtime
-        // The battery's Oyl is on the Oyls page, which redraws with this.
-        forwarding = power.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        self.dictation = dictation
+        // The battery's Oyl is on the Oyls page, which redraws with this; dictating changes the
+        // closed notch.
+        forwarding = Publishers.Merge(power.objectWillChange, dictation.objectWillChange)
+            .sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     /// A timer's gone off or it's two in the morning: the notch pops open to say so.
     var isAlerting: Bool { timers.ringing != nil || bedtime.reminding }
 
     var mode: NotchMode {
-        if !agents.approvals.isEmpty || isAlerting || isHovering || isEditing || isHeld { return .expanded }
-        return compact.isEmpty ? .idle : .compact
+        if !agents.approvals.isEmpty || isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
+        // Midnight Oyl pinned open, on display (but not over Mission Control's desktops).
+        if isPinned && theme == .midnight && !isViewingDesktops { return .expanded }
+        return closedMode
+    }
+
+    /// What the notch is when it isn't open.
+    var closedMode: NotchMode { compact.isEmpty ? .idle : .compact }
+
+    /// Open in Midnight Oyl: bloomed far down the screen, in place of the black open notch.
+    var isBlooming: Bool { theme == .midnight && mode == .expanded }
+
+    /// Midnight Oyl's band: the screen's whole width, edge to edge over the menu bar (the panel's
+    /// centered on the notch, which is the screen's middle), and as deep as it ever goes, or as
+    /// the screen has room for.
+    var bloomSize: CGSize {
+        CGSize(width: metrics.screenWidth, height: min(Midnight.bandDepth, metrics.room - 20))
+    }
+
+    /// How far down Midnight Oyl's band reaches for what it's showing, in points from the top of
+    /// the screen: the page, and some sky under it, so a short page makes a shallow band and a
+    /// tall one a deep one. Never past `bloomSize`.
+    var bloomReach: CGFloat {
+        min(max(headerHeight + contentHeight + Midnight.sky, Midnight.shallowest), bloomSize.height)
     }
 
     /// Open for a timer that's done (or bedtime), rather than for the pointer.
     var isAnnouncing: Bool { isAlerting && !isHovering && agents.approvals.isEmpty }
 
     var compact: CompactLayout {
-        CompactLayout(notchHeight: metrics.size.height,
-                      showsMusic: nowPlaying.track != nil && nowPlaying.isPlaying,
-                      timer: timers.next)
+        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening)
     }
 
-    /// What Oyls are out on the menu bar for: each agent at work, the song (and singing it),
+    /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
     /// each timer and reminder, staying awake, a low battery, a late night, a selfie; or with
     /// none of those, just to hang out.
     var oylJobs: [Walker.Job] {
         var jobs: [Walker.Job] = agents.working.map { .agent($0) }
-        if nowPlaying.track != nil && nowPlaying.isPlaying {
-            jobs.append(.music)
-            if singing && nowPlaying.lyrics != nil { jobs.append(.singer) }
+        if let track = nowPlaying.track, nowPlaying.isPlaying {
+            let listening: OylDuty.Listening = track.isAudiobook ? .reading : showsLyrics && nowPlaying.lyrics != nil ? .singing : .dj
+            jobs.append(.music(cover: nowPlaying.artwork, listening: listening))
         }
         jobs += timers.timers.map { .timer($0) }
         if let mode = awake.mode { jobs.append(.awake(mode)) }
@@ -217,7 +277,12 @@ final class NotchState: ObservableObject {
         return oylJobs + agents.sessions.filter { !working.contains($0.id) }.map { .agent($0) }
     }
 
-    var expandedWidth: CGFloat { max(Layout.expandedWidth, metrics.size.width + 2 * Layout.tabsWing) }
+    /// How many rows the Oyls page has: those, then timers that have gone off, and the calendar's.
+    var oylRowCount: Int { oylRows.count + timers.history.count }
+    /// Midnight Oyl has no calendar bar, so no row of its settings.
+    var oylSettingsRows: Int { theme == .midnight ? 2 : 3 }
+
+    var expandedWidth: CGFloat { max(Layout.expandedWidth, metrics.size.width + 2 * Layout.tabsWing(tabs: showsMirrorTab ? 6 : 5)) }
 
     /// The open notch's width. A timer's alarm, which has no tabs to fit, pops out 15% smaller
     /// than the notch would be with every tab standard width (Oyl's is wider).
@@ -233,13 +298,14 @@ final class NotchState: ObservableObject {
         if isAlerting { return Layout.alertHeight }
         switch page {
         case .music: return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil ? Layout.lyricsHeight : 0)
-        case .timers: return Layout.timersHeight(rows: timers.timers.count)
+        case .timers: return Layout.timersHeight(rows: timers.timers.count, fit: timerRowsFit)
         case .awake: return Layout.awakeHeight
         case .agents:
-            // The calendar's Oyl has a row too, and the settings go under them all.
-            return Layout.oylsHeight(rows: oylRows.count + 1) + Layout.oylSettingsHeight
+            // The settings go under them all.
+            return Layout.oylsHeight(rows: oylRowCount) + Layout.oylSettingsHeight(rows: oylSettingsRows)
                 + (agents.offersChats ? Layout.chatsFooterHeight : 0)
         case .activity: return Layout.activityHeight
+        case .mirror: return Layout.mirrorHeight
         }
     }
 
@@ -253,6 +319,7 @@ final class NotchState: ObservableObject {
         case .compact:
             return CGSize(width: notch.width + 2 * compact.wing + pop, height: notch.height + pop)
         case .expanded:
+            if theme == .midnight { return bloomSize }
             return CGSize(width: openWidth, height: headerHeight + contentHeight)
         }
     }
@@ -280,12 +347,26 @@ final class NotchState: ObservableObject {
         }
     }
 
+    /// How many timers the Timers page shows before the rest scroll: as many as there's room for
+    /// between the notch and the Dock, and three at least. In Midnight Oyl's band, which is kept
+    /// shallow, just the three.
+    var timerRowsFit: Int {
+        if theme == .midnight { return Layout.maxVisibleTimers }
+        let around = headerHeight + Layout.timersHeight(rows: 0, fit: 0) - 20 + Layout.shadowPadding + 12
+        return max(Layout.maxVisibleTimers, Int((metrics.room - around + 4) / (Layout.timerRowHeight + 4)))
+    }
+
     var windowSize: CGSize {
-        let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight,
-                          Layout.timersHeight(rows: Layout.maxVisibleTimers),
-                          Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight + Layout.chatsFooterHeight)
-        return CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
-                      height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
+        let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
+                          Layout.timersHeight(rows: max(timers.timers.count, Layout.maxVisibleTimers), fit: timerRowsFit),
+                          Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight)
+        let size = CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
+                          height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
+        guard theme == .midnight else { return size }
+        // The band, the screen's width, and the room under it for what spills past its foot.
+        let bloom = bloomSize
+        return CGSize(width: max(size.width, bloom.width + 2 * Midnight.overflow.side),
+                      height: max(size.height, bloom.height + max(Layout.shadowPadding, Midnight.overflow.below)))
     }
 }
 
@@ -300,6 +381,7 @@ final class NotchPanel: NSPanel {
         hasShadow = false
         isMovable = false
         hidesOnDeactivate = false
+        canHide = false
         isReleasedWhenClosed = false
         animationBehavior = .none
         ignoresMouseEvents = true
@@ -355,10 +437,18 @@ final class NotchController {
     private let state: NotchState
     private let gestures: GestureWatcher
     private let walkers = WalkerOverlay()
+    private var dock: DockController?
+    private var controlTaps: TapWatcher?
+    private var songKeys: SongKeys?
+    private var missionControl: MissionControl?
+    /// The lid's shut with no other screen on.
+    private var isShut = false
     private let stats = SystemStats()
     private var screen: NSScreen?
     private var pointerInside = false
     private var hoverWork: DispatchWorkItem?
+    private var revealWork: DispatchWorkItem?
+    private var shrinking: DispatchWorkItem?
     private var monitors: [Any] = []
     private var cancellables = Set<AnyCancellable>()
     /// Things Oyls are to say once the open notch is out of the way (gestures are made over it).
@@ -366,7 +456,7 @@ final class NotchController {
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor) {
         state = NotchState(nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents, calendar: DayCalendar(),
-                           power: PowerWatcher(), bedtime: Bedtime())
+                           power: PowerWatcher(), bedtime: Bedtime(), dictation: Dictation())
         gestures = GestureWatcher()
 
         let hostingView = NotchHostingView(rootView: NotchView(state: state, nowPlaying: nowPlaying, timers: timers,
@@ -374,9 +464,18 @@ final class NotchController {
                                                                gestures: gestures, stats: stats))
         hostingView.sizingOptions = []
         panel.contentView = hostingView
+        // The Oyls' settings before any are sent out (the sinks below keep them up to date):
+        // hidden, none come out at launch, and any wanted meanwhile wait till they're called back.
+        // In Midnight Oyl they're moyls.
+        walkers.theme = state.theme
+        walkers.setShown(state.oylsVisible)
+        walkers.dimsBar = state.dimsMenuBar
+        walkers.showsCountdowns = state.showsCountdowns
+        walkers.showsCalendar = state.showsCalendar
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
+        dock = DockController(state: state)
 
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -403,6 +502,17 @@ final class NotchController {
         }) {
             monitors.append(monitor)
         }
+        // In a fullscreen app the Oyls never take the pointer, so a click on one is caught on its way
+        // through instead.
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
+            MainActor.assumeIsolated {
+                // Not a click on Mission Control's desktops, wherever an Oyl was standing.
+                guard let self, !self.state.isViewingDesktops else { return }
+                self.walkers.clickedThrough(at: NSEvent.mouseLocation)
+            }
+        }) {
+            monitors.append(monitor)
+        }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: events, handler: { [weak self] event in
             let released = event.type == .leftMouseUp
             MainActor.assumeIsolated { self?.pointerMoved(released: released) }
@@ -424,6 +534,7 @@ final class NotchController {
                         pending.forEach { $0() }
                     }
                     self?.pointerMoved(released: false)
+                    self?.fitPanel()
                     if let self {
                         self.state.nowPlaying.onScreen = self.state.mode == .expanded && self.state.page == .music
                     }
@@ -434,7 +545,8 @@ final class NotchController {
 
         gestures.onGesture = { [weak self] gesture in
             guard let self else { return }
-            // The Oyls on the menu bar's own gestures; the rest are the notch's.
+            // The Oyls on the menu bar's own gestures (the moyls', in Midnight Oyl); the rest are the
+            // notch's.
             switch gesture {
             case .announce: self.onceClosed { [weak self] in self?.walkers.announce() }
             // Tipped left lines them up, tipped right sends them off; each undoes the other.
@@ -445,9 +557,10 @@ final class NotchController {
             default: self.state.perform(gesture)
             }
         }
-        // A selfie: an Oyl holds it up, and pops it up big under the menu bar for a moment.
-        gestures.onSelfie = { [weak self] url in
-            guard let self, let image = NSImage(contentsOf: url) else { return }
+        // A selfie: an Oyl holds it up (you, not your screen beside you in the file), and pops it
+        // up big under the menu bar for a moment.
+        gestures.onSelfie = { [weak self] url, image in
+            guard let self else { return }
             let selfie = Selfie(url: url, image: image)
             self.state.selfie = selfie
             self.castOyls()
@@ -469,6 +582,13 @@ final class NotchController {
             guard let agents, let approval = agents.approvals.first else { return }
             agents.answer(approval, allow: true)
         }
+        // In Midnight Oyl, two fists make the hand the pointer; leaving it puts the pointer down.
+        state.$theme
+            .removeDuplicates()
+            .sink { [weak self] theme in
+                MainActor.assumeIsolated { self?.gestures.midnight = theme == .midnight }
+            }
+            .store(in: &cancellables)
         // A pinky out shows the lyrics, so it's only looked for when the song has some.
         nowPlaying.$lyrics
             .map { $0 != nil }
@@ -504,15 +624,66 @@ final class NotchController {
                 }
             }
             .store(in: &cancellables)
+        // Oyls in Gargoyle, moyls in Midnight Oyl.
+        state.$theme
+            .removeDuplicates()
+            .sink { [weak self] theme in
+                MainActor.assumeIsolated { self?.walkers.theme = theme }
+            }
+            .store(in: &cancellables)
+        // Midnight Oyl's shader takes a moment to compile, so it's done ahead of the first bloom.
+        state.$theme
+            .filter { $0 == .midnight }
+            .sink { _ in MainActor.assumeIsolated { MidnightBackdrop.prepare() } }
+            .store(in: &cancellables)
         state.$dimsMenuBar
             .sink { [weak self] dims in
                 MainActor.assumeIsolated { self?.walkers.dimsBar = dims }
             }
             .store(in: &cancellables)
+        // The lid's shut with no other screen on: nothing Oyl draws can be seen, so it rests.
+        awake.$isShut
+            .removeDuplicates()
+            .sink { [weak self] shut in
+                MainActor.assumeIsolated {
+                    self?.isShut = shut
+                    self?.rest()
+                }
+            }
+            .store(in: &cancellables)
+        // Control on its own: twice, a screenshot of part of the screen (as ⇧⌘4), but not while
+        // Oyl's off; three times, Oyl off, or back on.
+        controlTaps = TapWatcher(.control, actions: [
+            2: { [weak self] in
+                guard self?.state.isOff == false else { return }
+                AreaScreenshot.take()
+            },
+            3: { [weak self] in
+                guard let self else { return }
+                self.switchOff(!self.state.isOff)
+            },
+        ])
+        missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing) }
+        // Control-Option and an arrow: the next song, or the one before, while there's one on.
+        songKeys = SongKeys { [weak self] forward in
+            guard let self, !self.state.isOff, self.state.nowPlaying.player != nil else { return false }
+            if forward { self.state.nowPlaying.next() } else { self.state.nowPlaying.previous() }
+            return true
+        }
+        state.$showsCountdowns
+            .sink { [weak self] shows in
+                MainActor.assumeIsolated { self?.walkers.showsCountdowns = shows }
+            }
+            .store(in: &cancellables)
+        state.$showsCalendar
+            .sink { [weak self] shows in
+                MainActor.assumeIsolated { self?.walkers.showsCalendar = shows }
+            }
+            .store(in: &cancellables)
         walkers.onReveal = { agents.reveal($0) }
         walkers.onSelfie = { NSWorkspace.shared.open($0) }
+        walkers.onOpen = { [weak self] job in self?.reveal(job) }
         walkers.describe = { [weak self] job in self?.describe(job) ?? "" }
-        walkers.describeCalendar = { [weak self] in self?.describeCalendar() ?? "" }
         walkers.walkers.lyricLine = { [weak nowPlaying] date in
             guard let nowPlaying, let lyrics = nowPlaying.lyrics else { return nil }
             // A touch early, as in the notch, so a line's up as it's sung.
@@ -531,7 +702,7 @@ final class NotchController {
                 MainActor.assumeIsolated { self?.walkers.say(line, as: "bedtime", for: 10) }
             }
         }
-        // The calendar bar, and clicking it: to Google Calendar, or to what it needs to work.
+        // The calendar bar, and clicking it: to the Calendar app, or to what it needs to work.
         let calendar = state.calendar
         calendar.objectWillChange
             .receive(on: RunLoop.main)
@@ -542,6 +713,73 @@ final class NotchController {
         walkers.showCalendar(calendar.events, note: calendar.note)
         walkers.onCalendar = { calendar.openSomewhere() }
         castOyls()
+    }
+
+    /// Stops drawing the notch and the Oyls, watching the camera, reading your voice, analyzing
+    /// the music and asking the player about it so often, or starts again: while the lid's shut
+    /// with no other screen on, or Oyl's switched off.
+    private func rest() {
+        let resting = isShut || state.isOff
+        guard resting != state.isResting else { return }
+        state.isResting = resting
+        if resting {
+            // Nobody's over it now, whatever the pointer last did.
+            hoverWork?.cancel()
+            pointerInside = false
+            gestures.hovering = false
+            close()
+        }
+        walkers.isResting = resting
+        gestures.isSuspended = resting
+        state.nowPlaying.resting = resting
+        state.dictation.resting = resting
+        if resting { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+    }
+
+    /// Three taps of control switch Oyl off, or back on. Off, it's put away, closing first if it's
+    /// open, and listens only for the taps: the Mac's let sleep (as quitting does) and Claude Code
+    /// asks for its OKs the usual way. Timers carry on, and still chime. Either way it blinks, the
+    /// closed notch popping out and back, so the taps are seen to have been heard.
+    private func switchOff(_ off: Bool) {
+        guard off != state.isOff else { return }
+        state.isOff = off
+        state.agents.isAway = off
+        guard off else {
+            rest()
+            blink()
+            return
+        }
+        state.awake.stop()
+        state.isPinned = false
+        hoverWork?.cancel()
+        revealWork?.cancel()
+        let wasOpen = state.mode == .expanded
+        pointerInside = false
+        gestures.hovering = false
+        close()
+        // Midnight's band wilts the slowest.
+        if wasOpen {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                MainActor.assumeIsolated { self?.rest() }
+            }
+        } else {
+            blink { [weak self] in self?.rest() }
+        }
+    }
+
+    /// The closed notch pops out, as under the pointer, and back in; then `done`.
+    private func blink(then done: @escaping @MainActor () -> Void = {}) {
+        state.isPopped = true
+        NSHapticFeedbackManager.defaultPerformer.perform(.generic, performanceTime: .now)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if !self.pointerInside { self.state.isPopped = false }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    MainActor.assumeIsolated { done() }
+                }
+            }
+        }
     }
 
     /// Runs `action` now if the notch is closed, else as soon as it closes.
@@ -557,10 +795,12 @@ final class NotchController {
             return "Just hanging out"
         case .agent(let session):
             return "\(session.project): \(session.summary)"
+        case .music(_, .singing):
+            return walkers.walkers.lyricLine(now).map { "♪ \($0)" } ?? "♪ La la la"
+        case .music(_, .reading):
+            return state.nowPlaying.track.map { "Reading \($0.title)" + ($0.artist.isEmpty ? "" : ", by \($0.artist)") } ?? "Reading"
         case .music:
             return state.nowPlaying.track.map { "♪ \($0.title), by \($0.artist)" } ?? "♪"
-        case .singer:
-            return walkers.walkers.lyricLine(now).map { "♪ \($0)" } ?? "♪ La la la"
         case .timer(let timer) where timer.isEndless:
             return timer.label.isEmpty ? "A reminder, until it's done" : "Reminder: \(timer.label)"
         case .timer(let timer):
@@ -586,28 +826,31 @@ final class NotchController {
         }
     }
 
-    private func describeCalendar() -> String {
-        let calendar = state.calendar, now = Date()
-        if let current = calendar.current(at: now) {
-            return "\(current.title), till \(current.end.formatted(date: .omitted, time: .shortened))"
-        }
-        if let next = calendar.next(after: now) {
-            let when = Calendar.current.isDateInToday(next.start)
-                ? next.start.formatted(date: .omitted, time: .shortened)
-                : next.start.formatted(.dateTime.weekday(.wide).hour().minute())
-            return "Next: \(next.title), \(when)"
-        }
-        return calendar.note ?? "Nothing coming up"
-    }
-
     /// Sends Oyls out on the menu bar for what's going on, or calls them back.
     private func castOyls() {
         guard let screen else { return }
-        // They don't stop behind the closed notch (and what's beside it).
-        let mode = state.mode == .expanded ? (state.compact.isEmpty ? NotchMode.idle : .compact) : state.mode
-        let width = state.size(for: mode).width + 2 * NotchState.topRadius(mode)
+        // The closed notch (and what's beside it), which the calendar goes right of; and what the
+        // notch covers right now, open or closed, which Oyls skip across and don't stop behind.
+        let closed = state.mode == .expanded ? (state.compact.isEmpty ? NotchMode.idle : .compact) : state.mode
+        func span(_ mode: NotchMode) -> ClosedRange<CGFloat> {
+            let width = state.size(for: mode).width + 2 * NotchState.topRadius(mode)
+            return (state.metrics.centerX - width / 2)...(state.metrics.centerX + width / 2)
+        }
         let middle = state.metrics.centerX
-        walkers.cast(state.oylJobs, completed: state.finishedOyls, on: screen, notch: (middle - width / 2)...(middle + width / 2))
+        // Midnight's band covers the whole bar: the moyls fly up off it into the band's sky (keeping
+        // to the closed notch's gap on the bar meanwhile), clear of its page and its moon.
+        walkers.cast(state.oylJobs, completed: state.finishedOyls, on: screen, notch: span(closed),
+                     covered: span(state.isBlooming ? closed : state.mode))
+        if state.isBlooming && !state.isResting {
+            let size = state.bloomSize, reach = state.bloomReach
+            let layout = BloomLayout(state: state, size: size, reach: reach)
+            walkers.band = BandSky(size: size, reach: reach, page: layout.page, moon: layout.moon.center, moonRadius: layout.moon.radius,
+                                   top: state.metrics.size.height, left: middle - size.width / 2 - screen.frame.minX)
+        } else {
+            walkers.band = nil
+        }
+        walkers.notchOpen(to: state.mode == .expanded ? middle + state.size(for: .expanded).width / 2 + NotchState.topRadius(.expanded) : nil)
+        walkers.inFullscreen = state.inFullscreen
     }
 
     private func updateScreen() {
@@ -616,10 +859,32 @@ final class NotchController {
         let metrics = NotchMetrics(screen: screen)
         if state.metrics != metrics { state.metrics = metrics }
 
-        let size = state.windowSize
-        panel.setFrame(NSRect(x: metrics.centerX - size.width / 2, y: screen.frame.maxY - size.height,
-                              width: size.width, height: size.height), display: true)
+        fitPanel(now: true)
         castOyls()
+    }
+
+    /// The panel, as big as the tallest page could be now, which grows with the timers: grown at
+    /// once, and shrunk once the page has, so it's never cut off mid-animation.
+    private func fitPanel(now: Bool = false) {
+        guard let screen else { return }
+        let size = state.windowSize
+        guard size != panel.frame.size else { return }
+        let frame = NSRect(x: state.metrics.centerX - size.width / 2, y: screen.frame.maxY - size.height,
+                           width: size.width, height: size.height)
+        shrinking?.cancel()
+        shrinking = nil
+        if now || size.height >= panel.frame.height {
+            panel.setFrame(frame, display: true)
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.state.windowSize == size else { return }
+                self.panel.setFrame(frame, display: true)
+            }
+        }
+        shrinking = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
     }
 
     /// Whether a fullscreen app is in front: then the notch's tabs move down a row, and the
@@ -639,11 +904,26 @@ final class NotchController {
         if panel.ignoresMouseEvents != ignores { panel.ignoresMouseEvents = ignores }
     }
 
+    /// Mission Control (or App Exposé, or Show Desktop) is up, the notch over the desktops along
+    /// the top: so it closes and lets the pointer through, the Oyls do too, and Oyl's Dock stays
+    /// down (see `DockController`), till it's gone.
+    private func viewDesktops(_ viewing: Bool) {
+        state.isViewingDesktops = viewing
+        guard viewing else { return }
+        hoverWork?.cancel()
+        pointerInside = false
+        gestures.hovering = false
+        close()
+        panel.ignoresMouseEvents = true
+        walkers.letPointerThrough()
+    }
+
     private func pointerMoved(released: Bool) {
+        guard !state.isOff, !state.isResting, !state.isViewingDesktops else { return }
         let rect = hoverRect()
         let location = NSEvent.mouseLocation
         walkers.pointerMoved(to: location)
-        var inside = rect.contains(location)
+        var inside = rect.contains(location) && (!state.isBlooming || isOverBand(location))
         // Coming in, the pointer has to reach the top half of the closed notch, so passing just
         // under it doesn't open it. Once in, all of it counts.
         if inside, !pointerInside, state.mode != .expanded {
@@ -687,14 +967,17 @@ final class NotchController {
 
     private func open() {
         guard pointerInside, !state.isHovering else { return }
-        // Land on the page that has something to show.
-        if state.page == .music && state.nowPlaying.track == nil {
-            state.page = .timers
-        } else if state.page == .timers && state.timers.timers.isEmpty && state.nowPlaying.track != nil {
-            state.page = .music
+        // Midnight Oyl held open on display is open already: the pointer's just passing over it.
+        if !(state.isPinned && state.theme == .midnight) {
+            // Land on the page that has something to show.
+            if state.page == .music && state.nowPlaying.track == nil {
+                state.page = .timers
+            } else if state.page == .timers && state.timers.timers.isEmpty && state.nowPlaying.track != nil {
+                state.page = .music
+            }
+            NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         }
         state.isHovering = true
-        NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
         // Opening the notch watches the camera for hand gestures, until an OK or the pointer leaves.
         gestures.hovering = true
     }
@@ -706,6 +989,34 @@ final class NotchController {
         state.isPopped = false
         if state.isEditing { resignKeyboard() }
         state.isHovering = false
+        state.isRevealing = false
+    }
+
+    /// Opens the notch to the page of an Oyl clicked on the menu bar (a timer's, picked out on
+    /// it), for a few seconds, or for as long as the pointer then spends over it.
+    private func reveal(_ job: Walker.Job) {
+        switch job {
+        case .music:
+            state.page = .music
+            state.pickedTimer = nil
+        case .timer(let timer):
+            state.page = .timers
+            state.pickedTimer = timer.id
+        default:
+            return
+        }
+        state.isRevealing = true
+        revealWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.state.pickedTimer = nil
+                // Unless the pointer's gone to it; then it closes as it leaves.
+                if !self.pointerInside { self.state.isRevealing = false }
+            }
+        }
+        revealWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
     }
 
     /// A menu or text field kept the notch open after the pointer left; close once it's done.
@@ -732,15 +1043,40 @@ final class NotchController {
         panel.orderFrontRegardless()
     }
 
-    /// The visible notch shape in screen coordinates.
+    /// The visible notch shape in screen coordinates. (Midnight Oyl's bloom has no flared corners.)
     private func hoverRect() -> NSRect {
         guard let screen else { return .zero }
         let mode = state.mode
         var size = state.size(for: mode)
-        size.width += 2 * NotchState.topRadius(mode)
-        if mode == .expanded { size.height += 6 }
+        if !state.isBlooming {
+            size.width += 2 * NotchState.topRadius(mode)
+            if mode == .expanded { size.height += 6 }
+        }
         // +1 so the very top row of pixels counts as inside.
         return NSRect(x: state.metrics.centerX - size.width / 2, y: screen.frame.maxY - size.height,
                       width: size.width, height: size.height + 1)
     }
+
+    /// Whether the pointer's over Midnight Oyl's open band, for staying open: not all its sky
+    /// (it reaches right across the screen, and would be hard to leave) but its page, as big as
+    /// the open notch, and a little round it; and the moon, to be clicked, and the way over to it.
+    private func isOverBand(_ location: NSPoint) -> Bool {
+        guard let screen else { return false }
+        let top = screen.frame.maxY
+        let height = state.headerHeight + state.contentHeight
+        let side = NotchState.topRadius(.expanded) + Self.bandMargin
+        let page = NSRect(x: state.metrics.centerX - state.openWidth / 2 - side, y: top - height - Self.bandMargin,
+                          width: state.openWidth + 2 * side, height: height + Self.bandMargin + 1)
+        if page.contains(location) { return true }
+        let size = state.bloomSize
+        let moon = MidnightBackdrop.moon(in: size, reach: state.bloomReach)
+        let center = NSPoint(x: state.metrics.centerX - size.width / 2 + moon.center.x, y: top - moon.center.y)
+        let radius = moon.radius + 12
+        if hypot(location.x - center.x, location.y - center.y) <= radius { return true }
+        let way = NSRect(x: min(page.maxX, center.x), y: center.y - radius, width: abs(center.x - page.maxX), height: 2 * radius)
+        return way.contains(location)
+    }
+
+    /// How much further than the open notch Midnight Oyl's page stays open for, round it.
+    private static let bandMargin: CGFloat = 16
 }

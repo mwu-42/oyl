@@ -9,6 +9,13 @@ enum Player: String, CaseIterable {
 
     var bundleID: String { rawValue }
 
+    var name: String {
+        switch self {
+        case .music: return "Music"
+        case .spotify: return "Spotify"
+        }
+    }
+
     var isRunning: Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty
     }
@@ -21,7 +28,7 @@ enum Player: String, CaseIterable {
         }
     }
 
-    /// Returns {state, title, artist, album, duration (s), position (s), track id, artwork url, volume (0-100)}.
+    /// Returns {state, title, artist, album, duration (s), position (s), track id, artwork url}.
     /// Every script checks `is running` first so polling never relaunches a player that just quit.
     var statusScript: String {
         switch self {
@@ -34,7 +41,7 @@ enum Player: String, CaseIterable {
                         if s is "stopped" then return {s}
                         try
                             set t to current track
-                            return {s, name of t, artist of t, album of t, duration of t, player position, persistent ID of t, "", sound volume}
+                            return {s, name of t, artist of t, album of t, duration of t, player position, persistent ID of t, ""}
                         end try
                         return {s}
                     end timeout
@@ -51,7 +58,7 @@ enum Player: String, CaseIterable {
                         if s is "stopped" then return {s}
                         try
                             set t to current track
-                            return {s, name of t, artist of t, album of t, (duration of t) / 1000, player position, id of t, artwork url of t, sound volume}
+                            return {s, name of t, artist of t, album of t, (duration of t) / 1000, player position, id of t, artwork url of t}
                         end try
                         return {s}
                     end timeout
@@ -90,6 +97,16 @@ struct Track: Equatable, Sendable {
     var artist: String
     var album: String
     var duration: Double
+
+    /// An audiobook rather than a song, by the look of it: one that says so (on Spotify, often a
+    /// show's episode, like "Frankenstein | Audiobook by Mary Shelley" from "Classic Audiobooks
+    /// Collection"), or a Spotify chapter, or an episode titled as one.
+    var isAudiobook: Bool {
+        if id.hasPrefix("spotify:audiobook:") || id.hasPrefix("spotify:chapter:") { return true }
+        let words = "\(title) \(album)".lowercased()
+        if ["audiobook", "audio book", "abridged", "narrated by"].contains(where: words.contains) { return true }
+        return id.hasPrefix("spotify:episode:") && title.range(of: #"\bchapter\b"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
 }
 
 struct PlayerStatus: Sendable {
@@ -97,7 +114,6 @@ struct PlayerStatus: Sendable {
     var track: Track?
     var position: Double
     var artworkURL: URL?
-    var volume: Double?  // 0...1
 
     static func parse(_ list: NSAppleEventDescriptor) -> PlayerStatus? {
         guard list.numberOfItems >= 1 else { return nil }
@@ -119,7 +135,6 @@ struct PlayerStatus: Sendable {
                              title: title, artist: artist, album: album, duration: number(5))
         status.position = number(6)
         status.artworkURL = URL(string: text(8))
-        if list.numberOfItems >= 9 { status.volume = min(max(number(9) / 100, 0), 1) }
         return status
     }
 }
@@ -168,7 +183,8 @@ final class NowPlaying: ObservableObject {
     @Published private(set) var isPlaying = false
     @Published private(set) var artwork: NSImage?
     @Published private(set) var accent: NSColor = .white
-    @Published private(set) var volume: Double = 0.5  // the player's own volume, 0...1
+    /// A few of the artwork's colors, the most of it first (Midnight Oyl's galaxy under the wave).
+    @Published private(set) var palette: [NSColor] = []
     /// The song's synced lyrics; nil while they're being looked up, or when there are none.
     @Published private(set) var lyrics: Lyrics?
     // Playback position is reported once a second; views interpolate from this anchor.
@@ -176,12 +192,12 @@ final class NowPlaying: ObservableObject {
     @Published private(set) var anchorDate = Date()
 
     let spectrum = AudioSpectrum()
+    /// The Mac's volume, which the notch's volume controls turn (rather than the player's own).
+    let output = SystemVolume()
 
     private static let restartsAfter = 10.0  // seconds in, after which ⏮ restarts the song
 
     private let runner = ScriptRunner()
-    private var pendingVolume: Int?
-    private var volumeHeldUntil = Date.distantPast
     private var notificationObserver: DistributedObserver?
     private var timer: Timer?
     private var ticks = 0
@@ -241,27 +257,6 @@ final class NowPlaying: ObservableObject {
         perform("playpause", on: player)
     }
 
-    func setVolume(_ value: Double) {
-        guard player != nil else { return }
-        volume = min(max(value, 0), 1)
-        // Polls would fight the slider until the player catches up.
-        volumeHeldUntil = Date().addingTimeInterval(1.5)
-        let alreadyScheduled = pendingVolume != nil
-        pendingVolume = Int((volume * 100).rounded())
-        guard !alreadyScheduled else { return }
-        // Coalesce a drag into a few AppleScript calls per second.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
-            MainActor.assumeIsolated { self?.sendVolume() }
-        }
-    }
-
-    private func sendVolume() {
-        let level = pendingVolume
-        pendingVolume = nil
-        guard let level, let player else { return }
-        runner.send(player.script("set sound volume to \(level)"), cache: false)
-    }
-
     func next() {
         guard let player else { return }
         spectrum.easeNextChange()
@@ -288,6 +283,14 @@ final class NowPlaying: ObservableObject {
         perform(String(format: "set player position to %.2f", seconds), on: player, cache: false)
     }
 
+    /// The player that's playing, brought to the front.
+    func showPlayer() {
+        guard let player, let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: player.bundleID) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+    }
+
     private func perform(_ command: String, on player: Player, cache: Bool = true) {
         lastCommand = Date()
         runner.send(player.script(command), cache: cache)
@@ -301,12 +304,22 @@ final class NowPlaying: ObservableObject {
         didSet { if onScreen, !oldValue { refresh() } }
     }
 
+    /// Nothing that shows the song can be seen (the lid's shut): the player's asked about it only
+    /// now and then, and its sound isn't analyzed.
+    var resting = false {
+        didSet {
+            spectrum.resting = resting
+            if !resting, oldValue { refresh() }
+        }
+    }
+
     private func tick() {
         ticks += 1
         // Notifications cover track and play-state changes; polling keeps the position honest.
         // Asking the player costs more than anything else here, so it's once a second only while
-        // the song's on screen, every few seconds otherwise, less often still with nothing playing.
-        let every = isPlaying ? (onScreen ? 1 : 5) : 8
+        // the song's on screen, every few seconds otherwise, less often still with nothing playing,
+        // and only twice a minute with nothing to be seen at all.
+        let every = resting ? 30 : isPlaying ? (onScreen ? 1 : 5) : 8
         if ticks % every == 0 { refresh() }
     }
 
@@ -366,9 +379,6 @@ final class NowPlaying: ObservableObject {
         if trackChanged || stateChanged || abs(predicted - status.position) > (status.isPlaying ? 1.5 : 0.25) {
             setAnchor(status.position)
         }
-        if let newVolume = status.volume, Date() > volumeHeldUntil, abs(newVolume - volume) > 0.005 {
-            volume = newVolume
-        }
         if trackChanged {
             loadArtwork(for: chosen, track: newTrack, url: status.artworkURL)
             loadLyrics(for: newTrack)
@@ -390,6 +400,7 @@ final class NowPlaying: ObservableObject {
         isPlaying = false
         artwork = nil
         accent = .white
+        palette = []
     }
 
     private func setAnchor(_ position: Double) {
@@ -450,6 +461,7 @@ final class NowPlaying: ObservableObject {
     private func setArtwork(_ image: NSImage?) {
         artwork = image
         accent = image.flatMap(ArtworkPalette.accent) ?? .white
+        palette = image.map { ArtworkPalette.palette(of: $0) } ?? []
     }
 }
 
@@ -480,19 +492,7 @@ private final class DistributedObserver: NSObject {
 enum ArtworkPalette {
     /// A bright color pulled from the artwork, used to tint the spectrum and glow.
     static func accent(of image: NSImage) -> NSColor? {
-        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-        let side = 12
-        var pixels = [UInt8](repeating: 0, count: side * side * 4)
-        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
-            guard let context = CGContext(
-                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
-                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-            else { return false }
-            context.interpolationQuality = .medium
-            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
-            return true
-        }
-        guard drawn else { return nil }
+        guard let pixels = pixels(of: image, side: 12) else { return nil }
 
         // Weight vivid pixels heavily so a colorful detail wins over a dull background.
         var red = 0.0, green = 0.0, blue = 0.0, total = 0.0
@@ -507,9 +507,62 @@ enum ArtworkPalette {
             total += weight
         }
 
-        let average = NSColor(srgbRed: red / total, green: green / total, blue: blue / total, alpha: 1)
+        return brightened(NSColor(srgbRed: red / total, green: green / total, blue: blue / total, alpha: 1))
+    }
+
+    /// A few of the artwork's colors, up to `count`, the most of it first: its vivid pixels
+    /// gathered by hue (twelve round the wheel, weighed as `accent` weighs them), each gathering's
+    /// average, brightened as the accent is. Hues next to one taken, or too slight to see, are
+    /// passed over; a gray cover gives just its accent.
+    static func palette(of image: NSImage, count: Int = 4) -> [NSColor] {
+        guard let pixels = pixels(of: image, side: 16) else { return [] }
+        var hues = [(red: Double, green: Double, blue: Double, weight: Double)](repeating: (0, 0, 0, 0), count: 12)
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            let r = Double(pixels[i]) / 255, g = Double(pixels[i + 1]) / 255, b = Double(pixels[i + 2]) / 255
+            var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0
+            NSColor(srgbRed: r, green: g, blue: b, alpha: 1).getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
+            guard saturation > 0.15, brightness > 0.15 else { continue }
+            let weight = pow(Double(saturation * brightness), 2), slot = Int(hue * 12) % 12
+            hues[slot].red += r * weight
+            hues[slot].green += g * weight
+            hues[slot].blue += b * weight
+            hues[slot].weight += weight
+        }
+        let total = hues.map(\.weight).reduce(0, +)
+        var taken: [Int] = []
+        for slot in hues.indices.sorted(by: { hues[$0].weight > hues[$1].weight }) where hues[slot].weight > total * 0.05 {
+            guard !taken.contains(where: { min(abs($0 - slot), 12 - abs($0 - slot)) <= 1 }) else { continue }
+            taken.append(slot)
+            if taken.count == count { break }
+        }
+        let colors = taken.map { slot in
+            let hue = hues[slot]
+            return brightened(NSColor(srgbRed: hue.red / hue.weight, green: hue.green / hue.weight, blue: hue.blue / hue.weight, alpha: 1))
+        }
+        if colors.isEmpty, let accent = accent(of: image) { return [accent] }
+        return colors
+    }
+
+    /// Bright enough to show on the black, and not quite at full saturation.
+    private static func brightened(_ color: NSColor) -> NSColor {
         var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0
-        average.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
+        color.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: nil)
         return NSColor(hue: hue, saturation: min(saturation, 0.8), brightness: max(brightness, 0.85), alpha: 1)
+    }
+
+    /// The artwork shrunk to `side` pixels square, as RGBA bytes.
+    private static func pixels(of image: NSImage, side: Int) -> [UInt8]? {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+            guard let context = CGContext(
+                data: buffer.baseAddress, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+            else { return false }
+            context.interpolationQuality = .medium
+            context.draw(cgImage, in: CGRect(x: 0, y: 0, width: side, height: side))
+            return true
+        }
+        return drawn ? pixels : nil
     }
 }

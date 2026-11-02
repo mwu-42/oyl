@@ -26,6 +26,11 @@ struct ReminderTimer: Identifiable, Codable, Equatable {
         // Round up like iOS: a timer shows 0:01 until it actually finishes.
         let total = Int((seconds - 0.001).rounded(.up))
         let clamped = max(total, 0)
+        if (clamped + 59) / 60 >= 24 * 60 {
+            // A day or more (once rounded up), days and hours (rounded up too): "6d 23h".
+            let hours = (clamped + 3599) / 3600
+            return hours % 24 == 0 ? "\(hours / 24)d" : "\(hours / 24)d \(hours % 24)h"
+        }
         if clamped >= 3600 {
             // Past an hour, just hours and minutes (rounded up too).
             let minutes = (clamped + 59) / 60
@@ -33,6 +38,16 @@ struct ReminderTimer: Identifiable, Codable, Equatable {
         }
         return String(format: "%d:%02d", clamped / 60, clamped % 60)
     }
+}
+
+/// A timer that's gone off. Its Oyl rests on the Oyls page for a day.
+struct ExpiredTimer: Identifiable, Codable, Equatable {
+    let id: UUID
+    let label: String
+    let duration: TimeInterval
+    let ended: Date
+
+    var title: String { label.isEmpty ? "Timer" : label }
 }
 
 /// Reminder timers. They survive relaunches, and one that ended while Oyl wasn't running rings
@@ -44,17 +59,24 @@ final class TimerStore: ObservableObject {
     @Published private(set) var ringing: ReminderTimer?
     /// Endless reminders marked done (their Oyls cheer before they go).
     @Published private(set) var resolved: Set<UUID> = []
+    /// Timers that have gone off, latest first: the last ten, from the past day.
+    @Published private(set) var history: [ExpiredTimer] = []
 
     private var waiting: [ReminderTimer] = []  // finished timers queued behind `ringing`
     private var completion: Timer?
     private var chime: Timer?
     private var chimePlays = 0
     private static let storageKey = "timers"
+    private static let historyKey = "timers.history"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
            let saved = try? JSONDecoder().decode([ReminderTimer].self, from: data) {
             timers = saved
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.historyKey),
+           let saved = try? JSONDecoder().decode([ExpiredTimer].self, from: data) {
+            history = Self.recent(saved)
         }
         reschedule()
     }
@@ -62,6 +84,16 @@ final class TimerStore: ObservableObject {
     /// The timer the closed notch shows: the next one to finish, else a paused one.
     var next: ReminderTimer? {
         timers.filter(\.isRunning).min { $0.endDate! < $1.endDate! } ?? timers.first { !$0.isEndless }
+    }
+
+    /// The least time left first (a paused timer by what it has left), then reminders with no
+    /// time on them; oldest first where they're level.
+    func soonestFirst(at date: Date) -> [ReminderTimer] {
+        func left(_ timer: ReminderTimer) -> TimeInterval { timer.isEndless ? .infinity : timer.remaining(at: date) }
+        return timers.enumerated().sorted { a, b in
+            left(a.element) != left(b.element) ? left(a.element) < left(b.element) : a.offset < b.offset
+        }
+        .map(\.element)
     }
 
     func start(duration: TimeInterval, label: String) {
@@ -96,6 +128,49 @@ final class TimerStore: ObservableObject {
         changed()
     }
 
+    /// Changes a timer to what's been typed for it: its label, and its time unless that's still
+    /// the `shown` one it was put up for editing with (then it keeps the time it really has left).
+    /// "inf" makes it a reminder with no time on it, and a time on a reminder starts it counting
+    /// down. A paused timer stays paused.
+    func edit(_ id: UUID, to text: String, shown: TimeInterval?) {
+        guard let index = timers.firstIndex(where: { $0.id == id }),
+              !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        let parsed = ReminderParser.parse(text)
+        var timer = timers[index]
+        timer.label = parsed.label
+        if parsed.endless {
+            timer.endless = true
+            timer.duration = 0
+            timer.endDate = nil
+            timer.pausedRemaining = nil
+        } else if let duration = parsed.duration, duration != shown {
+            let paused = !timer.isRunning && !timer.isEndless
+            timer.endless = nil
+            timer.duration = duration
+            timer.endDate = paused ? nil : Date().addingTimeInterval(duration)
+            timer.pausedRemaining = paused ? duration : nil
+        }
+        timers[index] = timer
+        changed()
+    }
+
+    /// More time on a timer: on the clock if it's running, on what's left if it's paused. What it
+    /// was set for grows by as much, so its ring fills back up to match. Never past the longest a
+    /// timer can run.
+    func extend(_ id: UUID, by seconds: TimeInterval) {
+        guard let index = timers.firstIndex(where: { $0.id == id }), !timers[index].isEndless else { return }
+        let left = timers[index].remaining(at: Date())
+        let added = min(seconds, ReminderParser.longest - left)
+        guard added > 0 else { return }
+        timers[index].duration += added
+        if let end = timers[index].endDate {
+            timers[index].endDate = end.addingTimeInterval(added)
+        } else {
+            timers[index].pausedRemaining = left + added
+        }
+        changed()
+    }
+
     func cancel(_ id: UUID) {
         timers.removeAll { $0.id == id }
         changed()
@@ -125,6 +200,7 @@ final class TimerStore: ObservableObject {
         let finished = timers.filter { ($0.endDate ?? .distantFuture) <= now }
         if !finished.isEmpty {
             timers.removeAll { finished.contains($0) }
+            remember(finished, at: now)
             changed()
             ring(finished)
             return
@@ -135,6 +211,19 @@ final class TimerStore: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         completion = timer
+    }
+
+    /// Into the history, when each went off (a while ago, for one that ended while Oyl wasn't
+    /// running).
+    private func remember(_ finished: [ReminderTimer], at now: Date) {
+        let expired = finished.map { ExpiredTimer(id: $0.id, label: $0.label, duration: $0.duration, ended: $0.endDate ?? now) }
+        history = Self.recent(expired.sorted { $0.ended > $1.ended } + history)
+        UserDefaults.standard.set(try? JSONEncoder().encode(history), forKey: Self.historyKey)
+    }
+
+    private static func recent(_ history: [ExpiredTimer]) -> [ExpiredTimer] {
+        let dayAgo = Date().addingTimeInterval(-24 * 3600)
+        return Array(history.filter { $0.ended > dayAgo }.prefix(10))
     }
 
     private func ring(_ finished: [ReminderTimer]) {
@@ -170,7 +259,7 @@ final class TimerStore: ObservableObject {
 /// Reads a duration out of free text, so "10m stretch" or "tea 4 min" both work.
 enum ReminderParser {
     /// The longest a timer can run.
-    static let longest: TimeInterval = 3 * 24 * 3600
+    static let longest: TimeInterval = 7 * 24 * 3600
 
     private static let unitPattern = try! NSRegularExpression(
         pattern: #"(\d+(?:[.,]\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b"#,
@@ -208,6 +297,15 @@ enum ReminderParser {
             while let first = words.first, connectors.contains(first.lowercased()) { words.removeFirst() }
         }
         return (total > 0 ? min(total, longest) : nil, words.joined(separator: " "), false)
+    }
+
+    /// A time as it'd be typed: "12m 34s", or past an hour "1h 5m" (rounded up, as the countdown
+    /// shows it), and how long that reads back as.
+    static func spell(_ seconds: TimeInterval) -> (text: String, duration: TimeInterval) {
+        var total = max(Int((seconds - 0.001).rounded(.up)), 1)
+        if total >= 3600 { total = (total + 59) / 60 * 60 }
+        let parts = [(total / 86400, "d"), (total % 86400 / 3600, "h"), (total % 3600 / 60, "m"), (total % 60, "s")]
+        return (parts.filter { $0.0 > 0 }.map { "\($0.0)\($0.1)" }.joined(separator: " "), TimeInterval(total))
     }
 
     private static func number(_ text: String) -> Double {

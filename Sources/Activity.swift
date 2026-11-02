@@ -192,8 +192,11 @@ struct ActivityPage: View {
     @ObservedObject var stats: SystemStats
     @ObservedObject var usage = TokenUsage.shared
 
-    /// The page's green.
-    static let tint = Color(red: 0.38, green: 0.88, blue: 0.52)
+    /// The page's pink, for every meter, graph and figure on it.
+    static let tint = Color(red: 1, green: 0.42, blue: 0.74)
+    @Environment(\.notchTheme) private var theme
+    /// The page's pink as this look shows it (paler, in Midnight Oyl).
+    private var tint: Color { theme.tint(ActivityPage.tint) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -239,23 +242,23 @@ struct ActivityPage: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Busiest")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(Self.tint.opacity(0.7))
+                    .notchFont(size: 10, weight: .semibold)
+                    .foregroundStyle(tint.opacity(0.7))
                 ForEach(now.busiest) { process in
                     HStack(spacing: 6) {
                         Text(process.name)
-                            .font(.system(size: 11, weight: .medium))
+                            .notchFont(size: 11, weight: .medium)
                             .foregroundStyle(.white.opacity(0.85))
                             .lineLimit(1)
                         Spacer(minLength: 4)
                         Text(Self.percent(process.cpu))
-                            .font(.system(size: 11, weight: .medium).monospacedDigit())
-                            .foregroundStyle(Self.tint.opacity(0.8))
+                            .notchFont(size: 11, weight: .medium, digits: true)
+                            .foregroundStyle(tint.opacity(0.8))
                     }
                 }
                 Spacer(minLength: 0)
                 Text("Oyl: \(Self.percent(now.ownCPU)) CPU · \(Int(now.ownMemory / 1_048_576)) MB")
-                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .notchFont(size: 10, weight: .medium, digits: true)
                     .foregroundStyle(.white.opacity(0.4))
             }
             .frame(maxWidth: .infinity, maxHeight: Layout.activityHeight - 22, alignment: .topLeading)
@@ -270,7 +273,7 @@ struct ActivityPage: View {
             if let totals = usage.totals {
                 if totals.today == 0 && totals.lastFiveHours == 0 {
                     Text("No Claude Code usage today")
-                        .font(.system(size: 11, weight: .medium))
+                        .notchFont(size: 11, weight: .medium)
                         .foregroundStyle(.white.opacity(0.45))
                         .lineLimit(1)
                 } else {
@@ -284,9 +287,9 @@ struct ActivityPage: View {
                             if let project = totals.busiestProject {
                                 HStack(spacing: 3) {
                                     Image(systemName: "folder")
-                                        .font(.system(size: 8, weight: .semibold))
+                                        .notchSymbol(size: 8, weight: .semibold)
                                     Text(project)
-                                        .font(.system(size: 10, weight: .medium))
+                                        .notchFont(size: 10, weight: .medium)
                                         .lineLimit(1)
                                 }
                                 .foregroundStyle(.white.opacity(0.4))
@@ -302,8 +305,8 @@ struct ActivityPage: View {
     private func metric<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(Self.tint.opacity(0.75))
+                .notchFont(size: 11, weight: .medium)
+                .foregroundStyle(tint.opacity(0.75))
                 .frame(width: 54, alignment: .leading)
             content()
         }
@@ -312,7 +315,7 @@ struct ActivityPage: View {
 
     private func value(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11, weight: .medium).monospacedDigit())
+            .notchFont(size: 11, weight: .medium, digits: true)
             .foregroundStyle(.white.opacity(0.85))
             .lineLimit(1)
     }
@@ -339,13 +342,16 @@ struct ActivityPage: View {
 }
 
 private struct Meter: View {
+    @Environment(\.notchTheme) private var theme
+    /// The page's pink as this look shows it.
+    private var tint: Color { theme.tint(ActivityPage.tint) }
     let fraction: Double
 
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(fraction > 0.85 ? Color.orange : ActivityPage.tint)
+                Capsule().fill(fraction > 0.85 ? theme.tint(Oyl.noteYellow) : tint)
                     .frame(width: geometry.size.width * min(max(fraction, 0), 1))
             }
         }
@@ -353,6 +359,9 @@ private struct Meter: View {
 }
 
 private struct Sparkline: View {
+    @Environment(\.notchTheme) private var theme
+    /// The page's pink as this look shows it.
+    private var tint: Color { theme.tint(ActivityPage.tint) }
     let values: [Double]
 
     var body: some View {
@@ -370,16 +379,19 @@ private struct Sparkline: View {
             area.addLine(to: CGPoint(x: last.x, y: size.height))
             area.addLine(to: CGPoint(x: 0, y: size.height))
             area.closeSubpath()
-            canvas.fill(area, with: .linearGradient(Gradient(colors: [ActivityPage.tint.opacity(0.35), ActivityPage.tint.opacity(0)]),
+            canvas.fill(area, with: .linearGradient(Gradient(colors: [tint.opacity(0.35), tint.opacity(0)]),
                                                     startPoint: .zero, endPoint: CGPoint(x: 0, y: size.height)))
-            canvas.stroke(line, with: .color(ActivityPage.tint), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
+            canvas.stroke(line, with: .color(tint), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
         }
-        .background(RoundedRectangle(cornerRadius: 3).fill(ActivityPage.tint.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.08)))
     }
 }
 
 /// A bar for each hour of the day, the hour it is now brighter. Hours without any are a faint tick.
 private struct HourlyBars: View {
+    @Environment(\.notchTheme) private var theme
+    /// The page's pink as this look shows it.
+    private var tint: Color { theme.tint(ActivityPage.tint) }
     let values: [Int]
     let hour: Int
 
@@ -392,9 +404,9 @@ private struct HourlyBars: View {
                 let height = value > 0 ? max(size.height * value / peak, 2) : 1
                 let bar = CGRect(x: CGFloat(index) * slot + 0.5, y: size.height - height, width: slot - 1, height: height)
                 let opacity = value > 0 ? (index == hour ? 1 : 0.55) : (index == hour ? 0.5 : 0.15)
-                canvas.fill(Path(bar), with: .color(ActivityPage.tint.opacity(opacity)))
+                canvas.fill(Path(bar), with: .color(tint.opacity(opacity)))
             }
         }
-        .background(RoundedRectangle(cornerRadius: 3).fill(ActivityPage.tint.opacity(0.08)))
+        .background(RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.08)))
     }
 }

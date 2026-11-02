@@ -1,38 +1,32 @@
 import SwiftUI
 
-/// The song's beat, for Oyl to bop to: the bass level the visualizer shows, 0...1. Set by
-/// `AudioSpectrum` as frames arrive; read while drawing, so nothing re-renders for it.
-@MainActor
-enum Beat {
-    static var level: Float = 0
-}
-
 /// Oyl, Oyl's imp: white, with a spiky head and big sleepy eyes. It acts out what its agent is doing (at a laptop for code, a
-/// speech bubble for a chat), wears an orange hat while it's running a Claude, bops along to
-/// music, and with nothing to run, hangs out.
+/// speech bubble for a chat), wears an orange hat while it's running a Claude (a black one while
+/// it's running Muse), bops along to
+/// music (or reads along to an audiobook), and with nothing to run, hangs out. In Midnight Oyl it's drawn as its moyl instead, a
+/// little planet (see `Moyl`), wherever it is.
 struct Oyl: View {
     var activity: AgentActivity = .idle
     var hat = false
+    /// Its hat's color: Claude's orange, or Muse's black.
+    var hatColor = Oyl.hatOrange
     /// Walking off to the left, for one that's finished (see `WalkerOverlay`).
     var walking = false
     /// On a surfboard, riding the visualizer's wave.
     var surfing = false
     /// With no agent to run: off on its own, a new pastime every so often.
     var hangingOut = false
-    /// Music's playing, so while hanging out it dances.
+    /// Music's playing, so while hanging out it bops its head to it.
     var music = false
     /// White on its own; a pastel when it's on a task (see `pastel(_:)`).
     var skin = Oyl.white
     /// One of the app's own jobs, which decides its color too.
     var duty: OylDuty?
-    /// What it's doing for the calendar's event now.
-    var attending: CalendarActivity?
-    /// Peering ahead with a magnifying glass.
-    var peeking = false
 
     static let hatOrange = Color(red: 0.85, green: 0.47, blue: 0.34)
+    static let museBlack = Color(white: 0.1)
     static let white = Color(white: 0.96)
-    static let cyan = Color(red: 0.5, green: 0.89, blue: 1)
+    static let seafoam = Color(red: 0.45, green: 0.94, blue: 0.8)
 
     /// The pastel numbered `number`, for an Oyl on a task (see `AgentSession.skin`).
     static func pastel(_ number: Int) -> Color {
@@ -50,7 +44,7 @@ struct Oyl: View {
         return (0..<pastels.count).lazy.map { (first + $0) % pastels.count }.first { !taken.contains($0) } ?? first
     }
 
-    // Clear of the jobs' own colors: cyan for staying awake, orange for timers, grey for a tired
+    // Clear of the jobs' own colors: sea green for staying awake, blue for timers, grey for a tired
     // battery.
     private static let pastels = [
         Color(red: 1, green: 0.7, blue: 0.8),       // pink
@@ -64,20 +58,34 @@ struct Oyl: View {
     /// Around Oyls on the menu bar, so a white one shows on a light one too.
     static let menuBarOutline = Color(white: 0.15).opacity(0.55)
 
+    @Environment(\.notchTheme) private var theme
+
+    /// What it is as a moyl: at the same job, in the same color.
+    var moyl: Moyl.Kind {
+        if let duty { return .duty(duty) }
+        if hangingOut || walking || surfing { return .oyl(.idle, skin: skin, hat: hat ? hatColor : nil) }
+        return .oyl(activity, skin: skin, hat: hat ? hatColor : nil)
+    }
+
     var body: some View {
+        if theme == .midnight {
+            Moyl(moyl)
+        } else {
+            imp
+        }
+    }
+
+    private var imp: some View {
         // A touch slower while hanging out, since that's on screen all the time.
         TimelineView(.animation(minimumInterval: 1.0 / (hangingOut ? 12 : 15))) { context in
             let time = context.date.timeIntervalSinceReferenceDate
-            let beat = CGFloat(max(Beat.level - 0.3, 0) / 0.7)
+            let beat = CGFloat(max(Beat.level - 0.3, 0) / 0.7), beats = Beat.position(at: time), bars = Beat.bars
             Canvas { canvas, size in
                 let skin = duty?.skin(at: context.date) ?? skin
-                let drawing = OylDrawing(canvas: canvas, size: size, time: time, beat: beat, skin: skin)
+                var drawing = OylDrawing(canvas: canvas, size: size, time: time, beat: beat, skin: skin, beats: beats, bars: bars)
+                drawing.cap = hatColor
                 if let duty {
                     drawing.perform(duty)
-                } else if let attending {
-                    drawing.attend(attending)
-                } else if peeking {
-                    drawing.peek()
                 } else if hangingOut {
                     drawing.hangOut(music: music)
                 } else {
@@ -100,6 +108,12 @@ struct OylDrawing {
     var outline: Color?
     /// How quick its steps are, walking, against a stroll.
     var pace: Double = 1
+    /// Where it is in the music's beat, while there's a steady one (see `Beat.position(at:)`).
+    var beats: Double?
+    /// The visualizer's bars, bass to treble (see `Beat.bars`).
+    var bars: [Float] = []
+    /// Its hat's color, when it wears one.
+    var cap = Oyl.hatOrange
     private static let ink = Color(white: 0.08)  // its eyes
     private static let paper = Color.white.opacity(0.92)
     /// What it does at a laptop, standing left of the middle to make room.
@@ -115,6 +129,9 @@ struct OylDrawing {
         var squash: CGFloat = 1
         var eyesClosed = false
         var lid: CGFloat = 0.36  // how far its lids come down
+        /// Its head bopping: dropped this far on its neck, and tipped this much (radians).
+        var nod: CGFloat = 0
+        var tilt: CGFloat = 0
     }
 
     func draw(_ activity: AgentActivity, hat: Bool, walking: Bool, surfing: Bool) {
@@ -239,10 +256,21 @@ struct OylDrawing {
         return pose
     }
 
+    /// Where its head goes, in its 40 × 44 box: dropped and tipped on its neck as posed.
+    private func headContext(in context: GraphicsContext, pose: Pose) -> GraphicsContext {
+        var head = context
+        head.translateBy(x: 20, y: 25 + pose.nod)
+        head.rotate(by: .radians(Double(pose.tilt)))
+        head.translateBy(x: -20, y: -25)
+        return head
+    }
+
     private func drawOyl(in context: GraphicsContext, pose: Pose, hat: Bool) {
+        // Its head (and all on it) apart from the rest, so it can bop.
+        let top = headContext(in: context, pose: pose)
         let head = CGPoint(x: 20, y: 15), radius: CGFloat = 11
-        var shapes: [Path] = [Path(ellipseIn: CGRect(x: head.x - radius, y: head.y - radius, width: 2 * radius, height: 2 * radius)),
-                              Path(ellipseIn: CGRect(x: 14, y: 24, width: 12, height: 11))]
+        var heads = [Path(ellipseIn: CGRect(x: head.x - radius, y: head.y - radius, width: 2 * radius, height: 2 * radius))]
+        let torso = Path(ellipseIn: CGRect(x: 14, y: 24, width: 12, height: 11))
         // Its spikes, chunky ones: two long ones up and out, shorter ones around the sides.
         let spikes: [(CGFloat, CGFloat, CGFloat)] = [(-0.78, -0.62, 11), (0.35, -0.94, 11), (0.97, -0.25, 7),
                                                      (-1, 0.05, 7.5), (-0.8, 0.6, 6), (0.9, 0.45, 4.5)]
@@ -255,7 +283,7 @@ struct OylDrawing {
             spike.addLine(to: CGPoint(x: base.x - dy * width, y: base.y + dx * width))
             spike.addLine(to: CGPoint(x: base.x + dy * width, y: base.y - dx * width))
             spike.closeSubpath()
-            shapes.append(spike)
+            heads.append(spike)
         }
         var limbs: [(Path, CGFloat)] = []
         for (shoulder, hand) in [(CGPoint(x: 15, y: 26), pose.hands.0), (CGPoint(x: 25, y: 26), pose.hands.1)] {
@@ -269,12 +297,14 @@ struct OylDrawing {
         // shows (no need to merge the shapes).
         if let outline {
             let rim: CGFloat = 0.7
-            for shape in shapes { context.stroke(shape, with: .color(outline), lineWidth: 2 * rim) }
+            for shape in heads { top.stroke(shape, with: .color(outline), lineWidth: 2 * rim) }
+            context.stroke(torso, with: .color(outline), lineWidth: 2 * rim)
             for (limb, width) in limbs {
                 context.stroke(limb, with: .color(outline), style: StrokeStyle(lineWidth: width + 2 * rim, lineCap: .round))
             }
         }
-        for shape in shapes { context.fill(shape, with: .color(skin)) }
+        for shape in heads { top.fill(shape, with: .color(skin)) }
+        context.fill(torso, with: .color(skin))
         for (limb, width) in limbs {
             context.stroke(limb, with: .color(skin), style: StrokeStyle(lineWidth: width, lineCap: .round))
         }
@@ -283,13 +313,13 @@ struct OylDrawing {
         for center in [CGPoint(x: 14.9, y: 18), CGPoint(x: 25.1, y: 18)] {
             let eye = CGRect(x: center.x - 4, y: center.y - 3.5, width: 8, height: 7)
             guard !pose.eyesClosed else {
-                context.stroke(Path { $0.move(to: CGPoint(x: eye.minX + 0.6, y: center.y + 0.8))
+                top.stroke(Path { $0.move(to: CGPoint(x: eye.minX + 0.6, y: center.y + 0.8))
                                       $0.addQuadCurve(to: CGPoint(x: eye.maxX - 0.6, y: center.y + 0.8),
                                                       control: CGPoint(x: center.x, y: center.y + 2.4)) },
                                with: .color(Self.ink), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
                 continue
             }
-            var inside = context
+            var inside = top
             inside.clip(to: Path(ellipseIn: eye))
             inside.fill(Path(ellipseIn: eye), with: .color(Self.ink))
             let glint = CGPoint(x: center.x + pose.look.x * 1.6, y: center.y + 0.6 + pose.look.y * 1.1)
@@ -298,15 +328,16 @@ struct OylDrawing {
         }
 
         if hat {
-            // An orange beanie with a bobble, for Claude.
-            var cap = Path()
-            cap.move(to: CGPoint(x: 10.5, y: 8.6))
-            cap.addQuadCurve(to: CGPoint(x: 29.5, y: 8.6), control: CGPoint(x: 20, y: -4))
-            cap.closeSubpath()
-            context.fill(cap, with: .color(Oyl.hatOrange))
-            context.fill(Path(roundedRect: CGRect(x: 9.6, y: 7.4, width: 20.8, height: 3.2), cornerRadius: 1.6),
-                         with: .color(Color(red: 0.72, green: 0.38, blue: 0.27)))
-            context.fill(Path(ellipseIn: CGRect(x: 18, y: -0.6, width: 4, height: 4)), with: .color(Oyl.hatOrange))
+            // A beanie with a bobble: orange for Claude; black for Muse, its band paler so it
+            // shows against a dark menu bar.
+            var shape = Path()
+            shape.move(to: CGPoint(x: 10.5, y: 8.6))
+            shape.addQuadCurve(to: CGPoint(x: 29.5, y: 8.6), control: CGPoint(x: 20, y: -4))
+            shape.closeSubpath()
+            top.fill(shape, with: .color(cap))
+            let band = cap == Oyl.hatOrange ? Color(red: 0.72, green: 0.38, blue: 0.27) : Color(white: 0.36)
+            top.fill(Path(roundedRect: CGRect(x: 9.6, y: 7.4, width: 20.8, height: 3.2), cornerRadius: 1.6), with: .color(band))
+            top.fill(Path(ellipseIn: CGRect(x: 18, y: -0.6, width: 4, height: 4)), with: .color(cap == Oyl.hatOrange ? cap : band))
         }
     }
 
@@ -388,7 +419,7 @@ struct OylDrawing {
 
 extension OylDrawing {
     /// What it gets up to with no agent to run: a pastime every 12 s, always in the same order
-    /// (so any Oyls on screen together do the same), or dancing while music plays.
+    /// (so any Oyls on screen together do the same), or bopping its head while music plays.
     fileprivate enum Pastime { case butterfly, toss, doze, wave, read, sip, dance }
     private static let pastimes: [Pastime] = [.butterfly, .toss, .doze, .wave, .read, .sip]
     private static let scene: TimeInterval = 12
@@ -469,13 +500,35 @@ extension OylDrawing {
             pose.eyesClosed = pose.eyesClosed || sipping(at: t) > 0.8
             pose.look = CGPoint(x: 0.6, y: 0.5)
         case .dance:
-            // Arms and feet taking turns, on top of the bop.
-            let swing = sin(time * 2 * .pi * 0.9)
-            pose.hands = (CGPoint(x: 4, y: 24 - 7 * swing), CGPoint(x: 36, y: 24 + 7 * swing))
-            pose.feet = (CGPoint(x: 14, y: 41 - max(swing, 0) * 2.5), CGPoint(x: 27, y: 41 - max(-swing, 0) * 2.5))
-            pose.look = CGPoint(x: 0.6 * sin(time * 1.1), y: -0.2)
+            // Bopping its head, lids low: down on each beat and back up, tipped one way then the
+            // other, a foot lifting between beats to tap down on the next.
+            let bop = self.bop
+            pose.nod = 2.6 * bop.depth
+            pose.tilt = (bop.count % 2 == 0 ? 0.07 : -0.07) * bop.depth
+            pose.lift = 0
+            pose.squash = 1 - 0.03 * bop.depth
+            pose.lid = 0.5
+            pose.look = CGPoint(x: 0.3, y: 0.4)
+            pose.hands = (CGPoint(x: 12, y: 31 + bop.depth), CGPoint(x: 28, y: 31 + bop.depth))
+            pose.feet = (CGPoint(x: 14, y: 41), CGPoint(x: 27, y: 41 - 2.4 * max(0, sin(2 * .pi * (bop.through - 0.5)))))
         }
         return pose
+    }
+
+    /// Its head bopping: how far down (0 up, 1 all the way), on which beat, and how far through
+    /// it. To the music's beat while it has a steady one, down on each and easing back up; else
+    /// to the bass as it comes; else, with nothing to hear, to a tempo of its own.
+    private var bop: (depth: CGFloat, count: Int, through: Double) {
+        let position: Double
+        if let beats {
+            position = beats
+        } else if beat > 0 {
+            return (beat, 0, 0)
+        } else {
+            position = time * 1.8
+        }
+        let count = position.rounded(.down), through = position - count
+        return (CGFloat(pow(0.5 + 0.5 * cos(2 * .pi * through), 1.5)), Int(count), through)
     }
 
     /// Sat down, legs out in front.
@@ -492,6 +545,8 @@ extension OylDrawing {
         pose.feet = (mix(from.feet.0, to.feet.0, f), mix(from.feet.1, to.feet.1, f))
         pose.lift = from.lift + (to.lift - from.lift) * f
         pose.squash = from.squash + (to.squash - from.squash) * f
+        pose.nod = from.nod + (to.nod - from.nod) * f
+        pose.tilt = from.tilt + (to.tilt - from.tilt) * f
         pose.eyesClosed = f < 0.5 ? from.eyesClosed : to.eyesClosed
         return pose
     }
@@ -604,6 +659,39 @@ extension OylDrawing {
         }
     }
 
+    /// Reading an audiobook, it stops now and then to think it over: 0 reading, 1 lost in
+    /// thought. Every 11 s, for 4 of them.
+    private var pondering: CGFloat {
+        Self.during(time.truncatingRemainder(dividingBy: 11), 6.5, 10.5, ease: 0.6)
+    }
+
+    /// What it's thinking over, as far as `showing` (0...1): a thought cloud rising from its
+    /// head in puffs, the book's cover in it (or, with none, an ellipsis).
+    private func musings(_ image: NSImage?, in space: GraphicsContext, showing: CGFloat) {
+        guard showing > 0.01 else { return }
+        var faded = space
+        faded.opacity *= Double(showing)
+        // All of it drawn together and then faded, so its circles run together into one cloud.
+        faded.drawLayer { context in
+            let puffs: [(CGFloat, CGFloat, CGFloat)] = [(43, 14, 1.3), (47.5, 9.5, 1.9)]
+            let cloud: [(CGFloat, CGFloat, CGFloat)] = [(55, 14, 5.5), (61, 9.5, 6.5), (68.5, 10.5, 6), (72, 16, 5), (63, 17.5, 6)]
+            let shapes = (puffs + cloud).map { Self.circle(CGPoint(x: $0.0, y: $0.1), $0.2) }
+            // Outlined all round first, so on a light menu bar it shows, and then filled over.
+            if let outline { for shape in shapes { context.stroke(shape, with: .color(outline), lineWidth: 1.4) } }
+            for shape in shapes { context.fill(shape, with: .color(Color(white: 0.94))) }
+            let box = CGRect(x: 57.5, y: 8, width: 11, height: 11)
+            if let image {
+                var art = context
+                art.clip(to: Path(roundedRect: box, cornerRadius: 1.6))
+                art.draw(Image(nsImage: image), in: box)
+            } else {
+                for index in 0..<3 {
+                    context.fill(Self.circle(CGPoint(x: box.minX + 1.5 + CGFloat(index) * 4, y: box.midY), 1.1), with: .color(Color(white: 0.4)))
+                }
+            }
+        }
+    }
+
     // Sipping
 
     /// How far it's lifted its mug to drink, 0...1: a sip every 4 s.
@@ -656,12 +744,19 @@ extension OylDrawing {
 
 /// One of Oyl's own jobs for an Oyl, besides running an agent.
 enum OylDuty: Equatable {
-    /// Dancing by a boombox.
-    case music
-    /// By a clock filling in as time goes, warming to orange. An endless reminder holds up a
+    /// In headphones, by the song's cover and a little visualizer, bopping its head to the beat;
+    /// with the lyrics showing, singing along into a microphone too. For an audiobook, reading
+    /// it instead, looking up now and then to think it over.
+    case music(cover: NSImage?, listening: Listening)
+
+    /// How it takes what's playing.
+    enum Listening: Equatable {
+        case dj, singing, reading
+    }
+    /// By a clock filling in as time goes, deepening to blue. An endless reminder holds up a
     /// sticky note instead.
     case timer(ReminderTimer)
-    /// Cyan and jittery, on energy drinks; with a stopwatch for a set time, or binoculars when
+    /// Sea green and jittery, on energy drinks; with a stopwatch for a set time, or binoculars when
     /// it's watching for an app to quit.
     case awake(AwakeManager.Mode)
     /// Grey and slumped by an empty battery; perking up, plugged in, as it fills.
@@ -670,8 +765,6 @@ enum OylDuty: Equatable {
     case bedtime(BedtimeStage)
     /// Holding up the selfie just taken.
     case selfie(NSImage)
-    /// At a microphone, singing along.
-    case singer
 
     /// Its color for the job, if not white.
     func skin(at date: Date) -> Color? {
@@ -681,16 +774,16 @@ enum OylDuty: Equatable {
         case .timer(let timer):
             guard !timer.isEndless else { return nil }
             let gone = 1 - timer.fractionLeft(at: date)
-            return Color(red: 0.96 + 0.04 * gone, green: 0.96 - 0.34 * gone, blue: 0.96 - 0.62 * gone)
+            return Oyl.timer(gone)
         case .awake:
-            return Oyl.cyan
+            return Oyl.seafoam
         case .battery(.tired):
             return Oyl.tired
         case .battery(.recharging(let percent)):
             // Greening up as it fills.
             let full = CGFloat(min(max(Double(percent) / Double(PowerWatcher.recovered), 0), 1))
             return Color(red: 0.8 - 0.2 * full, green: 0.82 + 0.11 * full, blue: 0.86 - 0.18 * full)
-        case .bedtime, .selfie, .singer:
+        case .bedtime, .selfie:
             return nil
         }
     }
@@ -698,6 +791,13 @@ enum OylDuty: Equatable {
 
 extension Oyl {
     static let noteYellow = Color(red: 1, green: 0.86, blue: 0.36)
+    /// A timer's blue: clear of staying awake's sea green and Claude's orange.
+    static let timerBlue = Color(red: 0.28, green: 0.56, blue: 1)
+
+    /// A timer's Oyl, `gone` (0...1) of the way through: white, deepening to blue.
+    static func timer(_ gone: Double) -> Color {
+        Color(red: 0.96 - 0.66 * gone, green: 0.96 - 0.38 * gone, blue: 0.96 + 0.04 * gone)
+    }
     static let tired = Color(red: 0.8, green: 0.82, blue: 0.86)
     static let pajamas = Color(red: 0.74, green: 0.66, blue: 1)
 }
@@ -709,8 +809,15 @@ extension OylDrawing {
         var pose = restingPose()
         var x: CGFloat = 6
         switch duty {
-        case .music:
+        case .music(_, .reading):
+            // Sat with the book, lowering it a little to think.
+            Self.sit(&pose)
+            let musing = pondering
+            pose.hands = (CGPoint(x: 18, y: 31 + 3 * musing), CGPoint(x: 32, y: 31 + 3 * musing))
+            pose.look = Self.mix(CGPoint(x: 0.15 + 0.3 * sin(time * 1.3), y: 0.9), CGPoint(x: 0.65, y: -0.45), musing)
+        case .music(_, let listening):
             pose = self.pose(for: .dance, at: 0)
+            if listening == .singing { pose.hands.1 = CGPoint(x: 23, y: 26) }  // the mic at its mouth
         case .timer(let timer) where timer.isEndless:
             pose.hands.1 = noteHand
             pose.look = CGPoint(x: 0, y: 0.3)  // at you, holding it up
@@ -769,19 +876,22 @@ extension OylDrawing {
         case .selfie:
             pose.hands = (CGPoint(x: 31, y: 31), CGPoint(x: 37, y: 31))
             pose.look = CGPoint(x: 0, y: 0.35)  // at you, proud
-        case .singer:
-            pose.hands.1 = CGPoint(x: 23, y: 26)  // the mic at its mouth
-            pose.hands.0 = CGPoint(x: 7, y: 20 + 3 * sin(time * 2))
-            pose.eyesClosed = sin(time * 1.3) > 0.6  // feeling it
-            x += 1.5 * sin(time * 2)  // swaying
         }
         let space = self.space
         let body = body(in: space, at: x, pose: pose)
         drawOyl(in: body, pose: pose, hat: false)
         switch duty {
-        case .music:
-            boombox(in: space, at: CGRect(x: 54, y: 25, width: 36, height: 20))
-            notes(in: space, from: CGPoint(x: 60, y: 22), rise: 16)
+        case .music(let image, .reading):
+            let musing = pondering
+            var held = body
+            held.translateBy(x: 0, y: 3 * musing)
+            book(in: held, at: musing > 0 ? 1 : time)  // no page turning while it thinks
+            musings(image, in: space, showing: musing)
+        case .music(let image, let listening):
+            headphones(in: headContext(in: body, pose: pose))
+            if listening == .singing { microphone(in: body, hand: pose.hands.1) }
+            cover(image, in: space, at: CGRect(x: 50, y: 10, width: 34, height: 34))
+            visualizer(in: space, at: CGRect(x: 87, y: 20, width: 12, height: 24))
         case .timer(let timer) where timer.isEndless:
             note(in: body, hand: pose.hands.1)
         case .timer(let timer):
@@ -801,9 +911,6 @@ extension OylDrawing {
         case .selfie(let image):
             polaroid(in: space, at: CGRect(x: 43, y: 3, width: 28, height: 33), image: image)
             sparkles(in: space)
-        case .singer:
-            microphone(in: body, hand: pose.hands.1)
-            notes(in: space, from: CGPoint(x: 46, y: 30), rise: 22)
         }
     }
 
@@ -811,8 +918,13 @@ extension OylDrawing {
     func walk(facingRight: Bool, hat: Bool, carrying duty: OylDuty?) {
         var pose = pose(for: .idle, walking: true, surfing: false)
         switch duty {
-        case .music?:
-            pose.hands.1 = CGPoint(x: 31, y: 21)  // holding it up on its shoulder
+        case .music(_, .reading)?:
+            // Its nose in the book.
+            pose.hands = (CGPoint(x: 18, y: 31), CGPoint(x: 32, y: 31))
+            pose.look = CGPoint(x: 0.3, y: 0.9)
+        case .music(_, let listening)?:
+            pose.hands.0 = CGPoint(x: 5, y: 31)  // reaching back for the string
+            if listening == .singing { pose.hands.1 = CGPoint(x: 23, y: 26) }  // and the mic at its mouth
         case .timer(let timer)? where timer.isEndless:
             pose.hands.1 = noteHand
         case .awake(let mode)?:
@@ -823,16 +935,31 @@ extension OylDrawing {
             pose.lift -= 1.5  // dragging its feet
         case .bedtime?:
             pose.lid = 0.5
-        case .singer?:
-            pose.hands.1 = CGPoint(x: 23, y: 26)
         default:
             break
         }
         let body = body(in: space, at: 30, pose: pose, mirrored: !facingRight)
         drawOyl(in: body, pose: pose, hat: hat)
         switch duty {
-        case .music?:
-            boombox(in: body, at: CGRect(x: 29, y: 9, width: 18, height: 10))
+        case .music(_, .reading)?:
+            book(in: body, at: time)
+        case .music(let image, let listening)?:
+            headphones(in: headContext(in: body, pose: pose))
+            if listening == .singing { microphone(in: body, hand: pose.hands.1) }
+            // Its cover and visualizer dragged along the bar behind it on a string, bumping as they
+            // go (past the edges of its drawing, which on the menu bar is all one canvas).
+            let behind: CGFloat = facingRight ? -1 : 1
+            let hand = CGPoint(x: 50 + behind * (20 - pose.hands.0.x), y: 3 - pose.lift + pose.hands.0.y)
+            let bump = abs(sin(time * pace * 2 * .pi * 1.8)) * 0.8
+            let near = hand.x + behind * 5
+            let box = CGRect(x: facingRight ? near - 34 : near, y: 10 - bump, width: 34, height: 34)
+            cover(image, in: space, at: box)
+            visualizer(in: space, at: CGRect(x: facingRight ? box.minX - 15 : box.maxX + 3, y: 20 - bump, width: 12, height: 24))
+            let corner = CGPoint(x: facingRight ? box.maxX : box.minX, y: box.minY + 8)
+            var string = Path()
+            string.move(to: hand)
+            string.addQuadCurve(to: corner, control: CGPoint(x: (hand.x + corner.x) / 2, y: max(hand.y, corner.y) + 3))
+            space.stroke(string, with: .color(Color(white: 0.3)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
         case .timer(let timer)? where timer.isEndless:
             note(in: body, hand: pose.hands.1)
         case .timer(let timer)?:
@@ -845,8 +972,6 @@ extension OylDrawing {
             candle(in: body, hand: pose.hands.1)
         case .selfie(let image)?:
             polaroid(in: body, at: CGRect(x: pose.hands.1.x - 3, y: pose.hands.1.y - 13, width: 11, height: 13), image: image)
-        case .singer?:
-            microphone(in: body, hand: pose.hands.1)
         case .battery?, nil:
             break
         }
@@ -864,25 +989,53 @@ extension OylDrawing {
         drawOyl(in: body(in: space, at: 30, pose: pose), pose: pose, hat: hat)
     }
 
-    // Boombox
+    // The song
 
-    /// A boombox, its speakers thumping with the bass.
-    private func boombox(in context: GraphicsContext, at box: CGRect) {
-        let u = box.width / 36  // drawn 36 wide
-        context.stroke(Path(roundedRect: CGRect(x: box.minX + 6 * u, y: box.minY - 5 * u, width: 24 * u, height: 8 * u),
-                            cornerRadius: 3 * u), with: .color(Color(white: 0.5)), lineWidth: 1.6 * u)
-        context.fill(Path(roundedRect: box, cornerRadius: 3 * u), with: .color(Color(white: 0.24)))
-        let thump = beat * 1.2
-        for x in [box.minX + 8.5 * u, box.maxX - 8.5 * u] {
-            let center = CGPoint(x: x, y: box.midY + u)
-            context.fill(Self.circle(center, (5.5 + thump) * u), with: .color(Color(white: 0.09)))
-            context.stroke(Self.circle(center, (5.5 + thump) * u), with: .color(Color(white: 0.5)), lineWidth: u)
-            context.fill(Self.circle(center, (2 + thump * 0.6) * u), with: .color(Color(white: 0.36)))
+    /// Headphones over its spikes: the band arched across the top of its head, a cup either side.
+    private func headphones(in head: GraphicsContext) {
+        var band = Path()
+        band.addArc(center: CGPoint(x: 20, y: 16), radius: 13, startAngle: .degrees(190), endAngle: .degrees(350), clockwise: false)
+        if let outline { head.stroke(band, with: .color(outline), style: StrokeStyle(lineWidth: 4, lineCap: .round)) }
+        head.stroke(band, with: .color(Color(white: 0.32)), style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
+        for x: CGFloat in [5.5, 29.5] {
+            let cup = Path(roundedRect: CGRect(x: x, y: 12.5, width: 5, height: 9.5), cornerRadius: 2.2)
+            if let outline { head.stroke(cup, with: .color(outline), lineWidth: 1.4) }
+            head.fill(cup, with: .color(Color(white: 0.17)))
+            head.fill(Path(roundedRect: CGRect(x: x + 1.2, y: 14.3, width: 2.6, height: 5.9), cornerRadius: 1.2),
+                      with: .color(Color(white: 0.42)))
         }
-        context.fill(Path(roundedRect: CGRect(x: box.midX - 3.5 * u, y: box.minY + 4 * u, width: 7 * u, height: 5 * u),
-                          cornerRadius: u), with: .color(Oyl.hatOrange))
-        context.fill(Path(roundedRect: CGRect(x: box.midX - 3 * u, y: box.maxY - 6 * u, width: 6 * u, height: 1.4 * u),
-                          cornerRadius: 0.7 * u), with: .color(Self.blue.opacity(0.5 + 0.5 * beat)))
+    }
+
+    /// The song's cover, or where there's none, a record.
+    private func cover(_ image: NSImage?, in context: GraphicsContext, at box: CGRect) {
+        let shape = Path(roundedRect: box, cornerRadius: box.width * 0.12)
+        if let image {
+            var art = context
+            art.clip(to: shape)
+            art.draw(Image(nsImage: image), in: box)
+        } else {
+            context.fill(shape, with: .color(Color(white: 0.2)))
+            let center = CGPoint(x: box.midX, y: box.midY)
+            context.fill(Self.circle(center, box.width * 0.38), with: .color(Color(white: 0.07)))
+            context.fill(Self.circle(center, box.width * 0.11), with: .color(Oyl.hatOrange))
+        }
+        context.stroke(shape, with: .color(.white.opacity(0.25)), lineWidth: box.width * 0.04)
+    }
+
+    /// A little visualizer: four bars, bass to treble, rising with the song (or, until its sound
+    /// comes through, on their own).
+    private func visualizer(in context: GraphicsContext, at box: CGRect) {
+        let live = bars.count == 4 && bars.contains { $0 > 0.01 }
+        let width = box.width / (4 + 3 * 0.7)
+        for index in 0..<4 {
+            let level = live ? CGFloat(bars[index]) : CGFloat(0.3 + 0.25 * sin(time * (5 + Double(index)) + Double(index) * 1.7))
+            let height = max(width, box.height * min(max(level, 0), 1))
+            let bar = Path(roundedRect: CGRect(x: box.minX + CGFloat(index) * width * 1.7, y: box.maxY - height, width: width, height: height),
+                           cornerRadius: width / 2)
+            // Outlined like Oyl on the menu bar, so they show on a light one too.
+            if let outline { context.stroke(bar, with: .color(outline), lineWidth: 1.4) }
+            context.fill(bar, with: .color(.white.opacity(0.9)))
+        }
     }
 
     // Clock
@@ -905,7 +1058,7 @@ extension OylDrawing {
             wedge.addArc(center: center, radius: r * 0.86, startAngle: .degrees(-90), endAngle: .degrees(-90 + 360 * gone),
                          clockwise: false)
             wedge.closeSubpath()
-            context.fill(wedge, with: .color(Oyl.hatOrange.opacity(0.85)))
+            context.fill(wedge, with: .color(Oyl.timerBlue.opacity(0.85)))
         }
         context.stroke(Self.circle(center, r), with: .color(metal), lineWidth: r * 0.16)
         hand(in: context, at: center, angle: CGFloat((gone - 0.25) * 2 * .pi), length: r * 0.72, width: r * 0.12)
@@ -1003,296 +1156,12 @@ extension OylDrawing {
             lines.addLine(to: CGPoint(x: edge + out * 2.5, y: 10))
             lines.move(to: CGPoint(x: edge, y: 18))
             lines.addLine(to: CGPoint(x: edge + out * 3, y: 18))
-            context.stroke(lines, with: .color(Oyl.cyan), style: StrokeStyle(lineWidth: 1, lineCap: .round))
+            context.stroke(lines, with: .color(Oyl.seafoam), style: StrokeStyle(lineWidth: 1, lineCap: .round))
         }
     }
 
     fileprivate static func circle(_ center: CGPoint, _ radius: CGFloat) -> Path {
         Path(ellipseIn: CGRect(x: center.x - radius, y: center.y - radius, width: 2 * radius, height: 2 * radius))
-    }
-}
-
-// MARK: - The calendar
-
-extension OylDrawing {
-    /// Doing what the calendar says it's at: Oyl on the left, its things to the right or in hand.
-    func attend(_ activity: CalendarActivity) {
-        let space = self.space
-        switch activity {
-        case .computer:
-            draw(.coding, hat: false, walking: false, surfing: false)
-        case .reading:
-            let pose = pose(for: .read, at: time)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            book(in: body, at: time)
-        case .sleep:
-            let pose = pose(for: .doze, at: time)
-            drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
-            snores(in: space)
-        case .writing:
-            var pose = restingPose()
-            pose.hands = (CGPoint(x: 21, y: 31), penTip)
-            pose.look = CGPoint(x: 0.5, y: 0.9)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            clipboard(in: body)
-        case .party:
-            let pose = pose(for: .dance, at: time)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            partyHat(in: body)
-            confetti(in: space)
-        case .chat:
-            // Taking turns with a friend.
-            var pose = restingPose()
-            let talking = Int(time / 1.8) % 2 == 0
-            pose.look = CGPoint(x: 0.9, y: 0.1)
-            if talking { pose.hands.1 = CGPoint(x: 32, y: 24 + 2 * sin(time * 7)) }
-            drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
-            var friend = space
-            friend.translateBy(x: 62, y: 22.5 - (talking ? 0 : abs(sin(time * 5)) * 1.2))
-            friend.scaleBy(x: 0.6, y: 0.6)
-            OylDrawing(canvas: canvas, size: size, time: time, beat: beat, skin: Oyl.pastel(4), outline: outline)
-                .drawOyl(in: friend, pose: Pose(look: CGPoint(x: -0.8, y: 0.1)), hat: false)
-            speech(in: space, at: talking ? CGPoint(x: 42, y: 3) : CGPoint(x: 55, y: 7), fromLeft: talking)
-        case .eat:
-            var pose = restingPose()
-            let bite = Self.during(time.truncatingRemainder(dividingBy: 2.6), 1.4, 2.3, ease: 0.3)
-            pose.hands = (CGPoint(x: 15, y: 32), Self.mix(CGPoint(x: 27, y: 30), CGPoint(x: 22, y: 24), bite))
-            pose.eyesClosed = pose.eyesClosed || bite > 0.8
-            pose.look = CGPoint(x: 0.2, y: 0.8)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            bowl(in: body, spoon: pose.hands.1, bite: bite)
-        case .drive:
-            var pose = restingPose()
-            Self.sit(&pose)
-            pose.lift += abs(sin(time * 9)) * 0.6  // a bumpy road
-            pose.hands = (CGPoint(x: 29, y: 23), CGPoint(x: 33, y: 23))
-            pose.look = CGPoint(x: 0.9, y: 0)
-            road(in: space)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            car(in: body)
-        case .draw:
-            var pose = restingPose()
-            pose.hands.1 = CGPoint(x: 36 + 1.5 * sin(time * 2.3), y: 19 + 2 * sin(time * 3.1))
-            pose.look = CGPoint(x: 0.9, y: -0.2)
-            easel(in: space)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            brush(in: body, hand: pose.hands.1)
-        case .exercise:
-            // Curls, one arm then the other.
-            var pose = restingPose()
-            let curl = sin(time * 2 * .pi * 0.8)
-            pose.hands = (CGPoint(x: 8, y: 27 - 9 * max(curl, 0)), CGPoint(x: 32, y: 27 - 9 * max(-curl, 0)))
-            pose.look = CGPoint(x: 0, y: 0.3)
-            let body = body(in: space, at: 6, pose: pose)
-            drawOyl(in: body, pose: pose, hat: false)
-            dumbbell(in: body, at: pose.hands.0)
-            dumbbell(in: body, at: pose.hands.1)
-            sweat(in: body)
-        }
-    }
-
-    // Writing
-
-    /// Where its pencil is, writing line after line.
-    private var penTip: CGPoint {
-        let progress = (time * 3).truncatingRemainder(dividingBy: 21)  // three lines of 7
-        return CGPoint(x: 24.5 + CGFloat(progress.truncatingRemainder(dividingBy: 7)), y: 28 + CGFloat(Int(progress / 7)) * 2.6)
-    }
-
-    /// A clipboard held up in front, filling with writing, and the pencil.
-    private func clipboard(in context: GraphicsContext) {
-        context.fill(Path(roundedRect: CGRect(x: 22, y: 24.5, width: 12, height: 12), cornerRadius: 1.2),
-                     with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)))
-        context.fill(Path(CGRect(x: 23, y: 26, width: 10, height: 9.8)), with: .color(Self.paper))
-        context.fill(Path(roundedRect: CGRect(x: 25.5, y: 23.6, width: 5, height: 2), cornerRadius: 0.6), with: .color(Color(white: 0.7)))
-        let progress = (time * 3).truncatingRemainder(dividingBy: 21)
-        for row in 0..<3 {
-            let written = CGFloat(min(max(progress - Double(row) * 7, 0), 7))
-            guard written > 0 else { continue }
-            context.fill(Path(CGRect(x: 24.5, y: 27.6 + CGFloat(row) * 2.6, width: written, height: 0.8)), with: .color(Color(white: 0.3)))
-        }
-        let tip = penTip
-        var lead = Path()
-        lead.move(to: tip)
-        lead.addLine(to: CGPoint(x: tip.x + 0.6, y: tip.y - 1.2))
-        context.stroke(lead, with: .color(Self.ink), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-        var pencil = Path()
-        pencil.move(to: CGPoint(x: tip.x + 0.6, y: tip.y - 1.2))
-        pencil.addLine(to: CGPoint(x: tip.x + 2.6, y: tip.y - 5.5))
-        context.stroke(pencil, with: .color(Oyl.noteYellow), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-    }
-
-    // Partying
-
-    private func partyHat(in context: GraphicsContext) {
-        var cone = Path()
-        cone.move(to: CGPoint(x: 16.5, y: 5.5))
-        cone.addLine(to: CGPoint(x: 26.5, y: 7.8))
-        cone.addLine(to: CGPoint(x: 26, y: -2.5))
-        cone.closeSubpath()
-        context.fill(cone, with: .color(Color(red: 1, green: 0.42, blue: 0.52)))
-        var band = Path()
-        band.move(to: CGPoint(x: 19.5, y: 2.2))
-        band.addLine(to: CGPoint(x: 26.3, y: 3.6))
-        context.stroke(band, with: .color(Oyl.noteYellow), lineWidth: 1.2)
-        context.fill(Self.circle(CGPoint(x: 26, y: -2.5), 1.6), with: .color(Oyl.noteYellow))
-    }
-
-    private func confetti(in context: GraphicsContext) {
-        let colors = [Oyl.noteYellow, Self.blue, Color(red: 1, green: 0.42, blue: 0.52), Color(red: 0.45, green: 0.85, blue: 0.5), Oyl.hatOrange]
-        for index in 0..<12 {
-            let fall = (time * (7 + Double(index % 4) * 2.5) + Double(index) * 9.7).truncatingRemainder(dividingBy: 54) - 4
-            var piece = context
-            piece.translateBy(x: 44 + CGFloat((index * 37) % 52) + 2 * sin(time * 2 + Double(index)), y: CGFloat(fall))
-            piece.rotate(by: .radians(time * 3 + Double(index)))
-            piece.fill(Path(CGRect(x: -0.9, y: -1.4, width: 1.8, height: 2.8)), with: .color(colors[index % colors.count]))
-        }
-    }
-
-    // Chatting
-
-    /// A speech bubble with dots bouncing in it; its tail toward whoever's talking.
-    private func speech(in context: GraphicsContext, at origin: CGPoint, fromLeft: Bool) {
-        let bubble = CGRect(x: origin.x, y: origin.y, width: 15, height: 9)
-        var shape = Path(roundedRect: bubble, cornerRadius: 4)
-        if fromLeft {
-            shape.move(to: CGPoint(x: bubble.minX + 2, y: bubble.maxY - 2))
-            shape.addLine(to: CGPoint(x: bubble.minX - 2.5, y: bubble.maxY + 3.5))
-            shape.addLine(to: CGPoint(x: bubble.minX + 6, y: bubble.maxY))
-        } else {
-            shape.move(to: CGPoint(x: bubble.maxX - 2, y: bubble.maxY - 2))
-            shape.addLine(to: CGPoint(x: bubble.maxX + 2.5, y: bubble.maxY + 3.5))
-            shape.addLine(to: CGPoint(x: bubble.maxX - 6, y: bubble.maxY))
-        }
-        shape.closeSubpath()
-        context.fill(shape, with: .color(Self.paper))
-        let bouncing = Int(time * 4) % 3
-        for dot in 0..<3 {
-            let center = CGPoint(x: bubble.midX + CGFloat(dot - 1) * 3.6, y: bubble.midY - (dot == bouncing ? 1 : 0))
-            context.fill(Self.circle(center, 0.95), with: .color(Color(white: 0.3)))
-        }
-    }
-
-    // Eating
-
-    /// A bowl of noodles held in front, and the spoon.
-    private func bowl(in context: GraphicsContext, spoon: CGPoint, bite: CGFloat) {
-        if bite < 0.2 {
-            for index in 0..<2 {
-                let x = 19 + CGFloat(index) * 4, sway = 1.5 * sin(time * 3 + Double(index) * 2)
-                var steam = Path()
-                steam.move(to: CGPoint(x: x, y: 26.5))
-                steam.addCurve(to: CGPoint(x: x, y: 20), control1: CGPoint(x: x + sway, y: 24.5), control2: CGPoint(x: x - sway, y: 22))
-                context.stroke(steam, with: .color(.white.opacity(0.45)), style: StrokeStyle(lineWidth: 0.8, lineCap: .round))
-            }
-        }
-        context.fill(Path(ellipseIn: CGRect(x: 14.5, y: 27.4, width: 13, height: 3)), with: .color(Oyl.noteYellow))
-        var dish = Path()
-        dish.move(to: CGPoint(x: 13.5, y: 29))
-        dish.addQuadCurve(to: CGPoint(x: 28.5, y: 29), control: CGPoint(x: 21, y: 39))
-        dish.closeSubpath()
-        context.fill(dish, with: .color(Self.blue))
-        context.stroke(Path { $0.move(to: CGPoint(x: 13.5, y: 29)); $0.addLine(to: CGPoint(x: 28.5, y: 29)) },
-                       with: .color(.white.opacity(0.8)), lineWidth: 0.8)
-        var handle = Path()
-        handle.move(to: spoon)
-        handle.addLine(to: CGPoint(x: spoon.x - 2.6, y: spoon.y - 1.4))
-        context.stroke(handle, with: .color(Color(white: 0.85)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
-        context.fill(Path(ellipseIn: CGRect(x: spoon.x - 4.6, y: spoon.y - 2.6, width: 2.6, height: 1.8)), with: .color(Color(white: 0.85)))
-    }
-
-    // Driving
-
-    /// The road going by underneath.
-    private func road(in context: GraphicsContext) {
-        for dash in 0..<8 {
-            let x = (Double(dash) * 14 - time * 40).truncatingRemainder(dividingBy: 112)
-            context.fill(Path(roundedRect: CGRect(x: CGFloat(x < 0 ? x + 112 : x) - 6, y: 48, width: 6, height: 1.2), cornerRadius: 0.6),
-                         with: .color(.white.opacity(0.35)))
-        }
-    }
-
-    /// A little car around its lower half, wheels turning.
-    private func car(in context: GraphicsContext) {
-        let paint = Color(red: 0.95, green: 0.42, blue: 0.4)
-        context.stroke(Path { $0.move(to: CGPoint(x: 35, y: 25)); $0.addLine(to: CGPoint(x: 40, y: 17)) },
-                       with: .color(Self.blue.opacity(0.75)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
-        context.stroke(Path(ellipseIn: CGRect(x: 28.5, y: 20.5, width: 5, height: 5)), with: .color(Color(white: 0.25)), lineWidth: 1.2)
-        context.fill(Path(roundedRect: CGRect(x: 2, y: 25, width: 44, height: 11), cornerRadius: 4), with: .color(paint))
-        context.fill(Path(roundedRect: CGRect(x: 42.5, y: 27.5, width: 3, height: 2.2), cornerRadius: 1), with: .color(Oyl.noteYellow))
-        for x in [11, 37] as [CGFloat] {
-            let hub = CGPoint(x: x, y: 37)
-            context.fill(Self.circle(hub, 4.4), with: .color(Color(white: 0.12)))
-            context.fill(Self.circle(hub, 1.8), with: .color(Color(white: 0.6)))
-            let turn = CGFloat(time * 9)
-            var spoke = Path()
-            spoke.move(to: CGPoint(x: hub.x - cos(turn) * 3.6, y: hub.y - sin(turn) * 3.6))
-            spoke.addLine(to: CGPoint(x: hub.x + cos(turn) * 3.6, y: hub.y + sin(turn) * 3.6))
-            context.stroke(spoke, with: .color(Color(white: 0.45)), lineWidth: 0.7)
-        }
-    }
-
-    // Painting
-
-    /// An easel, with a little landscape coming along on it.
-    private func easel(in context: GraphicsContext) {
-        let wood = Color(red: 0.62, green: 0.45, blue: 0.3)
-        for (from, to) in [(CGPoint(x: 51, y: 47), CGPoint(x: 57, y: 14)), (CGPoint(x: 71, y: 47), CGPoint(x: 64, y: 14)),
-                           (CGPoint(x: 61, y: 47), CGPoint(x: 61, y: 24))] {
-            context.stroke(Path { $0.move(to: from); $0.addLine(to: to) }, with: .color(wood), style: StrokeStyle(lineWidth: 1.3, lineCap: .round))
-        }
-        let canvasRect = CGRect(x: 48.5, y: 9, width: 25, height: 17)
-        context.fill(Path(canvasRect), with: .color(Self.paper))
-        context.stroke(Path(canvasRect), with: .color(wood), lineWidth: 0.8)
-        let progress = time.truncatingRemainder(dividingBy: 10) / 8 * 3
-        var hill = Path()
-        hill.move(to: CGPoint(x: 50, y: 22))
-        hill.addQuadCurve(to: CGPoint(x: 72, y: 21), control: CGPoint(x: 60, y: 12))
-        var sun = Path(ellipseIn: CGRect(x: 65, y: 11, width: 4.6, height: 4.6))
-        sun = sun.trimmedPath(from: 0, to: min(max(progress - 1, 0), 1))
-        var ground = Path()
-        ground.move(to: CGPoint(x: 50, y: 24.5))
-        ground.addLine(to: CGPoint(x: 72, y: 24.5))
-        context.stroke(hill.trimmedPath(from: 0, to: min(max(progress, 0), 1)), with: .color(Self.blue), lineWidth: 1.4)
-        context.stroke(sun, with: .color(Oyl.noteYellow), lineWidth: 1.4)
-        context.stroke(ground.trimmedPath(from: 0, to: min(max(progress - 2, 0), 1)), with: .color(Color(red: 0.45, green: 0.85, blue: 0.5)),
-                       lineWidth: 1.4)
-    }
-
-    private func brush(in context: GraphicsContext, hand: CGPoint) {
-        var handle = Path()
-        handle.move(to: hand)
-        handle.addLine(to: CGPoint(x: hand.x + 4, y: hand.y - 4))
-        context.stroke(handle, with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)), style: StrokeStyle(lineWidth: 1, lineCap: .round))
-        let tips = [Self.blue, Oyl.noteYellow, Color(red: 0.45, green: 0.85, blue: 0.5)]
-        let tip = tips[min(Int(time.truncatingRemainder(dividingBy: 10) / 8 * 3), 2)]
-        context.fill(Self.circle(CGPoint(x: hand.x + 4.4, y: hand.y - 4.4), 1), with: .color(tip))
-    }
-
-    // Working out
-
-    private func dumbbell(in context: GraphicsContext, at hand: CGPoint) {
-        context.fill(Path(CGRect(x: hand.x - 4.5, y: hand.y - 0.6, width: 9, height: 1.2)), with: .color(Color(white: 0.6)))
-        for dx in [-5.6, 3.6] as [CGFloat] {
-            context.fill(Path(roundedRect: CGRect(x: hand.x + dx, y: hand.y - 3.2, width: 2, height: 6.4), cornerRadius: 0.6),
-                         with: .color(Self.blue))
-        }
-    }
-
-    private func sweat(in context: GraphicsContext) {
-        let phase = CGFloat((time / 1.6).truncatingRemainder(dividingBy: 1))
-        let drop = CGPoint(x: 32 + 2 * phase, y: 9 + 9 * phase)
-        var faded = context
-        faded.opacity *= Double(1 - phase)
-        faded.fill(Self.circle(drop, 1.1), with: .color(Self.blue))
-        faded.fill(Path { $0.move(to: CGPoint(x: drop.x - 1, y: drop.y - 0.3)); $0.addLine(to: CGPoint(x: drop.x, y: drop.y - 2.6))
-                         $0.addLine(to: CGPoint(x: drop.x + 1, y: drop.y - 0.3)) }, with: .color(Self.blue))
     }
 }
 
@@ -1447,24 +1316,12 @@ extension OylDrawing {
                          with: .color(Color(white: 0.3)))
         }
     }
+}
 
-    /// Nothing else on today: peering ahead down the timeline through a magnifying glass.
-    func peek() {
-        var pose = restingPose()
-        pose.hands.1 = CGPoint(x: 36, y: 27)
-        pose.look = CGPoint(x: 0.9, y: 0.05)
-        let space = self.space
-        drawOyl(in: body(in: space, at: 6, pose: pose), pose: pose, hat: false)
-        // Held up, sweeping slowly back and forth.
-        let lens = CGPoint(x: 56 + 3 * sin(time * 0.9), y: 20 + 1.2 * sin(time * 1.1)), radius: CGFloat = 10
-        var handle = Path()
-        handle.move(to: CGPoint(x: 42, y: 30))
-        handle.addLine(to: CGPoint(x: lens.x - radius * 0.72, y: lens.y + radius * 0.68))
-        space.stroke(handle, with: .color(Color(red: 0.62, green: 0.45, blue: 0.3)), style: StrokeStyle(lineWidth: 2.6, lineCap: .round))
-        space.fill(Self.circle(lens, radius), with: .color(Self.blue.opacity(0.18)))
-        space.stroke(Self.circle(lens, radius), with: .color(Color(white: 0.78)), lineWidth: 2)
-        var glint = Path()
-        glint.addArc(center: lens, radius: radius - 3.5, startAngle: .degrees(200), endAngle: .degrees(245), clockwise: false)
-        space.stroke(glint, with: .color(.white.opacity(0.55)), style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+extension AgentSession {
+    /// Its Oyl's hat: Claude's orange always; Muse's black while it's at work; else none.
+    var cap: Color? {
+        if isClaude { return Oyl.hatOrange }
+        return activity == .idle || activity == .done ? nil : Oyl.museBlack
     }
 }

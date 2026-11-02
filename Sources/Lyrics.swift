@@ -87,6 +87,7 @@ extension NotchState {
 struct LyricsView: View {
     let lyrics: Lyrics
     @ObservedObject var nowPlaying: NowPlaying
+    @Environment(\.notchTheme) private var theme
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { context in
@@ -106,14 +107,15 @@ struct LyricsView: View {
         .padding(.horizontal, 14)
         .frame(height: Layout.lyricsHeight - 8)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(nsColor: nowPlaying.accent).opacity(0.2)))
+            .fill(theme.tint(Color(nsColor: nowPlaying.accent)).opacity(0.2)))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func line(_ index: Int, size: CGFloat, opacity: Double) -> some View {
         let text = lyrics.lines.indices.contains(index) ? lyrics.lines[index].text : " "
         return Text(text)
-            .font(.system(size: size, weight: .bold))
+            // Bold at its size, but a line to be read, not a label.
+            .notchFont(size: size, weight: .bold, role: .heading)
             .foregroundStyle(.white.opacity(opacity))
             .lineLimit(1)
     }

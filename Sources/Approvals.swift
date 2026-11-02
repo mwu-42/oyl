@@ -23,6 +23,8 @@ extension AgentInbox {
     static let requests = support.appendingPathComponent("requests", isDirectory: true)
     static let answers = support.appendingPathComponent("answers", isDirectory: true)
     static let permissionHook = support.appendingPathComponent("permission-hook")
+    /// There while Oyl's switched off: the hook leaves every request to Claude Code.
+    static let away = support.appendingPathComponent("off")
 
     /// How long the hook waits for an answer in the notch before Claude Code asks the usual way.
     /// Its entry in Claude Code's settings needs a longer timeout than this.
@@ -32,10 +34,11 @@ extension AgentInbox {
     #!/bin/sh
     # Oyl's Claude Code permission hook; Oyl rewrites this file each time it starts.
     # Shows the request (JSON on stdin) in the notch and waits for Allow or Deny there. With no
-    # answer in time, or without Oyl running, it prints nothing, and Claude Code asks the
-    # usual way.
+    # answer in time, or without Oyl running (or with it switched off), it prints nothing, and
+    # Claude Code asks the usual way.
     support="$HOME/Library/Application Support/nott"
     pgrep -xq Oyl || exit 0
+    [ -e "$support/off" ] && exit 0
     [ -d "$support/requests" ] && [ -d "$support/answers" ] || exit 0
     id="$(date +%s)-$$"
     request="$support/requests/$id.json"
@@ -59,6 +62,8 @@ extension AgentInbox {
 
     static func preparePermissions() {
         let files = FileManager.default
+        // Oyl starts on, whatever it was when it last quit.
+        setAway(false)
         for folder in [requests, answers] {
             try? files.createDirectory(at: folder, withIntermediateDirectories: true)
             // Left from before this launch: their hooks have given up by now.
@@ -70,6 +75,14 @@ extension AgentInbox {
             try? permissionHookScript.write(to: permissionHook, atomically: true, encoding: .utf8)
         }
         try? files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: permissionHook.path)
+    }
+
+    static func setAway(_ off: Bool) {
+        if off {
+            FileManager.default.createFile(atPath: away.path, contents: nil)
+        } else {
+            try? FileManager.default.removeItem(at: away)
+        }
     }
 
     /// The requests waiting now, oldest first.

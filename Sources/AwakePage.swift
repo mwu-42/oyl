@@ -4,25 +4,29 @@ struct AwakePage: View {
     @ObservedObject var awake: AwakeManager
     @ObservedObject var state: NotchState
     @StateObject private var draft = LocalState("")
+    @Environment(\.notchTheme) private var theme
 
-    // Amphetamine's pill, in bright cyan.
+    // Amphetamine's pill, in green with a hint of blue.
     static let symbol = "pill.fill"
-    static let tint = Color(red: 0.2, green: 0.82, blue: 1)
+    static let tint = Color(red: 0.2, green: 0.88, blue: 0.68)
+
+    /// Its green as this look shows it (pale celadon, in Midnight Oyl).
+    private var tint: Color { theme.tint(Self.tint) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
                 Image(systemName: Self.symbol)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(awake.isActive ? Self.tint : Color.white.opacity(0.4))
+                    .notchSymbol(size: 15, weight: .semibold)
+                    .foregroundStyle(awake.isActive ? tint : Color.white.opacity(0.4))
                     .frame(width: 34, height: 34)
-                    .background(Circle().fill((awake.isActive ? Self.tint : Color.white).opacity(0.14)))
+                    .background(Circle().fill((awake.isActive ? tint : Color.white).opacity(0.14)))
                 VStack(alignment: .leading, spacing: 1) {
                     Text(awake.isActive ? "Keeping your Mac awake" : "Sleeping as usual")
-                        .font(.system(size: 13, weight: .semibold))
+                        .notchFont(size: 13, weight: .semibold)
                         .foregroundStyle(.white)
                     status
-                        .font(.system(size: 11))
+                        .notchFont(size: 11)
                         .foregroundStyle(.white.opacity(0.5))
                         .lineLimit(1)
                 }
@@ -30,11 +34,10 @@ struct AwakePage: View {
                 if awake.isActive {
                     Button(action: awake.stop) {
                         Text("Stop")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.black)
+                            .notchFont(size: 12, weight: .semibold)
                             .padding(.horizontal, 14)
                             .frame(height: 26)
-                            .background(Capsule().fill(Self.tint))
+                            .notchPill(Self.tint, text: .black)
                             .contentShape(Capsule())
                     }
                     .buttonStyle(PressableStyle())
@@ -49,7 +52,7 @@ struct AwakePage: View {
                 }
                 HStack(spacing: 6) {
                     Image(systemName: "clock")
-                        .font(.system(size: 10, weight: .semibold))
+                        .notchSymbol(size: 10, weight: .semibold)
                         .foregroundStyle(.white.opacity(0.6))
                     ReminderField(text: $draft.value, placeholder: "For… e.g. 2h", onSubmit: submit, onCancel: finish)
                 }
@@ -107,15 +110,15 @@ struct AwakePage: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: symbol)
-                    .font(.system(size: 10, weight: .semibold))
+                    .notchSymbol(size: 10, weight: .semibold)
                 Text(title)
-                    .font(.system(size: 12, weight: .medium))
+                    .notchFont(size: 12, weight: .medium)
                     .lineLimit(1)
             }
-            .foregroundStyle(selected ? Color.black : Color.white.opacity(0.8))
             .padding(.horizontal, 10)
             .frame(height: 26)
-            .background(Capsule().fill(selected ? Self.tint : Color.white.opacity(0.08)))
+            .notchPill(selected ? Self.tint : Color.white.opacity(0.08), text: selected ? Color.black : Color.white.opacity(0.8),
+                       bright: selected)
             .contentShape(Capsule())
         }
         .buttonStyle(PressableStyle())
@@ -126,10 +129,10 @@ struct AwakePage: View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isOn ? Self.tint : Color.white.opacity(0.4))
+                    .notchSymbol(size: 11, weight: .semibold)
+                    .foregroundStyle(isOn ? tint : Color.white.opacity(0.4))
                 Text(title)
-                    .font(.system(size: 11, weight: .medium))
+                    .notchFont(size: 11, weight: .medium)
                     .foregroundStyle(.white.opacity(isOn ? 0.9 : 0.55))
             }
             .contentShape(Rectangle())

@@ -3,7 +3,11 @@ import IOKit.ps
 import IOKit.pwr_mgt
 
 /// Keeps the Mac awake for a while, like Amphetamine: two hours unless told otherwise, until
-/// stopped, for a set time, or while an app is open. It keeps running with the lid closed too.
+/// stopped, for a set time, or while an app is open. It keeps running with the lid closed too:
+/// then, with no other screen on, the screen's dimmed all the way and put to sleep (and brought
+/// back as it was when the lid opens), and Oyl rests everything that's only there to be seen. A
+/// session carries on if Oyl's back within ten minutes of quitting (restarted, updated, crashed);
+/// meanwhile the Mac sleeps as usual.
 @MainActor
 final class AwakeManager: ObservableObject {
     enum Mode: Equatable {
@@ -17,6 +21,8 @@ final class AwakeManager: ObservableObject {
     static let longest: TimeInterval = 24 * 3600
     /// How long it stays awake when not told how long.
     static let usual: TimeInterval = 2 * 3600
+    /// How soon Oyl has to be back after quitting for a session to carry on.
+    static let resumeWithin: TimeInterval = 10 * 60
 
     /// nil while the Mac sleeps as usual.
     @Published private(set) var mode: Mode?
@@ -30,22 +36,35 @@ final class AwakeManager: ObservableObject {
     }
     @Published private(set) var lidHelperInstalled = LidSleep.isInstalled
     @Published private(set) var installingHelper = false
+    /// The lid's down and no other screen's on: nothing on screen can be seen.
+    @Published private(set) var isShut = false
 
     private let defaults = UserDefaults.standard
     private var assertion: IOPMAssertionID?
     private var assertionKeepsDisplay = false
     private var endTimer: Timer?
     private var batteryTimer: Timer?
+    private let lid = Lid()
 
     init() {
         displayMaySleep = defaults.bool(forKey: "awake.displayMaySleep")
         stopOnLowBattery = defaults.object(forKey: "awake.stopOnLowBattery") as? Bool ?? true
 
-        // A crash or force quit can leave lid sleep off. Put it back.
-        if defaults.bool(forKey: "awake.lidSleepDisabled") {
+        // A crash or force quit can leave lid sleep off. Put it back, unless the session's still on.
+        let resumed = Self.saved(in: defaults)
+        if resumed == nil, defaults.bool(forKey: "awake.lidSleepDisabled") {
             LidSleep.set(disabled: false)
             defaults.set(false, forKey: "awake.lidSleepDisabled")
         }
+        // Or the screen dimmed under the lid.
+        if !lid.isClosed { undim() }
+        lid.onChange = { [weak self] in self?.checkShut() }
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil,
+                                               queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkShut() }
+        }
+        checkShut()
+        if let resumed { start(resumed.mode, length: resumed.length) }
 
         NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main
@@ -66,10 +85,16 @@ final class AwakeManager: ObservableObject {
     }
 
     func start(_ mode: Mode) {
+        start(mode, length: nil)
+    }
+
+    /// `length`: how long a set time was set to be, when it's carried on from before.
+    private func start(_ mode: Mode, length: TimeInterval?) {
         if case .whileRunning(let bundleID, _) = mode,
            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty { return }
         self.mode = mode
-        if case .until(let end) = mode { length = end.timeIntervalSinceNow.rounded() } else { length = nil }
+        if case .until(let end) = mode { self.length = length ?? end.timeIntervalSinceNow.rounded() } else { self.length = nil }
+        save()
         if !lidHelperInstalled { installLidHelper() }
         endTimer?.invalidate()
         endTimer = nil
@@ -81,8 +106,12 @@ final class AwakeManager: ObservableObject {
             endTimer = timer
         }
         if batteryTimer == nil {
+            // And lid sleep checked: the lid could close any time.
             batteryTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-                MainActor.assumeIsolated { self?.checkBattery() }
+                MainActor.assumeIsolated {
+                    self?.checkBattery()
+                    self?.apply()
+                }
             }
         }
         apply()
@@ -90,8 +119,11 @@ final class AwakeManager: ObservableObject {
     }
 
     func stop() {
+        // As it was, for whenever it's next woken.
+        undim()
         mode = nil
         length = nil
+        save()
         endTimer?.invalidate()
         endTimer = nil
         batteryTimer?.invalidate()
@@ -114,8 +146,9 @@ final class AwakeManager: ObservableObject {
     private func apply() {
         let active = mode != nil
 
-        // Idle sleep: a power assertion, released as soon as the session ends.
-        let keepDisplay = !displayMaySleep
+        // Idle sleep: a power assertion, released as soon as the session ends. (With the lid
+        // shut, the screen may sleep regardless.)
+        let keepDisplay = !displayMaySleep && !isShut
         if let assertion, !active || keepDisplay != assertionKeepsDisplay {
             IOPMAssertionRelease(assertion)
             self.assertion = nil
@@ -131,10 +164,96 @@ final class AwakeManager: ObservableObject {
         }
 
         // Lid closed: macOS sleeps on lid close regardless of assertions, so this needs pmset.
-        let disableLidSleep = active && lidHelperInstalled
-        if disableLidSleep != defaults.bool(forKey: "awake.lidSleepDisabled"), LidSleep.set(disabled: disableLidSleep) {
-            defaults.set(disableLidSleep, forKey: "awake.lidSleepDisabled")
+        // Checked against the setting itself, in case something's put it back meanwhile; and only
+        // what Oyl turned off is turned back on.
+        if active, lidHelperInstalled, !LidSleep.isDisabled {
+            if LidSleep.set(disabled: true) { defaults.set(true, forKey: "awake.lidSleepDisabled") }
+        } else if !active, defaults.bool(forKey: "awake.lidSleepDisabled") {
+            if LidSleep.set(disabled: false) { defaults.set(false, forKey: "awake.lidSleepDisabled") }
         }
+    }
+
+    /// Oyl's quitting: the Mac put back to sleeping as usual, but the session kept, to carry on if
+    /// it's back soon.
+    func pause() {
+        let session = defaults.dictionary(forKey: "awake.session")
+        stop()
+        guard let session else { return }
+        defaults.set(session, forKey: "awake.session")
+        defaults.set(Date().timeIntervalSinceReferenceDate, forKey: "awake.pausedAt")
+    }
+
+    /// The session as it's kept between launches (nothing, with none).
+    private func save() {
+        switch mode {
+        case nil:
+            defaults.removeObject(forKey: "awake.session")
+        case .indefinitely:
+            defaults.set(["kind": "indefinitely"], forKey: "awake.session")
+        case .until(let end):
+            defaults.set(["kind": "until", "end": end.timeIntervalSinceReferenceDate, "length": length ?? 0], forKey: "awake.session")
+        case .whileRunning(let bundleID, let name):
+            defaults.set(["kind": "whileRunning", "bundleID": bundleID, "name": name], forKey: "awake.session")
+        }
+    }
+
+    /// The session kept from before, if it's still to run: Oyl back soon enough (or crashed), and
+    /// its end not yet come, or its app still open.
+    private static func saved(in defaults: UserDefaults) -> (mode: Mode, length: TimeInterval?)? {
+        let paused = defaults.object(forKey: "awake.pausedAt") as? Double
+        defaults.removeObject(forKey: "awake.pausedAt")
+        guard let session = defaults.dictionary(forKey: "awake.session") else { return nil }
+        if let paused, Date().timeIntervalSinceReferenceDate - paused > resumeWithin {
+            defaults.removeObject(forKey: "awake.session")
+            return nil
+        }
+        switch session["kind"] as? String {
+        case "indefinitely":
+            return (.indefinitely, nil)
+        case "until":
+            guard let end = (session["end"] as? Double).map(Date.init(timeIntervalSinceReferenceDate:)), end > Date() else { break }
+            return (.until(end), (session["length"] as? Double).flatMap { $0 > 0 ? $0 : nil })
+        case "whileRunning":
+            guard let bundleID = session["bundleID"] as? String, let name = session["name"] as? String,
+                  !NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).isEmpty else { break }
+            return (.whileRunning(bundleID: bundleID, name: name), nil)
+        default:
+            break
+        }
+        defaults.removeObject(forKey: "awake.session")
+        return nil
+    }
+
+    /// Whether the lid's shut with no other screen on; if it just was, while kept awake, the
+    /// screen goes dark, and when it opens, it comes back.
+    private func checkShut() {
+        let shut = lid.isClosed && !NSScreen.screens.contains { !BuiltInScreen.isBuiltIn($0) }
+        guard shut != isShut else {
+            if !lid.isClosed { undim() }
+            return
+        }
+        isShut = shut
+        apply()
+        if shut, isActive {
+            dim()
+        } else if !shut {
+            undim()
+        }
+    }
+
+    /// The screen all the way down, then asleep. Its brightness is kept, saved, to put back.
+    private func dim() {
+        if defaults.object(forKey: "awake.dimmedFrom") == nil, let level = BuiltInScreen.brightness, level > 0 {
+            defaults.set(level, forKey: "awake.dimmedFrom")
+            BuiltInScreen.brightness = 0
+        }
+        BuiltInScreen.sleep()
+    }
+
+    private func undim() {
+        guard let level = defaults.object(forKey: "awake.dimmedFrom") as? Double else { return }
+        BuiltInScreen.brightness = Float(level)
+        defaults.removeObject(forKey: "awake.dimmedFrom")
     }
 
     private func checkBattery() {
@@ -152,6 +271,14 @@ enum LidSleep {
     private static let rulePath = "/etc/sudoers.d/nott"  // from the app's old name; already installed
 
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: rulePath) }
+
+    /// Whether lid sleep's off now (`pmset -g`'s SleepDisabled), whoever turned it off.
+    static var isDisabled: Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        defer { IOObjectRelease(root) }
+        return IORegistryEntryCreateCFProperty(root, "SleepDisabled" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? Bool ?? false
+    }
 
     @discardableResult
     static func set(disabled: Bool) -> Bool {
@@ -189,6 +316,85 @@ enum LidSleep {
                 MainActor.assumeIsolated { completion(installed) }
             }
         }
+    }
+}
+
+/// The lid, as the power manager tells of it closing and opening.
+@MainActor
+final class Lid {
+    private(set) var isClosed = Lid.read()
+    var onChange: () -> Void = {}
+
+    private var port: IONotificationPortRef?
+    private var notification: io_object_t = 0
+    /// The power manager's message that the lid's been opened or closed.
+    private nonisolated static let clamshellChange: UInt32 = 0xE003_4100
+
+    init() {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        defer { IOObjectRelease(root) }
+        guard root != 0, let port = IONotificationPortCreate(kIOMainPortDefault) else { return }
+        self.port = port
+        CFRunLoopAddSource(CFRunLoopGetMain(), IONotificationPortGetRunLoopSource(port).takeUnretainedValue(), .defaultMode)
+        IOServiceAddInterestNotification(port, root, kIOGeneralInterest, { context, _, message, _ in
+            guard message == Lid.clamshellChange, let context else { return }
+            let lid = Unmanaged<Lid>.fromOpaque(context).takeUnretainedValue()
+            MainActor.assumeIsolated {
+                lid.isClosed = Lid.read()
+                lid.onChange()
+            }
+        }, Unmanaged.passUnretained(self).toOpaque(), &notification)
+    }
+
+    private nonisolated static func read() -> Bool {
+        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
+        defer { IOObjectRelease(root) }
+        return IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?
+            .takeRetainedValue() as? Bool ?? false
+    }
+}
+
+/// The built-in screen: its brightness, through the private calls brightness tools use (looked up
+/// at run time; if they ever go away, it just isn't dimmed), and putting screens to sleep.
+enum BuiltInScreen {
+    private typealias Reader = @convention(c) (CGDirectDisplayID, UnsafeMutablePointer<Float>) -> Int32
+    private typealias Writer = @convention(c) (CGDirectDisplayID, Float) -> Int32
+    private static let framework = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY)
+    private static let read = dlsym(framework, "DisplayServicesGetBrightness").map { unsafeBitCast($0, to: Reader.self) }
+    private static let write = dlsym(framework, "DisplayServicesSetBrightness").map { unsafeBitCast($0, to: Writer.self) }
+
+    static func isBuiltIn(_ screen: NSScreen) -> Bool {
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        return number.map { CGDisplayIsBuiltin($0.uint32Value) != 0 } ?? false
+    }
+
+    private static var display: CGDirectDisplayID? {
+        var displays = [CGDirectDisplayID](repeating: 0, count: 16), count: UInt32 = 0
+        guard CGGetOnlineDisplayList(16, &displays, &count) == .success else { return nil }
+        return displays.prefix(Int(count)).first { CGDisplayIsBuiltin($0) != 0 }
+    }
+
+    /// 0...1, or nil if it can't be read.
+    static var brightness: Float? {
+        get {
+            var level: Float = 0
+            guard let display, let read, read(display, &level) == 0 else { return nil }
+            return level
+        }
+        set {
+            guard let newValue, let display, let write else { return }
+            _ = write(display, newValue)
+        }
+    }
+
+    /// Every screen to sleep now, as from a hot corner.
+    static func sleep() {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        process.arguments = ["displaysleepnow"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
     }
 }
 

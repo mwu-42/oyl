@@ -51,6 +51,7 @@ struct AgentSession: Identifiable, Equatable {
     var lastEvent: Date
     var pid: Int32          // the agent's process, 0 if unknown
     var skin = 0            // its Oyl's pastel, see `Oyl.pastel(_:)`
+    var isClaude = true     // Claude's, so its Oyl wears Claude's cap (Muse's doesn't)
 
     var summary: String { detail ?? activity.title }
 }
@@ -58,7 +59,8 @@ struct AgentSession: Identifiable, Equatable {
 /// Follows coding agents through Claude Code's hooks: every hook event runs a small script
 /// (`AgentInbox.hookScript`) that drops the event in a folder, and Oyl reads and deletes them.
 /// An agent goes away with Claude Code's SessionEnd event, or when its process is gone. Chats in
-/// the Claude app come from `ClaudeAppChats`.
+/// the Claude app come from `ClaudeAppChats`, each of its Cowork tasks from `CoworkTasks`, and
+/// agents in a browser tab (Muse) from `WebAgents`.
 @MainActor
 final class AgentMonitor: ObservableObject {
     /// In the order they first showed up.
@@ -67,6 +69,18 @@ final class AgentMonitor: ObservableObject {
     @Published private(set) var offersChats = false
     /// Agents waiting for your OK, oldest first.
     @Published private(set) var approvals: [Approval] = []
+    /// Oyl's switched off: Claude Code asks for its OKs the usual way, straight off, rather than
+    /// waiting on a notch no one can see. Those already waiting are handed back.
+    var isAway = false {
+        didSet {
+            guard isAway != oldValue else { return }
+            AgentInbox.setAway(isAway)
+            guard isAway else { return }
+            codeApprovals.forEach { AgentInbox.answer($0.id, allow: nil) }
+            codeApprovals = []
+            updateApprovals()
+        }
+    }
 
     private static let chatID = "claude-app"
     private var codeApprovals: [Approval] = []
@@ -78,6 +92,19 @@ final class AgentMonitor: ObservableObject {
             MainActor.assumeIsolated { self?.apply(chat) }
         }
     }
+    private lazy var cowork = CoworkTasks { [weak self] tasks in
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self?.apply(tasks) }
+        }
+    }
+    private lazy var web = WebAgents { [weak self] agents in
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { self?.apply(agents) }
+        }
+    }
+    /// What the Claude app's window last showed, to tell its Cowork task from a chat.
+    private var lastChat: ClaudeAppChats.Chat?
+    private static let coworkPrefix = "cowork:", webPrefix = "web:"
 
     private let queue = DispatchQueue(label: "oyl.Agents", qos: .utility)
     private let scripts = ScriptRunner()
@@ -101,6 +128,11 @@ final class AgentMonitor: ObservableObject {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self, requests != self.codeApprovals else { return }
+                    // Asked just as Oyl was switched off.
+                    if self.isAway {
+                        requests.forEach { AgentInbox.answer($0.id, allow: nil) }
+                        return
+                    }
                     self.codeApprovals = requests
                     self.updateApprovals()
                 }
@@ -205,9 +237,70 @@ final class AgentMonitor: ObservableObject {
         if offers != offersChats { offersChats = offers }
         let app = NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeAppChats.bundleID).first
         chats.follow(app?.processIdentifier, allowed: allowed)
+        cowork.follow(app != nil)
+        web.follow(allowed: allowed)
     }
 
+    /// The Claude app's Cowork tasks, each its own Oyl: Claude's, in the app. One that's stopped
+    /// working has just finished; one the app's window is asking about wants you.
+    private func apply(_ tasks: [CoworkTasks.Task]) {
+        let now = Date()
+        let pid = NSRunningApplication.runningApplications(withBundleIdentifier: ClaudeAppChats.bundleID).first?.processIdentifier ?? 0
+        var sessions = self.sessions.filter { session in
+            !session.id.hasPrefix(Self.coworkPrefix) || tasks.contains { Self.coworkPrefix + $0.id == session.id }
+        }
+        for task in tasks {
+            let id = Self.coworkPrefix + task.id
+            let index = sessions.firstIndex { $0.id == id }
+            var session = index.map { sessions[$0] }
+                ?? AgentSession(id: id, project: task.title, cwd: nil, host: "Cowork", activity: task.activity, detail: nil,
+                                since: now, lastEvent: task.lastActivity, pid: pid)
+            session.project = task.title
+            session.lastEvent = task.lastActivity
+            if pid > 0 { session.pid = pid }
+            var activity = task.activity
+            if let chat = lastChat, chat.needsApproval, chat.title == task.title { activity = .waiting }
+            if activity == .idle, index != nil, session.activity != .idle, session.activity != .done { activity = .done }
+            if activity != session.activity, !(activity == .idle && session.activity == .done) {
+                session.activity = activity
+                session.since = now
+            }
+            if let index { sessions[index] = session } else { sessions.append(session) }
+        }
+        publish(sessions)
+    }
+
+    /// Agents in a browser tab, each its own Oyl while it's at work; done, it cheers and goes
+    /// (see `tidy`), and comes back the next time it's at work.
+    private func apply(_ agents: [WebAgents.Agent]) {
+        let now = Date()
+        var sessions = self.sessions.filter { session in
+            !session.id.hasPrefix(Self.webPrefix) || agents.contains { Self.webID($0) == session.id }
+        }
+        for agent in agents {
+            let id = Self.webID(agent)
+            let index = sessions.firstIndex { $0.id == id }
+            guard index != nil || agent.isWorking || agent.needsYou else { continue }
+            var session = index.map { sessions[$0] }
+                ?? AgentSession(id: id, project: agent.name, cwd: nil, host: agent.browser, activity: .idle, detail: nil,
+                                since: now, lastEvent: now, pid: agent.pid, isClaude: false)
+            session.pid = agent.pid
+            let busy = session.activity == .browsing || session.activity == .waiting
+            let activity: AgentActivity = agent.needsYou ? .waiting : agent.isWorking ? .browsing : busy ? .done : session.activity
+            if activity != session.activity {
+                session.activity = activity
+                session.since = now
+            }
+            if activity != .idle { session.lastEvent = now }
+            if let index { sessions[index] = session } else { sessions.append(session) }
+        }
+        publish(sessions)
+    }
+
+    private static func webID(_ agent: WebAgents.Agent) -> String { webPrefix + agent.browser + " " + agent.host }
+
     private func apply(_ chat: ClaudeAppChats.Chat?) {
+        lastChat = chat
         var sessions = self.sessions
         let index = sessions.firstIndex { $0.id == Self.chatID }
         guard let chat else {
@@ -242,6 +335,16 @@ final class AgentMonitor: ObservableObject {
             appApprovalDismissed = false
         }
         updateApprovals()
+        // A Cowork task's its own Oyl already: one asking for you is shown as waiting there.
+        if let task = sessions.firstIndex(where: { $0.id.hasPrefix(Self.coworkPrefix) && $0.project == chat.title }) {
+            if chat.needsApproval, sessions[task].activity != .waiting {
+                sessions[task].activity = .waiting
+                sessions[task].since = Date()
+            }
+            if let index { sessions.remove(at: index) }
+            publish(sessions)
+            return
+        }
         // A chat shows up once Claude writes in it, and stays (idle) while the app is open.
         guard chat.isWriting || chat.needsApproval || index != nil else { return }
         let now = Date()
@@ -266,8 +369,12 @@ final class AgentMonitor: ObservableObject {
         sessions.max { ($0.activity.priority, $0.lastEvent) < ($1.activity.priority, $1.lastEvent) }
     }
 
-    /// Brings up where the agent is working.
+    /// Brings up where the agent is working: a browser agent's tab, too.
     func reveal(_ session: AgentSession) {
+        if session.id.hasPrefix(Self.webPrefix), let site = WebAgents.sites.first(where: { session.id.hasSuffix(" " + $0.host) }) {
+            WebAgents.show(site.host, in: session.host ?? "")
+            return
+        }
         AgentWindow.reveal(session, scripts: scripts)
     }
 
@@ -311,6 +418,8 @@ final class AgentMonitor: ObservableObject {
             session.pid > 0 ? kill(session.pid, 0) != 0 && errno == ESRCH
                             : now.timeIntervalSince(session.lastEvent) > 3 * 3600
         }
+        // A browser agent's gone once it's done (it doesn't wait about, the way Claude Code does).
+        sessions.removeAll { $0.id.hasPrefix(Self.webPrefix) && $0.activity == .done && now.timeIntervalSince($0.since) > 8 }
         for index in sessions.indices where sessions[index].activity == .done
             && now.timeIntervalSince(sessions[index].since) > 8 {
             sessions[index].activity = .idle

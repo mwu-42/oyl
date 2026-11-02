@@ -98,43 +98,45 @@ final class Bedtime: ObservableObject {
 /// fifteen more minutes).
 struct BedtimeAlert: View {
     @ObservedObject var bedtime: Bedtime
+    @Environment(\.notchTheme) private var theme
 
     static let moon = Color(red: 0.74, green: 0.66, blue: 1)
 
     var body: some View {
+        let moon = theme.tint(Self.moon, urgent: true)
         HStack(spacing: 12) {
             Image(systemName: "moon.zzz.fill")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundStyle(Self.moon)
+                .notchSymbol(size: 18, weight: .semibold)
+                .foregroundStyle(moon)
                 .frame(width: 34, height: 34)
-                .background(Circle().fill(Self.moon.opacity(0.16)))
+                .background(Circle().fill(moon.opacity(0.16)))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Time for bed")
-                    .font(.system(size: 13, weight: .semibold))
+                    .notchFont(size: 13, weight: .semibold)
                     .foregroundStyle(.white)
                 TimelineView(.everyMinute) { context in
                     Text("It's \(context.date.formatted(date: .omitted, time: .shortened)). Oyl's up waiting for you to sleep")
-                        .font(.system(size: 10.5))
+                        .notchFont(size: 10.5)
                         .foregroundStyle(.white.opacity(0.6))
                         .lineLimit(1)
                 }
             }
             Spacer(minLength: 8)
-            pill("15 more min", foreground: .white, background: .white.opacity(0.14), action: bedtime.snooze)
+            pill("15 more min", foreground: .white, background: .white.opacity(0.14), bright: false, action: bedtime.snooze)
             pill("Going to bed", foreground: .black, background: Self.moon, action: bedtime.dismiss)
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
     }
 
-    private func pill(_ title: String, foreground: Color, background: Color, action: @escaping () -> Void) -> some View {
+    private func pill(_ title: String, foreground: Color, background: Color, bright: Bool = true,
+                      action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 11.5, weight: .semibold))
-                .foregroundStyle(foreground)
+                .notchFont(size: 11.5, weight: .semibold)
                 .padding(.horizontal, 12)
                 .frame(height: 26)
-                .background(Capsule().fill(background))
+                .notchPill(background, text: foreground, bright: bright, urgent: true)
                 .contentShape(Capsule())
         }
         .buttonStyle(PressableStyle())

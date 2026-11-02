@@ -49,7 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      agents: AgentMonitor())
 
         // `kill`/`pkill` skip applicationWillTerminate; route them through it so a keep-awake
-        // session never outlives the app (lid sleep especially).
+        // session never outlives the app (lid sleep especially). It carries on if Oyl's back soon.
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         source.setEventHandler { NSApp.terminate(nil) }
@@ -58,6 +58,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        awake?.stop()
+        awake?.pause()
     }
 }
