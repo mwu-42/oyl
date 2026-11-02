@@ -1320,7 +1320,7 @@ struct Walker: Identifiable, Equatable {
         guard !leaving else { return nil }
         switch job {
         case .timer(let timer) where timer.isEndless:
-            return (timer.label.isEmpty ? "∞" : String(timer.label.prefix(20)), Oyl.noteYellow)
+            return (timer.label.isEmpty ? "∞" : timer.label, Oyl.noteYellow)
         case .timer(let timer):
             let left = timer.remaining(at: date)
             guard allCountdowns || left < Self.lastMinutes else { return nil }

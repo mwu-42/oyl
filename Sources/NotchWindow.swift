@@ -33,11 +33,12 @@ enum Layout {
         return stripPadding + (count - 1) * tabWidth + oylsTabWidth + (count - 1) * 2 + 4 + 8
     }
 
-    /// With up to `fit` rows showing; past that, they scroll.
-    static func timersHeight(rows: Int, fit: Int) -> CGFloat {
-        let visible = min(rows, fit)
-        let list = visible == 0 ? 20 : CGFloat(visible) * timerRowHeight + CGFloat(visible - 1) * 4
-        return 6 + 28 + 10 + list + 16
+    /// The Timers page, its list `list` tall.
+    static func timersHeight(list: CGFloat) -> CGFloat { 6 + 28 + 10 + list + 16 }
+
+    /// `rows` timers' rows, each one line high (a long name wraps onto more); with none, the hint.
+    static func timerRows(_ rows: Int) -> CGFloat {
+        rows == 0 ? 20 : CGFloat(rows) * timerRowHeight + CGFloat(rows - 1) * 4
     }
 
     static func oylsHeight(rows: Int) -> CGFloat {
@@ -129,6 +130,9 @@ final class NotchState: ObservableObject {
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
     @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
+    /// How tall the timers' rows stand, and for how many: a long name wraps, so they're measured
+    /// as they're laid out (see `TimersPage`).
+    @Published var timerRowsMeasure: (count: Int, height: CGFloat)?
     @Published var inFullscreen = false  // a fullscreen app is in front
     /// The lyrics: under the song in the notch, and sung by the music Oyl on the menu bar, for
     /// every song that has some, until they're turned off (a song without any in between just
@@ -298,7 +302,7 @@ final class NotchState: ObservableObject {
         if isAlerting { return Layout.alertHeight }
         switch page {
         case .music: return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil ? Layout.lyricsHeight : 0)
-        case .timers: return Layout.timersHeight(rows: timers.timers.count, fit: timerRowsFit)
+        case .timers: return Layout.timersHeight(list: timerListHeight)
         case .awake: return Layout.awakeHeight
         case .agents:
             // The settings go under them all.
@@ -352,13 +356,23 @@ final class NotchState: ObservableObject {
     /// shallow, just the three.
     var timerRowsFit: Int {
         if theme == .midnight { return Layout.maxVisibleTimers }
-        let around = headerHeight + Layout.timersHeight(rows: 0, fit: 0) - 20 + Layout.shadowPadding + 12
+        let around = headerHeight + Layout.timersHeight(list: 0) + Layout.shadowPadding + 12
         return max(Layout.maxVisibleTimers, Int((metrics.room - around + 4) / (Layout.timerRowHeight + 4)))
     }
 
+    /// The timers' rows as tall as they stand (as last measured, for as many as there are now),
+    /// up to `timerRowsFit` one-line rows' worth: past that, they scroll.
+    var timerRowsHeight: CGFloat {
+        let count = timers.timers.count
+        guard let measure = timerRowsMeasure, measure.count == count, count > 0 else { return Layout.timerRows(count) }
+        return measure.height
+    }
+
+    var timerListHeight: CGFloat { min(timerRowsHeight, Layout.timerRows(max(timerRowsFit, 1))) }
+
     var windowSize: CGSize {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
-                          Layout.timersHeight(rows: max(timers.timers.count, Layout.maxVisibleTimers), fit: timerRowsFit),
+                          Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight)
         let size = CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
                           height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
@@ -396,6 +410,32 @@ final class NotchPanel: NSPanel {
 
     // Sit over the menu bar instead of being pushed below it.
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        EditKeys.perform(event) || super.performKeyEquivalent(with: event)
+    }
+}
+
+/// Cut, copy, paste, select all, undo and redo, from the keyboard. They're the Edit menu's, and
+/// Oyl has no menu bar, so nothing would answer them: they're sent to whatever's typing instead.
+@MainActor
+enum EditKeys {
+    static func perform(_ event: NSEvent) -> Bool {
+        let modifiers = event.modifierFlags.intersection([.command, .shift, .option, .control])
+        guard event.type == .keyDown, modifiers == .command || modifiers == [.command, .shift],
+              let key = event.charactersIgnoringModifiers?.lowercased() else { return false }
+        let shifted = modifiers.contains(.shift)
+        let action: Selector
+        switch key {
+        case "x" where !shifted: action = #selector(NSText.cut(_:))
+        case "c" where !shifted: action = #selector(NSText.copy(_:))
+        case "v" where !shifted: action = #selector(NSText.paste(_:))
+        case "a" where !shifted: action = #selector(NSText.selectAll(_:))
+        case "z": action = shifted ? Selector(("redo:")) : Selector(("undo:"))
+        default: return false
+        }
+        return NSApp.sendAction(action, to: nil, from: nil)
+    }
 }
 
 /// Whether a screen is showing a fullscreen app's Space. There's no public way to ask (the

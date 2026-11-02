@@ -32,14 +32,13 @@ struct TimersPage: View {
                     .notchFont(size: 11)
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(height: 20)
-            } else if timers.timers.count <= state.timerRowsFit {
+            } else if state.timerRowsHeight <= state.timerListHeight + 0.5 {
                 rows
                     .padding(.horizontal, -6)
             } else {
-                let visible = CGFloat(state.timerRowsFit)
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: false) { rows }
-                        .frame(height: visible * Layout.timerRowHeight + (visible - 1) * 4)
+                        .frame(height: state.timerListHeight)
                         .padding(.horizontal, -6)
                         // To a timer picked out by clicking its Oyl, if it's out of sight.
                         .onAppear { DispatchQueue.main.async { scroll(proxy) } }
@@ -101,6 +100,18 @@ struct TimersPage: View {
             }
             .animation(NotchView.open, value: sorted.map(\.id))
         }
+        // As tall as they stand, a long name wrapped, for the page to fit them.
+        .background(GeometryReader { Color.clear.preference(key: RowsHeight.self, value: $0.size.height) })
+        .onPreferenceChange(RowsHeight.self) { height in
+            let count = timers.timers.count
+            if let last = state.timerRowsMeasure, last.count == count, abs(last.height - height) < 0.5 { return }
+            state.timerRowsMeasure = (count, height)
+        }
+    }
+
+    private struct RowsHeight: PreferenceKey {
+        static let defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
     }
 
     private func scroll(_ proxy: ScrollViewProxy) {
@@ -163,10 +174,7 @@ struct TimerRow: View {
                     .foregroundStyle(theme.tint(Oyl.noteYellow))
                     .frame(width: 20, height: 20)
                 editable {
-                    Text(timer.title)
-                        .notchFont(size: 13, weight: .medium)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    name
                     Spacer(minLength: 8)
                 }
                 RoundButton(symbol: "checkmark", tint: theme.tint(Oyl.noteYellow)) {
@@ -176,10 +184,19 @@ struct TimerRow: View {
                     timers.cancel(timer.id)
                 }
             }
-            .frame(height: Layout.timerRowHeight)
+            .frame(minHeight: Layout.timerRowHeight)
         } else {
             countdown
         }
+    }
+
+    /// All of it, however long, wrapping onto as many lines as it takes.
+    private var name: some View {
+        Text(timer.title)
+            .notchFont(size: 13, weight: .medium)
+            .foregroundStyle(.white)
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(.vertical, 4)
     }
 
     private var countdown: some View {
@@ -189,10 +206,7 @@ struct TimerRow: View {
                 TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2.5, color: tint)
                     .frame(width: 20, height: 20)
                 editable {
-                    Text(timer.title)
-                        .notchFont(size: 13, weight: .medium)
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    name
                     Spacer(minLength: 8)
                     Text(ReminderTimer.format(remaining))
                         .notchFont(size: 16, weight: .semibold, design: .rounded, digits: true)
@@ -208,7 +222,7 @@ struct TimerRow: View {
                 }
             }
         }
-        .frame(height: Layout.timerRowHeight)
+        .frame(minHeight: Layout.timerRowHeight)
     }
 
     /// Its name (and time), clicked to change it; or, while it's being changed, the field.
@@ -460,6 +474,10 @@ struct ReminderField: NSViewRepresentable {
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
+            // Pasted lines run on, one after another.
+            if field.stringValue.rangeOfCharacter(from: .newlines) != nil {
+                field.stringValue = field.stringValue.components(separatedBy: .newlines).joined(separator: " ")
+            }
             parent.text = field.stringValue
         }
 
