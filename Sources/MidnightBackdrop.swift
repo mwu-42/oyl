@@ -617,6 +617,7 @@ extension MidnightBackdrop {
         func update(bloom: Double, notch: CGSize, reach: CGFloat, grownFrom: CGFloat, growth: Double, lit: Double,
                     overflow: (side: CGFloat, below: CGFloat), page: CGRect, active: Bool) {
             guard let renderer else { return }
+            keepScale()
             let changed = bloom != renderer.bloom || notch != renderer.notch || reach != renderer.reach
                 || grownFrom != renderer.grownFrom || growth != renderer.growth || lit != renderer.lit
                 || overflow != renderer.overflow || page != renderer.page
@@ -637,8 +638,24 @@ extension MidnightBackdrop {
             if changed && isPaused { needsDisplay = true }
         }
 
+        /// The layer's scale, kept to its window's. Made before it's in a window that's on a
+        /// screen (the Dock's is, at launch), it's left at 0, which shows nothing of what's drawn
+        /// into it however well it's drawn, and nothing puts it right till the window's backing
+        /// changes: so it's set as it goes into a window, as that changes, and checked each time
+        /// it's told what to draw.
+        private func keepScale() {
+            guard let scale = window?.backingScaleFactor, scale > 0, let layer, layer.contentsScale != scale else { return }
+            layer.contentsScale = scale
+        }
+
+        override func viewDidChangeBackingProperties() {
+            super.viewDidChangeBackingProperties()
+            keepScale()
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
+            keepScale()
             if let occlusion { NotificationCenter.default.removeObserver(occlusion) }
             occlusion = nil
             if let window {
@@ -689,6 +706,7 @@ extension MidnightBackdrop {
                 return
             }
             ticks += 1
+            keepScale()
             if preferredFramesPerSecond >= 60 || ticks % 2 == 0 { draw() }
             let last = max(renderer?.lastFrame ?? 0, clockStarted)
             guard let renderer, CACurrentMediaTime() - last > 1 else {
