@@ -29,7 +29,14 @@ struct SettingsPage: View {
     @ObservedObject var features = Features.shared
 
     var body: some View {
-        SettingsLayout(section: $state.settingsSection, items: Self.items(state.settingsSection, state: state))
+        SettingsLayout(section: $state.settingsSection, items: Self.items(state.settingsSection, state: state),
+                       card: Self.showsPairing(state) ? AnyView(PhonePairingCard(phone: state.phone)) : nil)
+    }
+
+    /// A phone's being paired, from the Oyl section: its card's showing in place of the settings.
+    @MainActor
+    static func showsPairing(_ state: NotchState) -> Bool {
+        state.settingsSection == .oyl && state.phone.pairing != nil
     }
 
     // MARK: What's in each section
@@ -156,9 +163,23 @@ struct SettingsPage: View {
                 items.append(SettingItem(id: "pinned", title: "Stay open", hint: "On display, as clicking the moon does",
                                          isOn: state.isPinned) { state.isPinned.toggle() })
             }
+            items.append(SettingItem(id: Feature.openAtLogin.rawValue, title: "Open at login", hint: "Oyl starts with the Mac",
+                                     isOn: Feature.openAtLogin.isOn) { LoginItem.set(!Feature.openAtLogin.isOn) })
+            let phone = state.phone
+            let paired = phone.devices.count
+            items.append(SettingItem(id: "phone", title: "Phone remote",
+                                     hint: phone.isOn ? "At \(phone.address) on this Wi-Fi" + (paired > 0 ? ", for \(paired) paired" : "")
+                                         : "The notch from your phone's browser, on this Wi-Fi: agents, music, timers, keep-awake",
+                                     isOn: phone.isOn) { phone.setOn(!phone.isOn) })
+            if phone.isOn {
+                items.append(SettingItem(id: "pair", title: paired > 0 ? "Pair another phone" : "Pair a phone",
+                                         hint: "A code to scan with its camera, good for five minutes", action: { phone.pair() }, isButton: true))
+            }
+            if paired > 0 {
+                items.append(SettingItem(id: "forget", title: paired > 1 ? "Forget \(paired) phones" : "Forget the phone",
+                                         hint: "Each has to be paired again", action: { phone.forget() }, isButton: true))
+            }
             items += [
-                SettingItem(id: Feature.openAtLogin.rawValue, title: "Open at login", hint: "Oyl starts with the Mac",
-                            isOn: Feature.openAtLogin.isOn) { LoginItem.set(!Feature.openAtLogin.isOn) },
                 SettingItem(id: "quit", title: "Quit Oyl", hint: "Till it's opened again, or the next login",
                             action: { Quitting.quit(state.awake) }, isButton: true),
                 SettingItem(id: "off", title: "Turn off Oyl", hint: "Quits, and doesn't open at login till you open it again",
@@ -183,6 +204,8 @@ struct SettingsPage: View {
 struct SettingsLayout: View {
     @Binding var section: SettingsSection
     let items: [SettingItem]
+    /// Shown in the settings' place (a phone's pairing card).
+    var card: AnyView?
     @Environment(\.notchTheme) private var theme
     @Namespace private var chips
 
@@ -193,14 +216,17 @@ struct SettingsLayout: View {
                 .frame(height: Layout.settingsChipsHeight)
                 .padding(.bottom, Layout.settingsGap)
             Group {
-                if rows <= Layout.settingsRowsFit {
+                if let card {
+                    card
+                } else if rows <= Layout.settingsRowsFit {
                     grid
                 } else {
                     ScrollView(.vertical, showsIndicators: false) { grid }
                 }
             }
-            .frame(height: Layout.settingsRows(min(rows, Layout.settingsRowsFit)), alignment: .top)
-            .id(section)
+            .frame(height: Layout.settingsRows(card == nil ? min(rows, Layout.settingsRowsFit)
+                       : max(min(rows, Layout.settingsRowsFit), Layout.pairingRows)), alignment: .top)
+            .id(section.rawValue + (card == nil ? "" : " pairing"))
             .transition(NotchView.swap)
             motto
                 .frame(maxWidth: .infinity)
@@ -355,6 +381,113 @@ enum LoginItem {
             defaults.set(path, forKey: "loginItemPath")
         } catch {
             NSLog("Oyl couldn't add itself to Login Items: \(error)")
+        }
+    }
+}
+
+/// Pairing a phone with the remote: the code for its camera (or its six digits, to type at the
+/// address), and how long it's good for; then which phone it paired. In Midnight Oyl the code's
+/// on a pale ground with no edge to it, an engraved ring turning slowly round it.
+struct PhonePairingCard: View {
+    @ObservedObject var phone: PhoneRemote
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            HStack(alignment: .center, spacing: 18) {
+                picture
+                    .frame(width: 104, height: 104)
+                words(at: context.date)
+                Spacer(minLength: 0)
+            }
+            .frame(maxHeight: .infinity)
+        }
+    }
+
+    private var midnight: Bool { theme == .midnight }
+
+    @ViewBuilder private var picture: some View {
+        if phone.pairing?.paired != nil {
+            Image(systemName: "checkmark.circle")
+                .notchSymbol(size: 44, weight: .light)
+                .foregroundStyle(.white.opacity(0.9))
+        } else if let code = phone.pairingPicture {
+            ZStack {
+                if midnight {
+                    TurningRing()
+                        .frame(width: 104, height: 104)
+                }
+                Image(decorative: code, scale: 1)
+                    .interpolation(.none)
+                    .resizable()
+                    .renderingMode(.template)
+                    .foregroundStyle(midnight ? Midnight.ink : .black)
+                    .frame(width: 76, height: 76)
+                    .padding(8)
+                    .background {
+                        if midnight {
+                            RoundedRectangle(cornerRadius: 14).fill(Midnight.white).blur(radius: 2.5)
+                        } else {
+                            RoundedRectangle(cornerRadius: 10).fill(.white)
+                        }
+                    }
+            }
+        }
+    }
+
+    @ViewBuilder private func words(at now: Date) -> some View {
+        let soft = Color.white.opacity(midnight ? 0.62 : 0.55)
+        VStack(alignment: .leading, spacing: 3) {
+            if let pairing = phone.pairing {
+                if let paired = pairing.paired {
+                    Text("Paired with your \(paired)").notchFont(size: 13, weight: .semibold).foregroundStyle(.white)
+                    Text("Add it to the Home Screen to keep it at hand").notchFont(size: 10.5).foregroundStyle(soft)
+                } else if pairing.isSpent || now >= pairing.until {
+                    Text(pairing.isSpent ? "Too many wrong codes" : "The code's run out").notchFont(size: 13, weight: .semibold)
+                        .foregroundStyle(.white)
+                    HStack(spacing: 14) {
+                        Button("New code") { phone.pair() }
+                        Button("Done") { phone.stopPairing() }
+                    }
+                    .buttonStyle(PressableStyle())
+                    .notchFont(size: 11, weight: .semibold)
+                    .foregroundStyle(.white.opacity(0.8))
+                } else {
+                    Text("Pair your phone").notchFont(size: 13, weight: .semibold).foregroundStyle(.white)
+                    Text("Scan this with its camera, on this Wi-Fi, or open").notchFont(size: 10.5).foregroundStyle(soft)
+                    Text(phone.address).notchFont(size: 10.5, design: .monospaced).foregroundStyle(.white.opacity(0.85))
+                        .lineLimit(1).minimumScaleFactor(0.6).textSelection(.enabled)
+                    Text(pairing.code.prefix(3) + " " + pairing.code.suffix(3))
+                        .notchFont(size: 22, weight: .semibold, digits: true)
+                        .foregroundStyle(.white)
+                    HStack(spacing: 10) {
+                        Text("Good for " + Self.left(pairing.until.timeIntervalSince(now))).notchFont(size: 10.5, digits: true)
+                            .foregroundStyle(soft)
+                        Button("Cancel") { phone.stopPairing() }
+                            .buttonStyle(PressableStyle())
+                            .notchFont(size: 10.5, weight: .semibold)
+                            .foregroundStyle(.white.opacity(0.75))
+                    }
+                }
+            }
+        }
+    }
+
+    private static func left(_ seconds: TimeInterval) -> String {
+        let seconds = max(Int(seconds.rounded(.up)), 0)
+        return "\(seconds / 60):" + String(format: "%02d", seconds % 60)
+    }
+}
+
+/// An engraved ring, ticked like a planisphere's rim, turning once a minute.
+private struct TurningRing: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { context in
+            let turn = context.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 60) / 60
+            Circle()
+                .stroke(Midnight.silver.opacity(0.32), style: StrokeStyle(lineWidth: 0.6, dash: [1, 3.2]))
+                .padding(1)
+                .rotationEffect(.degrees(turn * 360))
         }
     }
 }

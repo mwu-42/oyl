@@ -24,6 +24,8 @@ enum Layout {
     static let settingsRowHeight: CGFloat = 22
     static let settingsRowsFit = 7
     static let settingsMottoHeight: CGFloat = 26
+    /// The rows a phone's pairing card takes on the settings page.
+    static let pairingRows = 5
     static func settingsRows(_ rows: Int) -> CGFloat { CGFloat(rows) * settingsRowHeight }
     static func settingsHeight(rows: Int) -> CGFloat {
         6 + settingsChipsHeight + settingsGap + settingsRows(min(rows, settingsRowsFit)) + settingsMottoHeight + 12
@@ -214,7 +216,10 @@ final class NotchState: ObservableObject {
     let saved = Shelf(.saved)
     /// Gives the keyboard back to the app you were using. Set by the controller.
     var resignKeyboard: () -> Void = {}
+    /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
+    private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     private var forwarding: AnyCancellable?
+    private var phoneForwarding: AnyCancellable?
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor, calendar: DayCalendar,
          power: PowerWatcher, bedtime: Bedtime, dictation: Dictation) {
@@ -242,6 +247,11 @@ final class NotchState: ObservableObject {
     }
 
     private var pageSwitch: AnyCancellable?
+
+    /// Starts the phone remote, if it's on, and redraws the settings as it changes.
+    func startPhone() {
+        phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
 
     /// The pages with tabs, in order: Oyl's own (always), then those turned on.
     var tabs: [NotchPage] {
@@ -365,7 +375,9 @@ final class NotchState: ObservableObject {
         case .activity: return Layout.activityHeight
         case .mirror: return Layout.mirrorHeight
         case .settings:
-            return Layout.settingsHeight(rows: (SettingsPage.items(settingsSection, state: self).count + 1) / 2)
+            let rows = (SettingsPage.items(settingsSection, state: self).count + 1) / 2
+            // Pairing a phone, its card in their place, big enough for its code to be scanned.
+            return Layout.settingsHeight(rows: SettingsPage.showsPairing(self) ? max(rows, Layout.pairingRows) : rows)
         }
     }
 
@@ -554,6 +566,7 @@ final class NotchController {
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor) {
         state = NotchState(nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents, calendar: DayCalendar(),
                            power: PowerWatcher(), bedtime: Bedtime(), dictation: Dictation())
+        state.startPhone()
         gestures = GestureWatcher()
 
         let hostingView = NotchHostingView(rootView: NotchView(state: state, nowPlaying: nowPlaying, timers: timers,

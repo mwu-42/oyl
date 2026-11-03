@@ -46,6 +46,8 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>Oyl: own your life.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Oyl's phone remote lets your phone, on the same Wi-Fi, show your agents, answer their requests, and work the music, timers and keep-awake. It's off until you turn it on, and only answers phones you've paired.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>While Wispr Flow takes down what you say, Oyl shows your voice in the notch. It only listens then, and keeps nothing.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
