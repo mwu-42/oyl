@@ -136,12 +136,16 @@ final class CoworkTasks: @unchecked Sendable {
 
     /// Where the transcript at `url` leaves off: its last message, read from the end of it.
     static func state(of url: URL) -> State {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return .finished }
+        tail(of: url).map(state(ofTail:)) ?? .finished
+    }
+
+    /// The end of a transcript (its last 64 KB), nil if it can't be read.
+    static func tail(of url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
         try? handle.seek(toOffset: size > 65_536 ? size - 65_536 : 0)
-        let tail = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
-        return state(ofTail: tail)
+        return String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
     }
 
     /// From the end of a transcript: its last message (past the bookkeeping after it). One of

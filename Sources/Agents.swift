@@ -55,13 +55,15 @@ struct AgentSession: Identifiable, Equatable {
     var skin = 0            // its Oyl's pastel, see `Oyl.pastel(_:)`
     var isClaude = true     // Claude's, so its Oyl wears Claude's cap (Muse's doesn't)
     var hat: Color?         // another agent's hat, while it works (black if nil)
+    var transcript: String? // Claude Code's transcript of it
 
     var summary: String { detail ?? activity.title }
 }
 
 /// Follows coding agents through Claude Code's hooks: every hook event runs a small script
 /// (`AgentInbox.hookScript`) that drops the event in a folder, and Oyl reads and deletes them.
-/// An agent goes away with Claude Code's SessionEnd event, or when its process is gone. Chats in
+/// An agent goes away with Claude Code's SessionEnd event, when its process is gone, or once it's
+/// been idle a while (see `rests`), till it's next at work. Chats in
 /// the Claude app come from `ClaudeAppChats`, each of its Cowork tasks from `CoworkTasks`; and
 /// every other agent the radar has (see `AgentRadar`) from how it's told: in a browser tab from
 /// `WebAgents`, in an app's windows from `AppAgents`, run as a program from `ProcessAgents`. New
@@ -134,6 +136,14 @@ final class AgentMonitor: ObservableObject {
     /// What the Claude app's window last showed, to tell its Cowork task from a chat.
     private var lastChat: ClaudeAppChats.Chat?
     private static let coworkPrefix = "cowork:", webPrefix = "web:", appPrefix = "app:", programPrefix = "cli:"
+    /// Idle this long, an agent's Oyl goes, coming back the next time it's at work: Claude Code
+    /// finished in an editor's panel or a terminal's tab can be left open for hours with nothing
+    /// running. (Cowork's tasks go their own way; see `CoworkTasks.lingers`.)
+    static let rests: TimeInterval = 10 * 60
+
+    static func hasRested(_ session: AgentSession, at now: Date) -> Bool {
+        session.activity == .idle && now.timeIntervalSince(session.since) > rests && !session.id.hasPrefix(coworkPrefix)
+    }
     private static let outsidePrefixes = [coworkPrefix, webPrefix, appPrefix, programPrefix]
     private var cancellables = Set<AnyCancellable>()
     /// Whether Claude Code's hooks point at Oyl, and when that was last looked at: without them,
@@ -144,6 +154,8 @@ final class AgentMonitor: ObservableObject {
     private let scripts = ScriptRunner()
     private var watchers: [DispatchSourceFileSystemObject] = []
     private var sweep: Timer?
+    /// Each at-work agent's transcript, as it was when last looked at for an Esc.
+    private var transcriptsRead: [String: Date] = [:]
 
     init() {
         AgentInbox.prepare()
@@ -361,7 +373,7 @@ final class AgentMonitor: ObservableObject {
             Seen(id: Self.webID(agent), project: agent.name, host: agent.browser, pid: agent.pid, cwd: nil,
                  doing: Self.browsingSites.contains(agent.host) ? .browsing : .writing, working: agent.isWorking,
                  needsYou: agent.needsYou, hat: agent.hat, isClaude: agent.host == "claude.ai")
-        }, prefix: Self.webPrefix, stays: false)
+        }, prefix: Self.webPrefix)
     }
 
     private static func webID(_ agent: WebAgents.Agent) -> String { webPrefix + agent.browser + " " + agent.host }
@@ -375,28 +387,29 @@ final class AgentMonitor: ObservableObject {
             Seen(id: Self.appPrefix + agent.bundleID, project: agent.title.isEmpty ? agent.name : agent.title,
                  host: agent.name, pid: agent.pid, cwd: nil, doing: agent.bundleID.contains("codex") ? .coding : .writing,
                  working: agent.isWorking, needsYou: agent.needsYou, hat: agent.hat, isClaude: false)
-        }, prefix: Self.appPrefix, stays: false)
+        }, prefix: Self.appPrefix)
     }
 
-    /// Agents run as programs, each by the folder it's in, there (resting) for as long as it runs.
+    /// Agents run as programs, each by the folder it's in, there while it's at work and resting a
+    /// while after (see `rests`).
     private func apply(_ agents: [ProcessAgents.Agent]) {
         apply(agents.map { agent in
             Seen(id: Self.programPrefix + String(agent.pid), project: agent.folder.map { ($0 as NSString).lastPathComponent } ?? agent.name,
                  host: agent.name, pid: agent.pid, cwd: agent.folder, doing: .thinking, working: agent.isWorking,
                  needsYou: false, hat: agent.hat, isClaude: agent.target == "claude")
-        }, prefix: Self.programPrefix, stays: true)
+        }, prefix: Self.programPrefix)
     }
 
-    /// Each its own Oyl while it's at work; done, it cheers, and unless it `stays` (as a program
-    /// does while it runs), goes (see `tidy`), coming back the next time it's at work.
-    private func apply(_ seen: [Seen], prefix: String, stays: Bool) {
+    /// Each its own Oyl while it's at work; done, it cheers, and goes (a browser's or an app's
+    /// at once, a program's once it's rested a while; see `tidy`), coming back the next time it's at work.
+    private func apply(_ seen: [Seen], prefix: String) {
         let now = Date()
         var sessions = self.sessions.filter { session in
             !session.id.hasPrefix(prefix) || seen.contains { $0.id == session.id }
         }
         for agent in seen {
             let index = sessions.firstIndex { $0.id == agent.id }
-            guard index != nil || stays || agent.working || agent.needsYou else { continue }
+            guard index != nil || agent.working || agent.needsYou else { continue }
             var session = index.map { sessions[$0] }
                 ?? AgentSession(id: agent.id, project: agent.project, cwd: agent.cwd, host: agent.host, activity: .idle, detail: nil,
                                 since: now, lastEvent: now, pid: agent.pid, isClaude: agent.isClaude,
@@ -462,7 +475,7 @@ final class AgentMonitor: ObservableObject {
             publish(sessions)
             return
         }
-        // A chat shows up once Claude writes in it, and stays (idle) while the app is open.
+        // A chat shows up once Claude writes in it, and stays (idle) a while after (see `rests`).
         guard chat.isWriting || chat.needsApproval || index != nil else { return }
         let now = Date()
         var session = index.map { sessions[$0] }
@@ -509,6 +522,8 @@ final class AgentMonitor: ObservableObject {
                 continue
             }
             let index = sessions.firstIndex { $0.id == event.session }
+            // One that's gone to rest only comes back at work (not, say, told it's waiting for input).
+            guard index != nil || event.activity != nil else { continue }
             var session = index.map { sessions[$0] }
                 ?? AgentSession(id: event.session, project: "Claude", cwd: nil, host: nil, activity: .idle, detail: nil,
                                 since: now, lastEvent: now, pid: 0)
@@ -517,6 +532,7 @@ final class AgentMonitor: ObservableObject {
                 session.project = (cwd as NSString).lastPathComponent
             }
             if let host = event.host { session.host = host }
+            if let transcript = event.transcript { session.transcript = transcript }
             if event.pid > 0 { session.pid = event.pid }
             session.lastEvent = now
             if let activity = event.activity {
@@ -530,8 +546,8 @@ final class AgentMonitor: ObservableObject {
         updateApprovals()
     }
 
-    /// Drops agents whose process has quit (or, without one, that have been quiet for hours),
-    /// and lets "done" settle into idle.
+    /// Drops agents whose process has quit (or, without one, that have been quiet for hours), or
+    /// that have been idle a while, lets "done" settle into idle, and notices Claude Code stopped.
     private func tidy() {
         follow()
         let now = Date()
@@ -540,6 +556,23 @@ final class AgentMonitor: ObservableObject {
             session.pid > 0 ? kill(session.pid, 0) != 0 && errno == ESRCH
                             : now.timeIntervalSince(session.lastEvent) > 3 * 3600
         }
+        sessions.removeAll { Self.hasRested($0, at: now) }
+        // Stopped with Esc, Claude Code doesn't say so (its Stop hook doesn't run), but its
+        // transcript does: one quiet a little while at work is looked at, each time it's changed.
+        for index in sessions.indices where sessions[index].activity.priority >= 2
+            && now.timeIntervalSince(sessions[index].lastEvent) > 15 {
+            guard let path = sessions[index].transcript else { continue }
+            let url = URL(fileURLWithPath: path)
+            let changed = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+            guard let changed, transcriptsRead[path] != changed else { continue }
+            transcriptsRead[path] = changed
+            if AgentInbox.wasInterrupted(url) {
+                sessions[index].activity = .idle
+                sessions[index].detail = nil
+                sessions[index].since = now
+            }
+        }
+        transcriptsRead = transcriptsRead.filter { path, _ in sessions.contains { $0.transcript == path } }
         // A browser's or an app's agent is gone once it's done (it doesn't wait about, the way
         // Claude Code does).
         sessions.removeAll { session in
@@ -565,6 +598,7 @@ struct AgentEvent: Sendable {
     let pid: Int32
     let activity: AgentActivity?  // nil when the event doesn't change it
     let detail: String?
+    let transcript: String?
 }
 
 /// The folder Claude Code's hook drops events in, and reading them back.
@@ -620,6 +654,25 @@ enum AgentInbox {
         }
     }
 
+    /// Claude Code's last word in the transcript at `url` is that it was stopped (with Esc).
+    static func wasInterrupted(_ url: URL) -> Bool {
+        CoworkTasks.tail(of: url).map(wasInterrupted(tail:)) ?? false
+    }
+
+    /// From the end of a transcript: its last message (past the bookkeeping after it) is the note
+    /// Claude Code writes in it, as the user's, when it's stopped.
+    static func wasInterrupted(tail: String) -> Bool {
+        for line in tail.split(separator: "\n").reversed() {
+            guard let data = line.data(using: .utf8),
+                  let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = entry["type"] as? String, type == "user" || type == "assistant" else { continue }
+            let content = (entry["message"] as? [String: Any])?["content"]
+            let texts = (content as? [[String: Any]])?.compactMap { $0["text"] as? String } ?? [content as? String].compactMap { $0 }
+            return type == "user" && texts.contains { $0.hasPrefix("[Request interrupted by user") }
+        }
+        return false
+    }
+
     /// Reads and deletes every waiting event, oldest first.
     static func drain() -> [AgentEvent] {
         let files = FileManager.default
@@ -637,7 +690,8 @@ enum AgentInbox {
             return AgentEvent(session: session, ends: name == "SessionEnd",
                               cwd: hook["cwd"] as? String,
                               host: host(entry: wrapper["entry"] as? String, term: wrapper["term"] as? String),
-                              pid: Int32(wrapper["pid"] as? Int ?? 0), activity: doing?.0, detail: doing?.1)
+                              pid: Int32(wrapper["pid"] as? Int ?? 0), activity: doing?.0, detail: doing?.1,
+                              transcript: hook["transcript_path"] as? String)
         }
     }
 
