@@ -26,6 +26,12 @@ enum Layout {
     static let settingsMottoHeight: CGFloat = 26
     /// The rows a phone's pairing card takes on the settings page.
     static let pairingRows = 5
+    /// The ideas page: an idea's row, the heading over each kind, and as many rows as show before
+    /// they scroll.
+    static let ideaRowHeight: CGFloat = 24
+    static let ideaHeaderHeight: CGFloat = 18
+    static let maxVisibleIdeaRows = 6
+    static func ideasHeight(list: CGFloat) -> CGFloat { 6 + 28 + 10 + list + 14 }
     static func settingsRows(_ rows: Int) -> CGFloat { CGFloat(rows) * settingsRowHeight }
     static func settingsHeight(rows: Int) -> CGFloat {
         6 + settingsChipsHeight + settingsGap + settingsRows(min(rows, settingsRowsFit)) + settingsMottoHeight + 12
@@ -66,7 +72,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, awake, agents, activity, mirror
+    case music, timers, ideas, awake, agents, activity, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -218,6 +224,9 @@ final class NotchState: ObservableObject {
     var resignKeyboard: () -> Void = {}
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
+    /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
+    let tod = TodStore()
+    private var todForwarding: AnyCancellable?
     private var forwarding: AnyCancellable?
     private var phoneForwarding: AnyCancellable?
 
@@ -251,11 +260,21 @@ final class NotchState: ObservableObject {
     /// Starts the phone remote, if it's on, and redraws the settings as it changes.
     func startPhone() {
         phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        // The ideas page's height goes by its ideas.
+        todForwarding = tod.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+    }
+
+    /// The ideas' rows as tall as they stand (each kind under its heading), and as much of that as
+    /// shows before they scroll; with none, room for the hint.
+    var ideaRowsHeight: CGFloat { IdeaBoard.height(of: IdeaBoard.rows(tod.ideas)) }
+
+    var ideaListHeight: CGFloat {
+        min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
     /// The pages with tabs, in order: Oyl's own (always), then those turned on.
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .awake, .activity, .mirror].filter(shows)
+        [.agents, .music, .timers, .ideas, .awake, .activity, .mirror].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (settings always are, though tabless).
@@ -264,6 +283,7 @@ final class NotchState: ObservableObject {
         case .agents, .settings: return true
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
+        case .ideas: return Feature.ideasPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
         case .mirror: return showsMirrorTab
@@ -367,6 +387,7 @@ final class NotchState: ObservableObject {
         switch page {
         case .music: return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
+        case .ideas: return Layout.ideasHeight(list: ideaListHeight)
         case .awake: return Layout.awakeHeight
         case .agents:
             // The settings go under them all.
@@ -442,7 +463,8 @@ final class NotchState: ObservableObject {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
-                          Layout.settingsHeight(rows: Layout.settingsRowsFit))
+                          Layout.settingsHeight(rows: Layout.settingsRowsFit),
+                          Layout.ideasHeight(list: CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight))
         let size = CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
                           height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
         guard theme == .midnight else { return size }

@@ -239,6 +239,9 @@ struct ExpandedNotch: View {
                     case .timers:
                         TimersPage(timers: timers, state: state)
                             .transition(NotchView.swap)
+                    case .ideas:
+                        IdeasPage(tod: state.tod, state: state)
+                            .transition(NotchView.swap)
                     case .awake:
                         AwakePage(awake: awake, state: state)
                             .transition(NotchView.swap)
@@ -285,6 +288,7 @@ struct PageTabs: View {
             }
             if tabs.contains(.music) { tab(.music, symbol: "music.note") }
             if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
+            if tabs.contains(.ideas) { tab(.ideas, symbol: "lightbulb") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
             if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }

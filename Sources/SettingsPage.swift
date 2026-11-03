@@ -58,6 +58,7 @@ struct SettingsPage: View {
                 feature(.visualizer, "Visualizer", "Listens to the music, for the wave and the beat"),
                 feature(.songTitleOpensPlayer, "Song name opens player", "Click the song's name for Spotify or Music"),
                 feature(.timersPage, "Timers page", "Timers and reminders"),
+                feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines or rough aims, in tod's brain dump"),
                 feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
                 feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
             ]

@@ -74,6 +74,15 @@ enum PhonePage {
     footer { text-align: center; color: var(--faint); font-size: 11px; letter-spacing: .12em; margin-top: 22px; }
     footer em { font-style: normal; letter-spacing: 0; }
     .gone .quiet { color: var(--accent); }
+    .jot { display: flex; gap: 8px; margin-bottom: 6px; }
+    .jot input { flex: 1; }
+    .kind { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin: 12px 0 2px; }
+    .idea .when { color: var(--soft); font-size: 13px; flex: none; }
+    .idea .when.hard { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+    .idea .when.late { color: var(--late); }
+    .idea .later { display: flex; gap: 6px; flex: none; }
+    .idea .later button { padding: 6px 10px; font-size: 12px; }
+    :root { --late: #ff8a7a; }
     [hidden] { display: none !important; }
 
     /* Midnight Oyl: the sky, engraved rules, no boxes, Victorian type, everything drifting in. */
@@ -122,6 +131,12 @@ enum PhonePage {
     body[data-look=midnight] input { background: none; border-radius: 0; padding: 9px 2px;
       background-image: linear-gradient(90deg, rgba(214,222,237,.42), rgba(214,222,237,.08)); background-size: 100% 1px;
       background-position: 0 100%; background-repeat: no-repeat; }
+    body[data-look=midnight] { --late: #ffb3c0; }
+    body[data-look=midnight] .kind { font-family: Copperplate, serif; font-weight: 400; letter-spacing: .16em; }
+    body[data-look=midnight] .idea .when { font-family: Superclarendon, Georgia, serif; font-style: italic; }
+    body[data-look=midnight] .idea .when.hard { font-family: "Bodoni 72", Didot, serif; font-style: normal; font-weight: 400; }
+    body[data-look=midnight] .idea .later { gap: 16px; }
+    body[data-look=midnight] .idea .later button { padding: 6px 1px 4px; font-size: 11px; }
     body[data-look=midnight] footer { font-family: Copperplate, serif; letter-spacing: .2em; margin-left: 9%; text-align: left; }
     body[data-look=midnight] footer em { font-family: Superclarendon, Georgia, serif; font-style: italic; text-transform: none; font-size: 13px; }
     @keyframes twinkle { 50% { opacity: .3; } }
@@ -142,6 +157,14 @@ enum PhonePage {
       </section>
       <section id="requests" hidden><h2>Waiting for you</h2><div id="requestList"></div></section>
       <section id="agents" hidden><h2>Agents</h2><div id="agentList"></div></section>
+      <section id="ideas" hidden>
+        <h2>Ideas</h2>
+        <div class="jot">
+          <input id="idea" maxlength="300" enterkeyhint="done" placeholder="Dump an idea… “due fri”, “in a month or so”" aria-label="Idea">
+          <button class="primary" id="jotIdea">Jot</button>
+        </div>
+        <div id="ideaList"></div>
+      </section>
       <section id="music" hidden>
         <h2>Playing</h2>
         <div class="now"><img id="art" alt="" hidden><div class="grow"><div class="name" id="song"></div><div class="sub" id="artist"></div></div></div>
@@ -235,7 +258,7 @@ enum PhonePage {
     // MARK: Pairing
     function unpaired() {
       state = null;
-      for (const part of ["requests", "agents", "music", "timers", "awake"]) $(part).hidden = true;
+      for (const part of ["requests", "agents", "ideas", "music", "timers", "awake"]) $(part).hidden = true;
       $("pair").hidden = false;
       $("link").textContent = "Not paired yet";
       if (location.search.includes("unpaired")) $("pairError").textContent = "That code didn't work: ask the Mac for a new one.";
@@ -282,6 +305,7 @@ enum PhonePage {
       document.title = next.requests.length ? "(" + next.requests.length + ") Oyl" : "Oyl";
       showRequests(next.requests);
       showAgents(next.agents);
+      showIdeas(next);
       showMusic(next);
       showTimers(next);
       showAwake(next);
@@ -318,6 +342,47 @@ enum PhonePage {
         return row;
       }));
     }
+
+    const kinds = { due: "Due", soon: "Coming up", later: "Later", someday: "Someday" };
+    function showIdeas(next) {
+      $("ideas").hidden = !next.pages.includes("ideas");
+      const list = $("ideaList"), ideas = next.ideas || [];
+      if (!ideas.length) { list.replaceChildren(el("div", "empty", "Nothing yet: jot anything to come back to")); return; }
+      const parts = [];
+      for (const kind of Object.keys(kinds)) {
+        const these = ideas.filter((idea) => idea.kind === kind);
+        if (!these.length) continue;
+        parts.push(el("div", "kind", kinds[kind]));
+        for (const idea of these) {
+          const row = el("div", "row idea");
+          const when = "when" + (kind === "due" ? " hard" : "") + (idea.overdue ? " late" : "");
+          // A deadline's day at the end; an aim's (or "still want it?") under the name, leaving
+          // room for what can be done about it.
+          const text = el("div", "grow");
+          text.append(el("div", "name", idea.title));
+          if (idea.label && kind !== "due") text.append(el("div", "sub " + when, idea.label));
+          row.append(button("○", "x", () => act({ do: "ideaDone", id: idea.id })), text);
+          if (idea.label && kind === "due") row.append(el("span", when, idea.label));
+          if (kind !== "due") {
+            const later = el("div", "later");
+            if (idea.stale) later.append(button("Keep", "", () => act({ do: "keepIdea", id: idea.id })));
+            later.append(button("+1 wk", "", () => act({ do: "putOff", id: idea.id, days: 7 })),
+                         button("+1 mo", "", () => act({ do: "putOff", id: idea.id, days: 28 })));
+            row.append(later);
+          }
+          parts.push(row);
+        }
+      }
+      list.replaceChildren(...parts);
+    }
+    function jot() {
+      const text = $("idea").value.trim();
+      if (!text) { $("idea").focus(); return; }
+      act({ do: "addIdea", text });
+      $("idea").value = "";
+    }
+    $("jotIdea").addEventListener("click", jot);
+    $("idea").addEventListener("keydown", (event) => { if (event.key === "Enter") jot(); });
 
     function showMusic(next) {
       const music = next.music;

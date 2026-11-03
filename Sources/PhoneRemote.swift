@@ -340,6 +340,10 @@ enum PhoneAction: Equatable {
     /// Kept awake that many hours, or (nil) till it's stopped; or let sleep.
     case awake(hours: Double?)
     case sleep
+    /// An idea jotted down (read as the notch's ideas field reads it); one done, put off a week or
+    /// a month, or kept another month.
+    case addIdea(String)
+    case ideaDone(String), putOff(String, days: Int), keepIdea(String)
 
     /// From the remote's JSON: `{"do": "allow", "id": "…"}` and so on.
     init?(_ body: Data) {
@@ -362,6 +366,14 @@ enum PhoneAction: Equatable {
             if let hours, !(hours > 0 && hours <= 24) { return nil }
             self = .awake(hours: hours)
         case "sleep": self = .sleep
+        case "addIdea":
+            guard let text = (fields["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            self = .addIdea(String(text.prefix(300)))
+        case "ideaDone": guard let id else { return nil }; self = .ideaDone(id)
+        case "putOff":
+            guard let id, let days = fields["days"] as? Int, days == 7 || days == 28 else { return nil }
+            self = .putOff(id, days: days)
+        case "keepIdea": guard let id else { return nil }; self = .keepIdea(id)
         default: return nil
         }
     }
@@ -415,10 +427,21 @@ struct PhoneSnapshot: Codable, Equatable {
         var app: String?
     }
 
+    /// An idea, where it belongs and when (see `IdeaBoard`).
+    struct Idea: Codable, Equatable {
+        var id: String
+        var title: String
+        /// "due", "soon", "later" or "someday".
+        var kind: String
+        var label: String
+        var overdue: Bool
+        var stale: Bool
+    }
+
     var mac: String
     var look: String
     var now: Double
-    /// The notch's pages that are on, of "music", "timers" and "awake".
+    /// The notch's pages that are on, of "music", "timers", "awake" and "ideas" (with tod there).
     var pages: [String]
     var requests: [Request]
     var agents: [Agent]
@@ -426,6 +449,7 @@ struct PhoneSnapshot: Codable, Equatable {
     var timers: [Timer]
     var ringing: String?
     var awake: Awake
+    var ideas: [Idea] = []
 }
 
 /// What the remote works: the notch's own state, in the app (made up, to try it out).
@@ -451,8 +475,9 @@ final class NotchPhoneControls: PhoneControls {
     func snapshot() -> PhoneSnapshot {
         let now = Date()
         let agents = state.agents, playing = state.nowPlaying, timers = state.timers
-        let pages = [(Feature.musicPage, "music"), (Feature.timersPage, "timers"), (Feature.awakePage, "awake")]
+        var pages = [(Feature.musicPage, "music"), (Feature.timersPage, "timers"), (Feature.awakePage, "awake")]
             .filter { $0.0.isOn }.map(\.1)
+        if Feature.ideasPage.isOn, state.tod.isAvailable { pages.append("ideas") }
         let music = playing.track.flatMap { track in
             playing.player.map { player in
                 PhoneSnapshot.Music(player: player.name, title: track.title, artist: track.artist, playing: playing.isPlaying,
@@ -478,7 +503,10 @@ final class NotchPhoneControls: PhoneControls {
                 .init(id: timer.id.uuidString, title: timer.title, ends: timer.endDate?.timeIntervalSince1970,
                       left: timer.pausedRemaining, endless: timer.isEndless, duration: timer.duration)
             },
-            ringing: timers.ringing?.title, awake: awake)
+            ringing: timers.ringing?.title, awake: awake,
+            ideas: IdeaBoard.rows(state.tod.ideas, now: now).map { row in
+                .init(id: row.id, title: row.title, kind: row.kind.rawValue, label: row.label, overdue: row.overdue, stale: row.stale)
+            })
     }
 
     private static func state(of activity: AgentActivity) -> String {
@@ -510,6 +538,14 @@ final class NotchPhoneControls: PhoneControls {
                 state.awake.start(.indefinitely)
             }
         case .sleep: state.awake.stop()
+        case let .addIdea(text): return state.tod.addIdea(text) != nil
+        case let .ideaDone(id), let .keepIdea(id), let .putOff(id, _):
+            guard state.tod.ideas.contains(where: { $0.id == id && !$0.done }) else { return false }
+            switch action {
+            case let .putOff(_, days): state.tod.putOff(id, by: days)
+            case .keepIdea: state.tod.keep(id)
+            default: state.tod.toggle(id)
+            }
         }
         return true
     }

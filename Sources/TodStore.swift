@@ -28,6 +28,11 @@ final class TodStore: ObservableObject {
         var notes: String
         var due: String?          // "YYYY-MM-DD"
         var time: String?         // "HH:MM"
+        /// A day to have it done by, roughly ("YYYY-MM-DD"): not a deadline, which `due` is, but
+        /// an aim, which can slip. Oyl's own (tod keeps it, though it doesn't show it).
+        var target: String?
+        /// When it was last looked over and kept, if it has been (Oyl's own too).
+        var kept: Date?
         var done: Bool
         var doneAt: Date?
         let createdAt: Date
@@ -129,7 +134,7 @@ final class TodStore: ObservableObject {
     /// with no day is today, as in tod. Nil if the title's empty, or there's no tod.
     @discardableResult
     func add(title: String, due: String?, time: String?, listId: String?, newList: String? = nil,
-             notes: String = "", repeats: TodRepeat? = nil) -> Task? {
+             notes: String = "", repeats: TodRepeat? = nil, target: String? = nil) -> Task? {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, boards != nil else { return nil }
         let now = Date(), id = Boards.uid(), ms = Boards.ms(now)
@@ -138,6 +143,7 @@ final class TodStore: ObservableObject {
             .flatMap { name -> (id: String, name: String)? in name.isEmpty ? nil : (Boards.uid(), name) }
         change {
             $0.add(id, title: title, notes: notes, due: due, time: time, repeats: repeats, list: listId, or: made, at: ms)
+            if let target { $0.update(id, Patch(set: ["target": target]), today: Boards.day(now), at: ms) }
         }
         return tasks.first { $0.id == id }
     }
@@ -194,9 +200,15 @@ final class TodStore: ObservableObject {
         if changed.notes != task.notes { patch.set["notes"] = changed.notes }
         if changed.due != task.due { patch.set["due"] = changed.due ?? NSNull() }
         if changed.time != task.time { patch.set["time"] = changed.time ?? NSNull() }
+        if changed.target != task.target {
+            if let target = changed.target { patch.set["target"] = target } else { patch.removed.append("target") }
+        }
+        if changed.kept != task.kept {
+            if let kept = changed.kept { patch.set["kept"] = Boards.ms(kept) } else { patch.removed.append("kept") }
+        }
         if changed.order != task.order { patch.set["order"] = Boards.number(changed.order) }
         if changed.repeats != task.repeats {
-            if let repeats = changed.repeats { patch.set["repeat"] = repeats.rawValue } else { patch.removed = ["repeat"] }
+            if let repeats = changed.repeats { patch.set["repeat"] = repeats.rawValue } else { patch.removed.append("repeat") }
         }
         if changed.listId != task.listId { patch.list = changed.listId }
         if let newList { patch.newList = (Boards.uid(), newList) }
@@ -460,7 +472,8 @@ final class TodStore: ObservableObject {
             if lanes[listId] == nil { listId = "inbox" }
             let lane = (entry["columnId"] as? String).flatMap { column in lanes[listId]?.firstIndex { $0.id == column } } ?? 0
             return Task(id: id, listId: listId, title: entry["title"] as? String ?? "", notes: entry["notes"] as? String ?? "",
-                        due: text(entry["due"]), time: text(entry["time"]), done: entry["done"] as? Bool ?? false,
+                        due: text(entry["due"]), time: text(entry["time"]), target: text(entry["target"]), kept: moment(entry["kept"]),
+                        done: entry["done"] as? Bool ?? false,
                         doneAt: moment(entry["doneAt"]), createdAt: moment(entry["createdAt"]) ?? .distantPast,
                         order: (entry["order"] as? NSNumber)?.doubleValue ?? 0,
                         repeats: (entry["repeat"] as? String).flatMap(TodRepeat.init(rawValue:)), lane: lane)
