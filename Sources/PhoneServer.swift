@@ -115,7 +115,9 @@ struct PhoneResponse: Equatable {
 }
 
 /// The Mac on its network: its name there, its addresses, and whether a connection comes from a
-/// device beside it (on the same Wi-Fi or Ethernet), rather than from farther off.
+/// device beside it (on the same Wi-Fi or Ethernet), or from one of your own on its tailnet (with
+/// Tailscale running on both, from any network at all: a school's Wi-Fi that keeps devices apart,
+/// or a phone's own data), rather than from farther off.
 enum PhoneNetwork {
     struct Address {
         let interface: String
@@ -136,7 +138,19 @@ enum PhoneNetwork {
     }
 
     /// The Wi-Fi's and Ethernet's addresses (their interfaces are en0, en1…), up and running.
-    static func addresses() -> [Address] {
+    static func addresses() -> [Address] { interfaceAddresses { $0.hasPrefix("en") } }
+
+    /// The Mac's addresses on its tailnet, while Tailscale's running: on a tunnel (utun…), in the
+    /// ranges Tailscale gives its devices.
+    static func tailnetAddresses() -> [Address] { interfaceAddresses { $0.hasPrefix("utun") }.filter { isTailnet($0.bytes) } }
+
+    /// In the ranges Tailscale gives its devices: 100.64.0.0/10, and fd7a:115c:a1e0::/48.
+    static func isTailnet(_ bytes: [UInt8]) -> Bool {
+        if bytes.count == 4 { return bytes[0] == 100 && bytes[1] & 0xC0 == 64 }
+        return bytes.count == 16 && Array(bytes.prefix(6)) == [0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0]
+    }
+
+    private static func interfaceAddresses(_ wanted: (String) -> Bool) -> [Address] {
         var list: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&list) == 0, let first = list else { return [] }
         defer { freeifaddrs(list) }
@@ -144,7 +158,7 @@ enum PhoneNetwork {
         for entry in sequence(first: first, next: { $0.pointee.ifa_next }) {
             let item = entry.pointee
             let name = String(cString: item.ifa_name)
-            guard name.hasPrefix("en"), item.ifa_flags & UInt32(IFF_UP | IFF_RUNNING) == UInt32(IFF_UP | IFF_RUNNING),
+            guard wanted(name), item.ifa_flags & UInt32(IFF_UP | IFF_RUNNING) == UInt32(IFF_UP | IFF_RUNNING),
                   let address = item.ifa_addr, let mask = item.ifa_netmask else { continue }
             switch Int32(address.pointee.sa_family) {
             case AF_INET:
@@ -172,18 +186,27 @@ enum PhoneNetwork {
         (SCDynamicStoreCopyComputerName(nil, nil) as String?) ?? Host.current().localizedName ?? "This Mac"
     }
 
-    /// The names a request may be sent to here: the Mac's local name, its addresses, and itself.
-    static func hostNames(addresses: [Address] = addresses()) -> Set<String> {
+    /// The names a request may be sent to here: the Mac's local name, its tailnet one, its
+    /// addresses, and itself.
+    static func hostNames(addresses: [Address] = addresses() + tailnetAddresses(), tailnetName: String? = nil) -> Set<String> {
         var names: Set<String> = ["localhost", "127.0.0.1", "::1"]
         if let localName { names.insert(localName.lowercased()) }
+        if let tailnetName { names.insert(tailnetName.lowercased()) }
         for address in addresses { names.insert(address.text.lowercased()) }
         return names
     }
 
-    /// A connection's from a device beside the Mac: on one of its Wi-Fi or Ethernet networks
-    /// (or itself), not over a VPN, or from the internet.
-    static func isNearby(_ endpoint: NWEndpoint, addresses: [Address] = addresses()) -> Bool {
+    /// A connection's from a device beside the Mac, on one of its Wi-Fi or Ethernet networks (or
+    /// the Mac itself); or from one on its tailnet, come in on the Mac's own address there
+    /// (`local`), so a device on the Wi-Fi with an address in Tailscale's ranges doesn't count.
+    /// Not over any other VPN, or from the internet.
+    static func isNearby(_ endpoint: NWEndpoint, local: NWEndpoint? = nil, addresses: [Address] = addresses(),
+                         tailnet: [Address] = tailnetAddresses()) -> Bool {
         guard case let .hostPort(host, _) = endpoint else { return false }
+        if let from = bytes(of: host), isTailnet(from) {
+            guard case let .hostPort(here, _)? = local, let mine = bytes(of: here) else { return false }
+            return tailnet.contains { $0.bytes == mine }
+        }
         switch host {
         case let .ipv4(address):
             if address.isLoopback { return true }
@@ -205,10 +228,48 @@ enum PhoneNetwork {
             return false
         }
     }
+
+    /// An address's bytes (an IPv4 one by way of IPv6 as itself); nil for a name.
+    private static func bytes(of host: NWEndpoint.Host) -> [UInt8]? {
+        switch host {
+        case let .ipv4(address): return [UInt8](address.rawValue)
+        case let .ipv6(address): return address.asIPv4.map { [UInt8]($0.rawValue) } ?? [UInt8](address.rawValue)
+        default: return nil
+        }
+    }
+
+    /// The Mac's name on its tailnet ("name.tailnet.ts.net"), as Tailscale tells it; nil if it
+    /// isn't installed or running. Asks its command line, so it's slow: off the main thread.
+    static func askTailscale() -> String? {
+        let tools = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale", "/opt/homebrew/bin/tailscale", "/usr/local/bin/tailscale"]
+        guard let tool = tools.first(where: FileManager.default.isExecutableFile(atPath:)) else { return nil }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: tool)
+        process.arguments = ["status", "--json"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        guard (try? process.run()) != nil else { return nil }
+        let stuck = DispatchWorkItem { if process.isRunning { process.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: stuck)
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        stuck.cancel()
+        return tailnetName(fromStatus: data)
+    }
+
+    /// The Mac's tailnet name from Tailscale's status, while it's running.
+    static func tailnetName(fromStatus data: Data) -> String? {
+        guard let status = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], status["BackendState"] as? String == "Running",
+              let me = status["Self"] as? [String: Any], var name = me["DNSName"] as? String, !name.isEmpty else { return nil }
+        if name.hasSuffix(".") { name.removeLast() }
+        return name.lowercased()
+    }
 }
 
-/// The remote's server: plain HTTP, one request a connection, from devices beside the Mac only
-/// (`PhoneNetwork.isNearby`). Each request's answered on the main thread by `respond`.
+/// The remote's server: plain HTTP, one request a connection, from devices beside the Mac (or on
+/// its tailnet, whose tunnel's encrypted) only (`PhoneNetwork.isNearby`). Each request's answered
+/// on the main thread by `respond`.
 final class PhoneServer: @unchecked Sendable {
     /// Listening, on which port; or why it couldn't.
     enum Status: Equatable {
@@ -220,15 +281,15 @@ final class PhoneServer: @unchecked Sendable {
     private var open = 0
     private let respond: @MainActor (PhoneRequest) -> PhoneResponse
     private let status: @MainActor (Status) -> Void
-    /// Only on this Mac itself (for trying it out), not the network.
-    private let loopbackOnly: Bool
+    /// Listening on this address alone (to try it out), not every one the Mac has.
+    private let only: NWEndpoint.Host?
 
     static let mostOpen = 16
     static let timeout: TimeInterval = 10
 
-    init(loopbackOnly: Bool = false, respond: @escaping @MainActor (PhoneRequest) -> PhoneResponse,
+    init(only: NWEndpoint.Host? = nil, respond: @escaping @MainActor (PhoneRequest) -> PhoneResponse,
          status: @escaping @MainActor (Status) -> Void) {
-        self.loopbackOnly = loopbackOnly
+        self.only = only
         self.respond = respond
         self.status = status
     }
@@ -251,8 +312,12 @@ final class PhoneServer: @unchecked Sendable {
 
     private func listen(on port: UInt16, tries: Int) {
         let parameters = NWParameters.tcp
-        if loopbackOnly { parameters.requiredInterfaceType = .loopback }
-        guard let number = NWEndpoint.Port(rawValue: port), let listener = try? NWListener(using: parameters, on: number) else {
+        guard let number = NWEndpoint.Port(rawValue: port) else {
+            report(.failed("Couldn't listen"))
+            return
+        }
+        if let only { parameters.requiredLocalEndpoint = .hostPort(host: only, port: number) }
+        guard let listener = try? (only == nil ? NWListener(using: parameters, on: number) : NWListener(using: parameters)) else {
             report(.failed("Couldn't listen"))
             return
         }
@@ -281,13 +346,20 @@ final class PhoneServer: @unchecked Sendable {
     }
 
     private func serve(_ connection: NWConnection) {
-        guard open < Self.mostOpen, loopbackOnly || PhoneNetwork.isNearby(connection.endpoint) else {
+        guard open < Self.mostOpen else {
             connection.cancel()
             return
         }
         open += 1
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
+            case .ready:
+                // Where it's from, and (for the tailnet) the address it came in on.
+                guard PhoneNetwork.isNearby(connection.endpoint, local: connection.currentPath?.localEndpoint) else {
+                    connection.cancel()
+                    return
+                }
+                self?.receive(connection, Data())
             case .failed:
                 connection.cancel()
             case .cancelled:
@@ -298,7 +370,6 @@ final class PhoneServer: @unchecked Sendable {
         }
         connection.start(queue: queue)
         queue.asyncAfter(deadline: .now() + Self.timeout) { connection.cancel() }
-        receive(connection, Data())
     }
 
     private func receive(_ connection: NWConnection, _ received: Data) {

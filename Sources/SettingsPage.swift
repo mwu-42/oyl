@@ -168,8 +168,9 @@ struct SettingsPage: View {
             let phone = state.phone
             let paired = phone.devices.count
             items.append(SettingItem(id: "phone", title: "Phone remote",
-                                     hint: phone.isOn ? "At \(phone.address) on this Wi-Fi" + (paired > 0 ? ", for \(paired) paired" : "")
-                                         : "The notch from your phone's browser, on this Wi-Fi: agents, music, timers, keep-awake",
+                                     hint: phone.isOn ? "At \(phone.address)" + (phone.overTailscale ? ", over Tailscale" : " on this Wi-Fi")
+                                         + (paired > 0 ? ", for \(paired) paired" : "")
+                                         : "The notch from your phone's browser, on this Wi-Fi or over Tailscale: agents, music, timers, keep-awake",
                                      isOn: phone.isOn) { phone.setOn(!phone.isOn) })
             if phone.isOn {
                 items.append(SettingItem(id: "pair", title: paired > 0 ? "Pair another phone" : "Pair a phone",
@@ -454,7 +455,8 @@ struct PhonePairingCard: View {
                     .foregroundStyle(.white.opacity(0.8))
                 } else {
                     Text("Pair your phone").notchFont(size: 13, weight: .semibold).foregroundStyle(.white)
-                    Text("Scan this with its camera, on this Wi-Fi, or open").notchFont(size: 10.5).foregroundStyle(soft)
+                    Text(phone.overTailscale ? "Scan this with its camera, Tailscale on, or open" : "Scan this with its camera, on this Wi-Fi, or open")
+                        .notchFont(size: 10.5).foregroundStyle(soft)
                     Text(phone.address).notchFont(size: 10.5, design: .monospaced).foregroundStyle(.white.opacity(0.85))
                         .lineLimit(1).minimumScaleFactor(0.6).textSelection(.enabled)
                     Text(pairing.code.prefix(3) + " " + pairing.code.suffix(3))

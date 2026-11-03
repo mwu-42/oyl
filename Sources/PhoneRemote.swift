@@ -4,7 +4,8 @@ import CoreImage
 import CryptoKit
 import SwiftUI
 
-/// The phone remote: a page your phone's browser opens, on the same Wi-Fi as the Mac, showing
+/// The phone remote: a page your phone's browser opens, on the same Wi-Fi as the Mac (or from
+/// anywhere, with Tailscale running on both: see `PhoneNetwork`), showing
 /// what the notch does and working it from there: the agents, and Claude Code's requests to
 /// allow or deny; the song; the timers; keeping the Mac awake. Off till it's turned on (on the
 /// settings' Oyl section), and then only for a phone that's been paired: by scanning a code the
@@ -50,6 +51,8 @@ final class PhoneRemote: ObservableObject {
     @Published private(set) var pairingPicture: CGImage?
     @Published private(set) var devices: [PhoneDevice]
     @Published private(set) var status: PhoneServer.Status?
+    /// The Mac's name on its tailnet, while Tailscale's running here (looked up now and then).
+    @Published private(set) var tailnetName: String?
     /// The port it listens on, kept so a phone's bookmark goes on working.
     private(set) var port: UInt16
 
@@ -67,6 +70,7 @@ final class PhoneRemote: ObservableObject {
     /// most once a minute), so a phone's every look doesn't redraw the notch.
     private var lastSeen: [String: Date] = [:]
     private var endPairing: DispatchWorkItem?
+    private var tailnetCheck: Timer?
 
     /// `serves`: listens (off, for trying it out without the network).
     init(controls: PhoneControls, store: Store = .defaults, serves: Bool = true) {
@@ -98,6 +102,7 @@ final class PhoneRemote: ObservableObject {
         endPairing?.cancel()
         pairing = Pairing(code: String(format: "%06d", Int.random(in: 0..<1_000_000)), until: now.addingTimeInterval(Self.pairingTime))
         pairingPicture = pairingAddress.flatMap(Self.qrCode)
+        lookForTailnet()
     }
 
     func stopPairing() {
@@ -112,18 +117,45 @@ final class PhoneRemote: ObservableObject {
         save()
     }
 
-    /// Where a phone opens the remote: by the Mac's name on the network (which stays put as its
-    /// address changes), or by that address if it has no name.
+    /// Tailscale's running here: a phone reaches the Mac by it, from any network.
+    var overTailscale: Bool { !PhoneNetwork.tailnetAddresses().isEmpty }
+
+    /// Where a phone opens the remote: with Tailscale running, by the Mac's name on its tailnet
+    /// (which works from anywhere, the same Wi-Fi too); otherwise by its name on the network.
+    /// Either stays put as its addresses change; failing a name, an address.
     var address: String {
-        let host = PhoneNetwork.localName ?? PhoneNetwork.addresses().first { !$0.ipv6 }?.text ?? "localhost"
+        let tailnet = PhoneNetwork.tailnetAddresses()
+        var host = tailnet.isEmpty ? PhoneNetwork.localName ?? PhoneNetwork.addresses().first { !$0.ipv6 }?.text ?? "localhost"
+            : tailnetName ?? (tailnet.first { !$0.ipv6 } ?? tailnet[0]).text
+        if host.contains(":") { host = "[\(host)]" }
         return "http://\(host.lowercased()):\(port)"
     }
 
     /// The address with the code on it, for the phone's camera.
     var pairingAddress: String? { pairing.map { "\(address)/pair?code=\($0.code)" } }
 
+    /// Asks Tailscale for the Mac's name on its tailnet (off the main thread), for the address
+    /// and the names requests may come to; and the pairing code again, if it's changed.
+    private func lookForTailnet() {
+        guard serves else { return }
+        DispatchQueue.global(qos: .utility).async {
+            let name = PhoneNetwork.askTailscale()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard name != self.tailnetName else { return }
+                    self.tailnetName = name
+                    if self.pairing?.paired == nil, self.pairing != nil { self.pairingPicture = self.pairingAddress.flatMap(Self.qrCode) }
+                }
+            }
+        }
+    }
+
     private func start() {
         guard serves, server == nil else { return }
+        lookForTailnet()
+        let check = Timer(timeInterval: 5 * 60, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.lookForTailnet() } }
+        RunLoop.main.add(check, forMode: .common)
+        tailnetCheck = check
         status = .starting
         let server = PhoneServer(respond: { [weak self] request in
             self?.respond(to: request) ?? .text(404, "Not here")
@@ -143,6 +175,8 @@ final class PhoneRemote: ObservableObject {
         server?.stop()
         server = nil
         status = nil
+        tailnetCheck?.invalidate()
+        tailnetCheck = nil
     }
 
     private func save() {
@@ -159,7 +193,9 @@ final class PhoneRemote: ObservableObject {
     /// The answer to `request`, sent to one of `hosts` (the Mac's names: see `PhoneNetwork.hostNames`).
     func respond(to request: PhoneRequest, at now: Date = Date(), hosts: Set<String>? = nil) -> PhoneResponse {
         // Sent to the Mac by name, not to some other site's that's been pointed here.
-        guard let host = request.host, (hosts ?? PhoneNetwork.hostNames()).contains(host) else { return .text(421, "Not here") }
+        guard let host = request.host, (hosts ?? PhoneNetwork.hostNames(tailnetName: tailnetName)).contains(host) else {
+            return .text(421, "Not here")
+        }
         switch (request.method, request.path) {
         case ("GET", "/"):
             return PhoneResponse(status: 200, type: "text/html; charset=utf-8", body: Data(PhonePage.html.utf8))
@@ -211,7 +247,7 @@ final class PhoneRemote: ObservableObject {
         guard request.headers["x-oyl"] == "1", request.headers["content-type"]?.hasPrefix("application/json") == true else { return false }
         guard let origin = request.headers["origin"] else { return true }
         guard let host = URL(string: origin)?.host?.lowercased() else { return false }
-        return (hosts ?? PhoneNetwork.hostNames()).contains(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
+        return (hosts ?? PhoneNetwork.hostNames(tailnetName: tailnetName)).contains(host.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
     }
 
     /// The request carries a paired phone's key: and that phone's been seen now.
