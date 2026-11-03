@@ -663,6 +663,8 @@ final class MoylSprite {
     private let behind = CALayer(), globe = CALayer(), candle = CALayer(), before = CALayer()
     private let moon = Satellite(), glints = [Satellite(), Satellite()]
     private let poke = CALayer(), sparkles = [CALayer(), CALayer(), CALayer()]
+    /// The stardust it scatters into, leaving.
+    private let dust = (0..<8).map { _ in CALayer() }
     private let seed: Double
 
     private var radius: CGFloat = 0
@@ -680,7 +682,7 @@ final class MoylSprite {
         layer.allowsGroupOpacity = true
         // Bottom to top, as `MoylDrawing.draw` lays them down.
         for part in [halo, flare, rays, behind, moon.behind, glints[0].behind, glints[1].behind, globe, candle, before,
-                     moon.before, glints[0].before, glints[1].before, poke] + sparkles {
+                     moon.before, glints[0].before, glints[1].before, poke] + sparkles + dust {
             part.contentsScale = LabelPictures.scale
             layer.addSublayer(part)
         }
@@ -810,6 +812,17 @@ final class MoylSprite {
             poke.opacity = Float(1 - progress)
             poke.transform = CATransform3DMakeScale(1 - progress * 0.5, 1 - progress * 0.5, 1)
         }
+        // Going: scattering into stardust, drifting up and out as it flares and fades.
+        let pop = CGFloat(walker.popped(at: date)?.pop ?? 0)
+        for (index, speck) in dust.enumerated() {
+            Self.show(speck, pop > 0)
+            guard pop > 0 else { continue }
+            let angle = CGFloat(index) / CGFloat(dust.count) * 2 * .pi + CGFloat(seed) * 3
+            let reach = r * (0.8 + 2.4 * (1 - (1 - pop) * (1 - pop))) * (index % 2 == 0 ? 1 : 0.75)
+            speck.position = flip(CGPoint(x: middle.x + cos(angle) * reach, y: middle.y + sin(angle) * reach * 0.8 - r * 0.9 * pop))
+            let size = 1.4 - 0.9 * pop
+            speck.transform = CATransform3DMakeScale(size, size, 1)
+        }
         for (index, sparkle) in sparkles.enumerated() {
             let twinkle = look.sparkles ? MoylDrawing.twinkle(index, at: time) : 0
             Self.show(sparkle, twinkle > 0.05)
@@ -852,6 +865,11 @@ final class MoylSprite {
         for twinkle in [poke] + sparkles {
             twinkle.bounds = CGRect(x: 0, y: 0, width: r * 1.1, height: r * 1.1)
             set(twinkle, star)
+        }
+        let mote = picture(side: r * 0.55) { $0.glintDot(side: r * 0.55) }
+        for speck in dust {
+            speck.bounds = CGRect(x: 0, y: 0, width: r * 0.55, height: r * 0.55)
+            set(speck, mote)
         }
     }
 

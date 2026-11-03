@@ -7,7 +7,8 @@ import ApplicationServices
 /// (Chrome and the browsers built like it, and Safari; macOS asks the first time whether Oyl may);
 /// and while it's the tab showing in its window, its page is read through Accessibility, as the
 /// Claude app's window is (see `ClaudeAppChats`): working while it offers to stop or pause what
-/// it's doing, or to let you take over; wanting you while it asks you to approve or confirm
+/// it's doing, or to let you take over, and what the page says is changing (Muse leaves its Stop
+/// up once it's finished, its page still); wanting you while it asks you to approve or confirm
 /// something. Every window showing it is read (a chat in one, a side chat in another); one's
 /// working only for so long, as answering you takes: offering to stop for longer, it's at a
 /// task of its own in the background (Muse keeps them, on a schedule), not answering. In a tab
@@ -69,6 +70,8 @@ final class WebAgents: @unchecked Sendable {
     private static let asking = ["Approve", "Confirm", "Allow"]
     /// Working longer than this on one page, it's at something of its own in the background.
     static let answering: TimeInterval = 5 * 60
+    /// Offering to stop with nothing on the page changing for this long, it's done.
+    static let quiet: TimeInterval = 60
 
     private let queue = DispatchQueue(label: "oyl.WebAgents", qos: .utility)
     private let report: @Sendable ([Agent]) -> Void
@@ -83,6 +86,8 @@ final class WebAgents: @unchecked Sendable {
     /// Since when each of its pages (by address) has been working, and which are asking.
     private var workingSince: [String: Date] = [:]
     private var askingPages: Set<String> = []
+    /// What each page working said (see `signature`), and when that last changed.
+    private var said: [String: (signature: Int, changed: Date)] = [:]
     private var last: [Agent] = []
 
     /// `report` gets the agents whenever they change, on `queue`.
@@ -156,7 +161,14 @@ final class WebAgents: @unchecked Sendable {
                 if !showing.isEmpty {
                     for page in read(site, in: app.processIdentifier, titled: showing.map(\.title)) {
                         let address = Self.page(page.address)
-                        if page.working {
+                        var working = page.working
+                        if let signature = page.signature {
+                            if said[address]?.signature != signature { said[address] = (signature, Date()) }
+                            working = Date().timeIntervalSince(said[address]?.changed ?? Date()) < Self.quiet
+                        } else {
+                            said[address] = nil
+                        }
+                        if working {
                             if workingSince[address] == nil { workingSince[address] = Date() }
                         } else {
                             workingSince[address] = nil
@@ -167,6 +179,7 @@ final class WebAgents: @unchecked Sendable {
                 // Pages no longer open anywhere are forgotten.
                 let pages = Set(windows.flatMap(\.all).filter { Self.isOn(site, $0) }.map(Self.page))
                 workingSince = workingSince.filter { pages.contains($0.key) }
+                said = said.filter { pages.contains($0.key) }
                 askingPages = askingPages.filter { pages.contains($0) }
                 let working = pages.contains { workingSince[$0].map { Date().timeIntervalSince($0) < Self.answering } ?? false }
                 found[key] = Agent(host: site.host, name: site.name, hat: site.hat, pid: app.processIdentifier, browser: browser.name,
@@ -235,11 +248,12 @@ final class WebAgents: @unchecked Sendable {
     }
 
     /// The site's page in each of the browser's windows (`titled`) showing it: its address,
-    /// whether it's working, and whether it's asking.
-    private func read(_ site: Site, in pid: pid_t, titled titles: [String]) -> [(address: String, working: Bool, asking: Bool)] {
+    /// whether it offers to stop (and if so, what it says, in short), and whether it's asking.
+    private func read(_ site: Site, in pid: pid_t, titled titles: [String])
+        -> [(address: String, working: Bool, signature: Int?, asking: Bool)] {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
-        var pages: [(address: String, working: Bool, asking: Bool)] = []
+        var pages: [(address: String, working: Bool, signature: Int?, asking: Bool)] = []
         for window in Self.elements(app, kAXWindowsAttribute) {
             let title = Self.text(window, kAXTitleAttribute) ?? ""
             guard titles.contains(where: { !$0.isEmpty && title.hasPrefix($0) }) else { continue }
@@ -249,12 +263,26 @@ final class WebAgents: @unchecked Sendable {
             }) else { continue }
             let working = Self.working.contains { !Self.buttons(in: area, matching: $0).isEmpty }
             let asking = Self.asking.contains { !Self.buttons(in: area, matching: $0).isEmpty }
-            pages.append((Self.address(of: area), working, asking))
+            pages.append((Self.address(of: area), working, working ? Self.signature(of: area) : nil, asking))
         }
         return pages
     }
 
     // MARK: Accessibility
+
+    /// What the page says, in short: its text, hashed, read from its end (where the newest is) for
+    /// as far as a budget goes, so a long chat costs no more than a short one.
+    private static func signature(of area: AXUIElement) -> Int {
+        var hasher = Hasher(), budget = 800
+        func walk(_ element: AXUIElement) {
+            guard budget > 0 else { return }
+            budget -= 1
+            if text(element, kAXRoleAttribute) == kAXStaticTextRole { hasher.combine(text(element, kAXValueAttribute)) }
+            for child in elements(element, kAXChildrenAttribute).reversed() where budget > 0 { walk(child) }
+        }
+        walk(area)
+        return hasher.finalize()
+    }
 
     private static func address(of area: AXUIElement) -> String {
         var value: CFTypeRef?

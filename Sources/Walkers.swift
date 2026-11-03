@@ -740,10 +740,73 @@ final class WalkerOverlay {
             // Into bed where it is, if it can be seen there; else it walks out to a spot first.
             let here = walker.middle(at: now)
             let free = isClear(here) && !Self.crowds(here, walker, others, reach: reach)
-            move(&walker, to: free ? here : spot(for: walker, among: others), at: now, after: delay, stay: .infinity)
+            walk(&walker, to: free ? here : spot(for: walker, among: others), among: others, at: now, after: delay, stay: .infinity)
             return
         }
-        move(&walker, to: spot(for: walker, among: others), at: now, after: delay)
+        walk(&walker, to: spot(for: walker, among: others), among: others, at: now, after: delay)
+    }
+
+    /// Off to `spot`, but never so as to walk along with another, the two looking like one (two
+    /// coming out of the notch together, say, or one slowly overtaking another): a moment
+    /// later, a little quicker or slower, or off somewhere else, whichever's first clear of them;
+    /// passing one going the other way is only a moment. Failing all those, whichever's least
+    /// alongside.
+    private func walk(_ walker: inout Walker, to spot: CGFloat, among others: [Walker], at now: Date,
+                      after delay: TimeInterval = 0, stay: TimeInterval? = nil) {
+        let pace = pace(of: walker.job), apart = self.apart
+        var spots = [spot]
+        for _ in 0..<2 where !walker.job.staysPut { spots.append(self.spot(for: walker, among: others)) }
+        var ways: [Walker] = []
+        for spot in spots {
+            for wait in Self.waits {
+                for speed in [pace, pace * 1.2, pace * 0.82] {
+                    var way = walker
+                    move(&way, to: spot, at: now, after: delay + wait, speed: speed, stay: stay)
+                    ways.append(way)
+                }
+            }
+        }
+        walker = Self.clearest(ways, among: others, apart: apart, allowed: Self.passing * TimeInterval(apart / pace), from: now) ?? walker
+    }
+
+    /// The first of `ways` (each the same Oyl, set off a different way) that's alongside the
+    /// others for no longer than `allowed`; else whichever's least.
+    nonisolated static func clearest(_ ways: [Walker], among others: [Walker], apart: CGFloat, allowed: TimeInterval,
+                                     from now: Date) -> Walker? {
+        var best: (way: Walker, alongside: TimeInterval)?
+        for way in ways {
+            let alongside = alongside(way, among: others, apart: apart, from: now)
+            if alongside <= allowed { return way }
+            if alongside < best?.alongside ?? .infinity { best = (way, alongside) }
+        }
+        return best?.way
+    }
+
+    /// Waiting this long before setting off, to be clear of the others.
+    private static let waits: [TimeInterval] = [0, 0.7, 1.3, 2, 3]
+    /// Passing one going the other way takes a moment: this many times as long as walking its
+    /// width would.
+    nonisolated static let passing: TimeInterval = 1.4
+
+    /// How far apart two Oyls (or moyls) must be not to look like one.
+    private var apart: CGFloat { floats ? Walker.moylRadius(height: bar) * 4.6 : 48 * bar / 50 }
+
+    /// How long `walker`, on its way, is within `apart` of another also on its way (anywhere but
+    /// under the notch, where neither's seen).
+    nonisolated static func alongside(_ walker: Walker, among others: [Walker], apart: CGFloat, from now: Date) -> TimeInterval {
+        let start = max(now, walker.leaves), end = walker.arrives, step: TimeInterval = 0.1
+        guard end > start else { return 0 }
+        var total: TimeInterval = 0
+        for other in others where other.id != walker.id && !other.leaving && other.arrives > start && other.leaves < end {
+            var date = max(start, other.leaves)
+            let stop = min(end, other.arrives)
+            while date < stop {
+                let x = walker.middle(at: date), theirs = other.middle(at: date)
+                if abs(x - theirs) < apart, walker.gap.map({ !$0.contains(x) && !$0.contains(theirs) }) ?? true { total += step }
+                date = date.addingTimeInterval(step)
+            }
+        }
+        return total
     }
 
     private func move(_ walker: inout Walker, to spot: CGFloat, at now: Date, after delay: TimeInterval = 0,
@@ -770,8 +833,8 @@ final class WalkerOverlay {
         job.speed * (floats ? Self.floating : 1)
     }
 
-    /// Done here: where it stands, it hops twice and pops (jumping for joy first, if its work's
-    /// done), and is gone.
+    /// Done here: where it stands, it waves goodbye, hops twice and goes in a puff (jumping for
+    /// joy first, if its work's done); a moyl bows, bobs twice and scatters into stardust.
     private func leave(_ walker: inout Walker, at now: Date, cheering: Bool) {
         let here = walker.middle(at: now)
         walker.leaving = true
@@ -1088,18 +1151,22 @@ struct Walker: Identifiable, Equatable {
 
     func isWalking(at date: Date) -> Bool { popping == nil && date > leaves && date < arrives }
 
-    /// Each of its two hops, leaving, and its pop after them.
-    static let hopTime: TimeInterval = 0.3
-    static let popTime: TimeInterval = 0.22
-    static var popLength: TimeInterval { 2 * hopTime + popTime }
+    /// Leaving: waving goodbye (a moyl bows), each of its two hops, and its pop after them.
+    static let waveTime: TimeInterval = 1
+    static let hopTime: TimeInterval = 0.32
+    static let popTime: TimeInterval = 0.55
+    static var popLength: TimeInterval { waveTime + 2 * hopTime + popTime }
 
-    /// Leaving, once it's started: how high it is in its hop (0…1), and how far it's popped (0…1).
-    func popped(at date: Date) -> (hop: CGFloat, pop: Double)? {
+    /// Leaving, once it's started: how far through waving goodbye it is (0…1), how high it is in
+    /// its hop (0…1), and how far it's popped (0…1).
+    func popped(at date: Date) -> (wave: Double, hop: CGFloat, pop: Double)? {
         guard let popping, date >= popping else { return nil }
         let since = date.timeIntervalSince(popping)
-        guard since >= 2 * Self.hopTime else { return (0, min((since - 2 * Self.hopTime) / Self.popTime, 1)) }
-        let along = since.truncatingRemainder(dividingBy: Self.hopTime) / Self.hopTime
-        return (CGFloat(sin(along * .pi)), 0)
+        guard since >= Self.waveTime else { return (since / Self.waveTime, 0, 0) }
+        let hopping = since - Self.waveTime
+        guard hopping < 2 * Self.hopTime else { return (1, 0, min((hopping - 2 * Self.hopTime) / Self.popTime, 1)) }
+        let along = hopping.truncatingRemainder(dividingBy: Self.hopTime) / Self.hopTime
+        return (1, CGFloat(sin(along * .pi)), 0)
     }
 
     /// Faded out at the notch, and in again as it comes clear of it; up in Midnight's sky, all
@@ -1143,8 +1210,11 @@ struct Walker: Identifiable, Equatable {
     /// How bright a moyl's flaring, 0...1, its work done: up quickly, then dying away as it
     /// drifts off.
     func flare(at date: Date) -> Double {
-        // Popping, leaving: a flash.
-        if let popped = popped(at: date), popped.pop > 0 { return sin(popped.pop * .pi) }
+        // Leaving: a soft glint as it bows, and a flash as it pops.
+        if let popped = popped(at: date) {
+            if popped.pop > 0 { return sin(popped.pop * .pi) }
+            if popped.wave < 1 { return 0.22 * sin(popped.wave * .pi) }
+        }
         guard let cheered, date >= cheered else { return 0 }
         let since = date.timeIntervalSince(cheered)
         return since < 0.35 ? since / 0.35 : max(0, 1 - (since - 0.35) / (WalkerOverlay.cheer + 1.6))
@@ -1201,8 +1271,11 @@ struct Walker: Identifiable, Equatable {
             let hop = date.timeIntervalSince(poked) / 0.7
             if hop > 0 && hop < 1 { center.y -= CGFloat(sin(hop * .pi)) * Self.moylRadius(height: height) * 0.45 }
         }
-        // Its two hops, leaving, before it pops.
-        if let popped = popped(at: date) { center.y -= popped.hop * Self.moylRadius(height: height) * 0.7 }
+        // Leaving: a bow, and its two hops, before it pops.
+        if let popped = popped(at: date) {
+            center.y += CGFloat(sin(popped.wave * .pi)) * Self.moylRadius(height: height) * 0.3
+            center.y -= popped.hop * Self.moylRadius(height: height) * 0.7
+        }
         return (center, CGFloat(sin(angle)))
     }
 
@@ -1303,7 +1376,15 @@ struct Walker: Identifiable, Equatable {
             drawing.walk(facingRight: to >= from, hat: job.cap != nil, carrying: job.duty)
             return
         }
-        // Hopping off: just Oyl, its things put down.
+        // Going: just Oyl, its things put down, waving goodbye and hopping off.
+        if let popped = popped(at: date) {
+            if popped.wave < 1 {
+                drawing.goodbye(hat: job.cap != nil, wave: popped.wave)
+            } else {
+                drawing.hopOff(hat: job.cap != nil, hop: popped.hop)
+            }
+            return
+        }
         if popping != nil {
             drawing.draw(.idle, hat: job.cap != nil, walking: false, surfing: false)
             return
@@ -1643,8 +1724,10 @@ private struct WalkersView: View {
                     .animation(NotchView.open, value: walkers.calendarNudge)
             }
             if walkers.theme != .midnight {
-                // 10 a second: smooth enough for a little walk, and easy on the CPU.
-                TimelineView(.animation(minimumInterval: 1.0 / 10, paused: walkers.paused)) { context in
+                // 10 a second: smooth enough for a little walk, and easy on the CPU; while one's
+                // going (cheering, waving, hopping off), 30.
+                let going = walkers.list.contains { $0.popping != nil }
+                TimelineView(.animation(minimumInterval: 1.0 / (going ? 30 : 10), paused: walkers.paused)) { context in
                     sprites(height: walkers.barHeight, at: context.date)
                 }
             }
@@ -1690,9 +1773,9 @@ private struct WalkersView: View {
                         walker.draw(OylDrawing(canvas: context, size: frame.size, time: time, beat: beat, skin: walker.job.skin(at: date),
                                                outline: Oyl.menuBarOutline, pace: Double(walker.pace), beats: beats, bars: bars), at: date)
                     }
-                    // Fading at the notch (or popping), it fades as one (its outline doesn't show
-                    // through it).
-                    let shown = visibility * (1 - (popped?.pop ?? 0))
+                    // Fading at the notch (or gone in its puff), it fades as one (its outline doesn't
+                    // show through it).
+                    let shown = visibility * (1 - min((popped?.pop ?? 0) * 2.2, 1))
                     if shown < 1 {
                         place.opacity = shown
                         place.drawLayer { layer in draw(&layer) }
@@ -1700,7 +1783,9 @@ private struct WalkersView: View {
                         draw(&place)
                     }
                     if let popped, popped.pop > 0 {
-                        Self.burst(in: canvas, around: walker.body(at: date, height: height), popped.pop, color: walker.job.skin(at: date))
+                        var puff = canvas
+                        puff.opacity = visibility
+                        OylPuff.draw(in: puff, around: walker.body(at: date, height: height), popped.pop, color: walker.job.skin(at: date))
                     }
                     if let label = walker.label(at: date, allCountdowns: walkers.allCountdowns),
                        let image = walkers.labels.image(label.text, color: label.color) {
@@ -1757,31 +1842,14 @@ private struct WalkersView: View {
     }
 
 
-    /// Leaving: up off the bar for each of its two hops, then swelling as it pops.
-    private static func popOut(_ place: inout GraphicsContext, _ popped: (hop: CGFloat, pop: Double), body: CGRect) {
-        place.translateBy(x: 0, y: -popped.hop * body.height * 0.28)
+    /// Going: shrinking away into its puff. (Its hops are its own: it's at the top of the screen,
+    /// so it springs no higher than the bar; see `OylDrawing.hopOff`.)
+    private static func popOut(_ place: inout GraphicsContext, _ popped: (wave: Double, hop: CGFloat, pop: Double), body: CGRect) {
         guard popped.pop > 0 else { return }
-        let grown = 1 + 0.45 * CGFloat(popped.pop)
+        let shrunk = 1 - 0.85 * CGFloat(min(popped.pop * 2.2, 1))
         place.translateBy(x: body.midX, y: body.midY)
-        place.scaleBy(x: grown, y: grown)
+        place.scaleBy(x: shrunk, y: shrunk)
         place.translateBy(x: -body.midX, y: -body.midY)
-    }
-
-    /// Its pop: short rays flying out from where it was, gone with it.
-    private static func burst(in canvas: GraphicsContext, around body: CGRect, _ pop: Double, color: Color) {
-        var rays = canvas
-        rays.opacity = 1 - pop
-        let center = CGPoint(x: body.midX, y: body.midY), spread = CGFloat(pop)
-        let inner = body.width * (0.4 + 0.35 * spread), outer = inner + body.width * 0.24 * (1 - 0.5 * spread)
-        var path = Path()
-        for index in 0..<8 {
-            let angle = Double(index) * .pi / 4 + .pi / 8
-            let way = CGPoint(x: cos(angle), y: sin(angle))
-            path.move(to: CGPoint(x: center.x + way.x * inner, y: center.y + way.y * inner))
-            path.addLine(to: CGPoint(x: center.x + way.x * outer, y: center.y + way.y * outer))
-        }
-        rays.stroke(path, with: .color(Oyl.menuBarOutline), style: StrokeStyle(lineWidth: body.width * 0.09, lineCap: .round))
-        rays.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: body.width * 0.05, lineCap: .round))
     }
 
     /// Poked: a little hop, and a heart by its head.
@@ -1794,6 +1862,51 @@ private struct WalkersView: View {
         OylDrawing.heart(in: heart, at: CGPoint(x: body.maxX, y: body.minY + body.height * (0.3 - 0.25 * progress)),
                          size: body.height * 0.1)
         place.translateBy(x: 0, y: -sin(progress * .pi) * body.height * 0.1)
+    }
+}
+
+/// An Oyl gone in a puff, leaving (see `WalkerOverlay.leave`).
+enum OylPuff {
+    /// Its puff, `pop` (0…1) through it: a little cloud billowing out where it was (wider than it's
+    /// tall, to fit the bar), then thinning away, sparks of its color flying out of it.
+    static func draw(in canvas: GraphicsContext, around body: CGRect, _ pop: Double, color: Color) {
+        let w = body.width, grown = CGFloat(1 - pow(1 - pop, 3))
+        let center = CGPoint(x: body.midX, y: body.midY + body.height * 0.08)
+        var puffs = Path()
+        for index in 0..<7 {
+            let angle = Double(index) / 7 * 2 * .pi + 0.4
+            let reach = w * (0.06 + 0.36 * grown)
+            let spot = CGPoint(x: center.x + CGFloat(cos(angle)) * reach, y: center.y + CGFloat(sin(angle)) * reach * 0.45 - w * 0.08 * grown)
+            let r = w * (0.12 + 0.15 * grown) * (index % 2 == 0 ? 1 : 0.8)
+            puffs.addEllipse(in: CGRect(x: spot.x - r, y: spot.y - r, width: 2 * r, height: 2 * r))
+        }
+        let r = w * (0.14 + 0.12 * grown)
+        puffs.addEllipse(in: CGRect(x: center.x - r, y: center.y - r - w * 0.06 * grown, width: 2 * r, height: 2 * r))
+        var cloud = canvas
+        cloud.opacity = pop < 0.3 ? 1 : 1 - (pop - 0.3) / 0.7
+        // Outlined, then filled over: just the cloud's edge is left outlined. Thinning as one, so
+        // the outlines inside it don't show through.
+        cloud.drawLayer { layer in
+            layer.stroke(puffs, with: .color(Oyl.menuBarOutline), lineWidth: w * 0.08)
+            layer.fill(puffs, with: .color(Color(white: 0.95)))
+        }
+        var sparks = canvas
+        sparks.opacity = 1 - pop
+        for index in 0..<5 {
+            let angle = Double(index) / 5 * 2 * .pi + 1.1
+            let reach = w * (0.25 + 0.6 * grown)
+            let spot = CGPoint(x: center.x + CGFloat(cos(angle)) * reach, y: center.y + CGFloat(sin(angle)) * reach * 0.5)
+            let size = w * 0.11 * (1 - 0.4 * CGFloat(pop))
+            var star = Path()
+            for point in 0..<8 {
+                let a = Double(point) * .pi / 4, out = point % 2 == 0 ? size : size * 0.32
+                let p = CGPoint(x: spot.x + CGFloat(cos(a)) * out, y: spot.y + CGFloat(sin(a)) * out)
+                if point == 0 { star.move(to: p) } else { star.addLine(to: p) }
+            }
+            star.closeSubpath()
+            sparks.stroke(star, with: .color(Oyl.menuBarOutline), style: StrokeStyle(lineWidth: w * 0.04, lineJoin: .round))
+            sparks.fill(star, with: .color(color))
+        }
     }
 }
 

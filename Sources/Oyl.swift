@@ -1008,6 +1008,26 @@ extension OylDrawing {
         drawOyl(in: body(in: space, at: 30, pose: pose), pose: pose, hat: hat)
     }
 
+    /// Going: waving goodbye at you, `wave` (0…1) through it.
+    func goodbye(hat: Bool, wave: Double) {
+        var pose = restingPose()
+        let up = Self.during(wave, 0, 1, ease: 0.2)
+        pose.hands.1 = Self.mix(pose.hands.1, CGPoint(x: 36 + 3 * sin(wave * 2 * .pi * 2.5), y: 15), up)
+        pose.look = Self.mix(.zero, CGPoint(x: 0, y: 0.3), up)
+        drawOyl(in: body(in: space, at: 30, pose: pose), pose: pose, hat: hat)
+    }
+
+    /// Going: springing up off the bar, `hop` (0…1) how far up, crouching between. (It's at the
+    /// top of the screen, as cheering, so it springs no higher than the bar.)
+    func hopOff(hat: Bool, hop: CGFloat) {
+        var pose = Pose()
+        pose.lift = -3 + 6 * hop
+        pose.squash = 0.86 + 0.2 * hop
+        pose.hands = (CGPoint(x: 9, y: 25 + 6 * (1 - hop)), CGPoint(x: 31, y: 25 + 6 * (1 - hop)))
+        if hop > 0.3 { pose.feet = (CGPoint(x: 16, y: 42), CGPoint(x: 24, y: 42)) }
+        drawOyl(in: body(in: space, at: 30, pose: pose), pose: pose, hat: hat)
+    }
+
     // The song
 
     /// Headphones over its spikes: the band arched across the top of its head, a cup either side.
