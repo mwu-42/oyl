@@ -10,7 +10,8 @@ import SwiftUI
 /// double click; the thumb to the middle tip instead, the index held out clear of it, is the right
 /// button. Two fingers held together, side by side, are two on a trackpad: moving, they scroll.
 /// Three swipe, across between Spaces and up and
-/// down for Mission Control, as the trackpad's set to. Both hands held up pinching zoom, the way a
+/// down for Mission Control, as the trackpad's set to. Flicked, two or three, they scroll, the
+/// page gliding on (see `Flicker`). Both hands held up pinching zoom, the way a
 /// trackpad's pinch does: drawn apart, in, and together, out. Meanwhile no other gesture counts, and the
 /// camera stays on, reading every frame, even once the band's closed; it's put down by the rock
 /// sign, by resting the pointer a moment on the dial in the top bar, by no hand for ten seconds, or
@@ -585,10 +586,16 @@ struct PointerTuning {
     var scrollStart: CGFloat = 3
     var flingSpeed: CGFloat = 120
     /// How far three fingers go to swipe (of the screen's width across, of its height up or
-    /// down); or flicked (going `swipeSpeed` screens a second), only `swipeFlick` as far.
+    /// down), unless they're flicked.
     var swipe: CGFloat = 0.07
-    var swipeFlick: CGFloat = 0.035
-    var swipeSpeed: CGFloat = 0.7
+    /// A flick, two fingers or three: a dart going `flickSpeed` screens (of its height) a second
+    /// at its fastest, over within `flickTime` (from moving faster than `flickStill` screens a
+    /// second to slowing back down). Then the hand coming back doesn't scroll, till it's held
+    /// still `flickRest` (or flicks again the same way).
+    var flickSpeed: CGFloat = 0.9
+    var flickTime: TimeInterval = 0.35
+    var flickStill: CGFloat = 0.25
+    var flickRest: TimeInterval = 0.15
     /// Resting the pointer clicks: held within `restRadius` for `restSettle`, then `restTime` more
     /// (a ring drawing on round the sight meanwhile). Then it has to move `rearm` off before
     /// resting clicks again.
@@ -671,6 +678,60 @@ enum ScrollPhase {
     case touched, began, changed
     case ended(velocity: CGVector)
     case cancelled
+}
+
+/// Watching for a flick: a quick dart of the hand, two fingers or three, that's over almost as
+/// soon as it's begun, as a finger flicks a trackpad (or a phone) and lifts. Goes by the palm as
+/// it's seen, every frame: smoothing it lags too far behind a dart.
+struct Flicker {
+    var last: CGPoint
+    var time: TimeInterval
+    var velocity = CGVector.zero
+    /// The move under way: where and when it started, and how fast it's gone at its fastest.
+    private var move: (from: CGPoint, start: TimeInterval, peak: CGVector)?
+    /// Flicks so far.
+    private(set) var flicks = 0
+
+    init(last: CGPoint, time: TimeInterval) {
+        self.last = last
+        self.time = time
+    }
+
+    var isMoving: Bool { move != nil }
+    /// How fast the move under way's gone at its fastest, and how far it's gone.
+    var fastest: CGVector? { move?.peak }
+    var going: CGVector? { move.map { CGVector(dx: last.x - $0.from.x, dy: last.y - $0.from.y) } }
+
+    /// The move under way may yet turn out a flick (it's not been going too long).
+    func mayFlick(at time: TimeInterval, tuning: PointerTuning) -> Bool {
+        move.map { time - $0.start <= tuning.flickTime } ?? false
+    }
+
+    /// The palm at `time`, on a screen `height` tall: a flick that's just ended, if one has: how
+    /// far it went, and how fast at its fastest.
+    mutating func take(_ palm: CGPoint, at time: TimeInterval, tuning: PointerTuning, height: CGFloat)
+        -> (gone: CGVector, velocity: CGVector)? {
+        let step = time - self.time, previous = last
+        last = palm
+        self.time = time
+        guard step > 0 else { return nil }
+        velocity = CGVector(dx: velocity.dx + ((palm.x - previous.x) / step - velocity.dx) * 0.6,
+                            dy: velocity.dy + ((palm.y - previous.y) / step - velocity.dy) * 0.6)
+        let speed = hypot(velocity.dx, velocity.dy), moving = tuning.flickStill * height
+        guard var move else {
+            if speed > moving { self.move = (previous, time - step, velocity) }
+            return nil
+        }
+        if speed > hypot(move.peak.dx, move.peak.dy) { move.peak = velocity }
+        self.move = move
+        // Slowed right down again: over.
+        let peak = hypot(move.peak.dx, move.peak.dy)
+        guard speed < max(moving, 0.35 * peak) else { return nil }
+        self.move = nil
+        guard peak >= tuning.flickSpeed * height, time - move.start <= tuning.flickTime else { return nil }
+        flicks += 1
+        return (CGVector(dx: palm.x - move.from.x, dy: palm.y - move.from.y), move.peak)
+    }
 }
 
 /// Where the pointer's moves, presses, scrolls and swipes go, in global display coordinates (from
@@ -758,6 +819,13 @@ final class PointerHand {
         var moved = CGVector.zero
         var began = false
         var velocity = CGVector.zero
+        /// Watching for a flick, by the palm as it's seen; and how far it's scrolled since the
+        /// move that may be one began (smoothing lags behind a flick: the rest is made up).
+        var flicker: Flicker
+        var sent = CGVector.zero
+        /// Flicked, gliding on, the way it went: the hand coming back doesn't scroll; since when
+        /// it's been held still.
+        var coasting: (way: CGVector, still: TimeInterval?)?
     }
 
     private var filters: Filters
@@ -802,6 +870,9 @@ final class PointerHand {
         var time: TimeInterval
         var velocity = CGVector.zero
         var done = false
+        var flicker: Flicker
+        /// Flicked (scrolling), the way it went: more that way scroll on; back, and swipes, don't.
+        var flicked: CGVector?
     }
 
     private var swiping: Swipe?
@@ -922,7 +993,8 @@ final class PointerHand {
             if shape == .pointing, held.together >= 2, held.frames >= tuning.shapeFrames {
                 // A swipe goes by the palm as it's seen: smoothing it lags too far behind a flick.
                 let from = held.together == 2 ? shapedFrom?.smooth : shapedFrom?.seen
-                become(held.together == 2 ? .scrolling : .swiping, at: time, palm: from ?? palm, to: events)
+                become(held.together == 2 ? .scrolling : .swiping, at: time, palm: from ?? palm, seen: shapedFrom?.seen ?? seenPalm,
+                       to: events)
             } else if shape != .pointing, held.together != (shape == .scrolling ? 2 : 3), held.frames >= tuning.unshapeFrames {
                 become(.pointing, at: time, to: events)
             }
@@ -931,7 +1003,7 @@ final class PointerHand {
         if shape == .swiping {
             swipe(seenPalm, at: time, to: events)
         } else {
-            point(pose, tip: tip, palm: palm, at: time, to: events)
+            point(pose, tip: tip, palm: palm, seen: seenPalm, at: time, to: events)
         }
         restOn(at: time, to: events)
         lastFrame = time
@@ -945,7 +1017,7 @@ final class PointerHand {
 
     /// Pointing (the pointer at the fingertip) or scrolling (the pointer staying put), and the
     /// tips meeting to press.
-    private func point(_ pose: HandPose, tip: CGPoint, palm: CGPoint, at time: TimeInterval, to events: PointerEvents) {
+    private func point(_ pose: HandPose, tip: CGPoint, palm: CGPoint, seen: CGPoint, at time: TimeInterval, to events: PointerEvents) {
         // The thumb on the index tip or the middle one (see `HandPose.button`), never in a fist's
         // shape or just after a fist, whose thumb can lie near the tips. Pressed, it lets go as the
         // thumb leaves the tip it pressed with, or that finger curls right in, or a fist's lasted a
@@ -1036,9 +1108,11 @@ final class PointerHand {
         }
         if let next { go(to: next, to: events) }
         // The palm scrolls, but not while the thumb's on its way to a fingertip (to click), or the
-        // fingers are changing shape.
+        // fingers are changing shape (unless they're darting off, which blurs them).
         if shape == .scrolling {
-            scroll(palm, at: time, holding: closing != nil || meeting > 0 || (held.together != 2 && held.frames > 1), to: events)
+            let blurred = scrolling?.flicker.isMoving == true
+            scroll(palm, seen: seen, at: time,
+                   holding: closing != nil || meeting > 0 || (held.together != 2 && held.frames > 1 && !blurred), to: events)
         }
     }
 
@@ -1136,34 +1210,92 @@ final class PointerHand {
     }
 
     /// Two fingers moving: they scroll as far as the palm goes (past the dead zone, so a hand held
-    /// still doesn't shiver the page), once it's gone far enough to count.
-    private func scroll(_ palm: CGPoint, at time: TimeInterval, holding: Bool, to events: PointerEvents) {
+    /// still doesn't shiver the page), once it's gone far enough to count. Flicked, the page glides
+    /// on, as a trackpad's does once a flicking finger lifts, and the hand coming back is let be.
+    private func scroll(_ palm: CGPoint, seen: CGPoint, at time: TimeInterval, holding: Bool, to events: PointerEvents) {
         guard var scroll = scrolling else { return }
         defer { scrolling = scroll }
+        let wasMoving = scroll.flicker.isMoving
+        let flick = scroll.flicker.take(seen, at: time, tuning: tuning, height: bounds.height)
+        if !wasMoving, scroll.flicker.isMoving { scroll.sent = .zero }
         let off = hypot(palm.x - scroll.last.x, palm.y - scroll.last.y), past = max(off - tuning.deadZone, 0) / max(off, 0.001)
         let next = CGPoint(x: scroll.last.x + (palm.x - scroll.last.x) * past, y: scroll.last.y + (palm.y - scroll.last.y) * past)
         let delta = CGVector(dx: (next.x - scroll.last.x) * tuning.scrollGain, dy: (next.y - scroll.last.y) * tuning.scrollGain)
         let step = time - scroll.time
         scroll.last = next
         scroll.time = time
+        if let coasting = scroll.coasting {
+            // Flicked again the same way: on again, quicker. Otherwise, coming back, nothing, till
+            // it's held still a moment.
+            if let flick, flick.velocity.dx * coasting.way.dx + flick.velocity.dy * coasting.way.dy > 0 {
+                self.flick(flick, to: events, touching: true)
+                scroll.coasting = (flick.velocity, nil)
+            } else if scroll.flicker.isMoving {
+                scroll.coasting?.still = nil
+            } else if let still = coasting.still {
+                if time - still >= tuning.flickRest {
+                    scroll.coasting = nil
+                    scroll.began = false
+                    scroll.moved = .zero
+                    scroll.velocity = .zero
+                }
+            } else {
+                scroll.coasting?.still = time
+            }
+            return
+        }
         guard !holding else { return }
         if step > 0 {
             scroll.velocity = CGVector(dx: scroll.velocity.dx + (delta.dx / step - scroll.velocity.dx) * 0.7,
                                        dy: scroll.velocity.dy + (delta.dy / step - scroll.velocity.dy) * 0.7)
         }
+        if let flick {
+            // What smoothing held back, then gliding on.
+            let gone = CGVector(dx: flick.gone.dx * tuning.scrollGain, dy: flick.gone.dy * tuning.scrollGain)
+            if scroll.began {
+                let rest = CGVector(dx: gone.dx - scroll.sent.dx, dy: gone.dy - scroll.sent.dy)
+                if hypot(rest.dx, rest.dy) > 0.5 { events.scroll(by: rest, phase: .changed) }
+            } else {
+                events.scroll(by: gone, phase: .began)
+            }
+            events.scroll(by: .zero, phase: .ended(velocity: glide(flick.velocity)))
+            scroll.began = true
+            scroll.coasting = (flick.velocity, nil)
+            return
+        }
         if scroll.began {
-            if hypot(delta.dx, delta.dy) > 0.05 { events.scroll(by: delta, phase: .changed) }
+            if hypot(delta.dx, delta.dy) > 0.05 {
+                events.scroll(by: delta, phase: .changed)
+                scroll.sent = CGVector(dx: scroll.sent.dx + delta.dx, dy: scroll.sent.dy + delta.dy)
+            }
         } else {
             scroll.moved = CGVector(dx: scroll.moved.dx + delta.dx, dy: scroll.moved.dy + delta.dy)
             if hypot(scroll.moved.dx, scroll.moved.dy) > tuning.scrollStart {
                 scroll.began = true
+                // Coming back from a flick's glide: down on the trackpad again, which stops it.
+                if scroll.sent != .zero || scroll.flicker.flicks > 0 { events.scroll(by: .zero, phase: .touched) }
                 events.scroll(by: scroll.moved, phase: .began)
+                scroll.sent = CGVector(dx: scroll.sent.dx + scroll.moved.dx, dy: scroll.sent.dy + scroll.moved.dy)
             }
         }
     }
 
-    /// Three fingers moving: once they've gone far enough one way, or flicked that way, a swipe
-    /// that way (one each time they're held together, as on a trackpad).
+    /// A flick on its own (three fingers, or another after the first): a scroll as far as it went,
+    /// lifted at once to glide on; `touching` first, which stops the glide that's going.
+    private func flick(_ flick: (gone: CGVector, velocity: CGVector), to events: PointerEvents, touching: Bool) {
+        if touching { events.scroll(by: .zero, phase: .touched) }
+        events.scroll(by: CGVector(dx: flick.gone.dx * tuning.scrollGain, dy: flick.gone.dy * tuning.scrollGain), phase: .began)
+        events.scroll(by: .zero, phase: .ended(velocity: glide(flick.velocity)))
+    }
+
+    /// A flick's speed, as the page glides on at.
+    private func glide(_ velocity: CGVector) -> CGVector {
+        CGVector(dx: velocity.dx * tuning.scrollGain, dy: velocity.dy * tuning.scrollGain)
+    }
+
+    /// Three fingers moving: once they've gone far enough one way, a swipe that way (one each time
+    /// they're held together, as on a trackpad); flicked, a scroll that glides on, as two fingers'
+    /// does, and more flicks that way scroll on (but nothing swipes, then).
     private func swipe(_ palm: CGPoint, at time: TimeInterval, to events: PointerEvents) {
         guard var swipe = swiping else { return }
         defer { swiping = swipe }
@@ -1174,17 +1306,24 @@ final class PointerHand {
         }
         swipe.last = palm
         swipe.time = time
-        // Still three (but for a frame lost to a blurred flick).
-        guard !swipe.done, held.together == 3 || held.frames <= 1 else { return }
+        if let flick = swipe.flicker.take(palm, at: time, tuning: tuning, height: bounds.height) {
+            let onward = swipe.flicked.map { flick.velocity.dx * $0.dx + flick.velocity.dy * $0.dy > 0 } ?? !swipe.done
+            if onward {
+                self.flick(flick, to: events, touching: true)
+                swipe.flicked = flick.velocity
+                swipe.done = true
+            }
+            return
+        }
+        // Still three (but for a frame lost to a blurred flick), and not darting off (which may
+        // yet be a flick).
+        guard !swipe.done, held.together == 3 || held.frames <= 1, !swipe.flicker.mayFlick(at: time, tuning: tuning) else { return }
         let width = max(bounds.width, 1), height = max(bounds.height, 1)
         let across = (palm.x - swipe.from.x) / width, down = (palm.y - swipe.from.y) / height
-        func far(_ gone: CGFloat, _ speed: CGFloat) -> Bool {
-            abs(gone) > tuning.swipe || (abs(gone) > tuning.swipeFlick && abs(speed) > tuning.swipeSpeed && gone * speed > 0)
-        }
         let direction: SwipeDirection
-        if far(across, swipe.velocity.dx / width), abs(across) > abs(down) * 1.3 {
+        if abs(across) > tuning.swipe, abs(across) > abs(down) * 1.3 {
             direction = across < 0 ? .left : .right
-        } else if far(down, swipe.velocity.dy / height), abs(down) > abs(across) * 1.3 {
+        } else if abs(down) > tuning.swipe, abs(down) > abs(across) * 1.3 {
             direction = down < 0 ? .up : .down
         } else {
             return
@@ -1196,11 +1335,25 @@ final class PointerHand {
 
     /// Starts pointing, scrolling (from the palm at `palm`) or swiping, finishing what the last
     /// shape was doing: a scroll's lifted, gliding on if it was going fast.
-    private func become(_ new: PointerShape, at time: TimeInterval, palm: CGPoint? = nil, to events: PointerEvents) {
-        if let scroll = scrolling {
-            if scroll.began {
-                let fast = hypot(scroll.velocity.dx, scroll.velocity.dy) > tuning.flingSpeed
-                events.scroll(by: .zero, phase: .ended(velocity: fast ? scroll.velocity : .zero))
+    private func become(_ new: PointerShape, at time: TimeInterval, palm: CGPoint? = nil, seen: CGPoint? = nil,
+                        to events: PointerEvents) {
+        if let scroll = scrolling, scroll.coasting == nil {
+            // Darting off as the fingers part (blurred, as a flick does): as far as it's gone, what
+            // smoothing held back made up, and gliding on at its fastest.
+            let darting = scroll.flicker.mayFlick(at: time, tuning: tuning) ? scroll.flicker.fastest : nil
+            var began = scroll.began
+            if darting != nil, let gone = scroll.flicker.going {
+                let total = CGVector(dx: gone.dx * tuning.scrollGain, dy: gone.dy * tuning.scrollGain)
+                let rest = began ? CGVector(dx: total.dx - scroll.sent.dx, dy: total.dy - scroll.sent.dy) : total
+                if hypot(rest.dx, rest.dy) > (began ? 0.5 : tuning.scrollStart) {
+                    events.scroll(by: rest, phase: began ? .changed : .began)
+                    began = true
+                }
+            }
+            if began {
+                let velocity = darting.map(glide) ?? scroll.velocity
+                let fast = hypot(velocity.dx, velocity.dy) > tuning.flingSpeed
+                events.scroll(by: .zero, phase: .ended(velocity: fast ? velocity : .zero))
             } else {
                 events.scroll(by: .zero, phase: .cancelled)
             }
@@ -1220,10 +1373,10 @@ final class PointerHand {
         guard let palm else { return }
         switch new {
         case .scrolling:
-            scrolling = Scroll(last: palm, time: time)
+            scrolling = Scroll(last: palm, time: time, flicker: Flicker(last: seen ?? palm, time: time))
             events.scroll(by: .zero, phase: .touched)
         case .swiping:
-            swiping = Swipe(from: palm, last: palm, time: time)
+            swiping = Swipe(from: palm, last: palm, time: time, flicker: Flicker(last: palm, time: time))
         case .pointing, .zooming:
             break
         }
