@@ -1,4 +1,5 @@
 import MetalKit
+import os
 import SwiftUI
 
 /// Midnight Oyl's band: across the whole top of the screen, flush with it and covering the menu
@@ -569,8 +570,18 @@ extension MidnightBackdrop {
             didSet { if active != oldValue { updatePaused() } }
         }
         private var occlusion: NSObjectProtocol?
-        /// Drawing the Dock's while it's up but counted covered (see `updatePaused`).
+        /// Drawing the Dock's while it's up, on a clock of its own (see `updatePaused`), and how
+        /// many times it's ticked (at rest, every other tick draws).
         private var ticking: Timer?
+        private var ticks = 0
+        private var clockStarted: CFTimeInterval = 0
+        /// Gone a second without a frame while up: said once, in the log.
+        private var stalled = false
+        /// The screens are asleep, or the session's locked: then nothing's shown to draw for (and
+        /// waiting for something to draw into could hold everything up).
+        private var away = false
+        private var awayWatch: [NSObjectProtocol] = []
+        private static let log = Logger(subsystem: "local.nott", category: "midnight")
 
         init() {
             renderer = MidnightMetal.device.flatMap(Renderer.init)
@@ -583,7 +594,18 @@ extension MidnightBackdrop {
             framebufferOnly = true
             preferredFramesPerSecond = 60
             delegate = renderer
+            let workspace = NSWorkspace.shared.notificationCenter
+            for (name, gone) in [(NSWorkspace.screensDidSleepNotification, true), (NSWorkspace.screensDidWakeNotification, false),
+                                 (NSWorkspace.sessionDidResignActiveNotification, true), (NSWorkspace.sessionDidBecomeActiveNotification, false)] {
+                awayWatch.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.away = gone }
+                })
+            }
             updatePaused()
+        }
+
+        deinit {
+            awayWatch.forEach(NSWorkspace.shared.notificationCenter.removeObserver)
         }
 
         required init(coder: NSCoder) {
@@ -629,27 +651,55 @@ extension MidnightBackdrop {
             updatePaused()
         }
 
-        /// Paused, it still draws once when told to (a new bloom, a new size), but no more. The
-        /// Dock's, under the menu bar's level, can count as covered by a window that's only
-        /// see-through (macOS's screenshot overlay, left up after a screenshot, is one), and then
-        /// nothing would draw it: while it's up, it's drawn on a clock of its own instead.
+        /// Paused, it still draws once when told to (a new bloom, a new size), but no more.
+        ///
+        /// The Dock's, while it's up, is drawn on a clock of its own, never by the view's display
+        /// link. Under the menu bar's level, the Dock can count as covered by a window that's only
+        /// see-through (macOS's screenshot overlay, left up after a screenshot, is one); and with
+        /// nothing over it at all, the display link can go quiet with the Dock in plain sight. Either
+        /// way the sky would stop on its last frame, which, coming up after it last wilted, is
+        /// none: only the bar and its icons. The band's goes by the display link while it's up and
+        /// showing.
         private func updatePaused() {
             let covered = window?.occlusionState.contains(.visible) != true
-            let showing = active && renderer != nil && !covered
-            let ticks = active && renderer?.flipped == true && covered && window != nil
-            if ticks, ticking == nil {
+            let clocked = active && renderer?.flipped == true && window != nil
+            let showing = active && renderer != nil && !covered && !clocked
+            if clocked, ticking == nil {
+                stalled = false
+                clockStarted = CACurrentMediaTime()
                 let timer = Timer(timeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.draw() }
+                    MainActor.assumeIsolated { self?.tick() }
                 }
                 RunLoop.main.add(timer, forMode: .common)
                 ticking = timer
-            } else if !ticks {
+            } else if !clocked {
                 ticking?.invalidate()
                 ticking = nil
             }
             isPaused = !showing
-            enableSetNeedsDisplay = !showing
-            if !showing { needsDisplay = true }
+            enableSetNeedsDisplay = !showing && !clocked
+            if !showing, !clocked { needsDisplay = true }
+        }
+
+        /// The Dock's clock: a frame each tick while it's opening or growing, every other at rest;
+        /// and if none's got drawn for a second, why, in the log.
+        private func tick() {
+            guard !away else {
+                clockStarted = CACurrentMediaTime()
+                return
+            }
+            ticks += 1
+            if preferredFramesPerSecond >= 60 || ticks % 2 == 0 { draw() }
+            let last = max(renderer?.lastFrame ?? 0, clockStarted)
+            guard let renderer, CACurrentMediaTime() - last > 1 else {
+                stalled = false
+                return
+            }
+            guard !stalled else { return }
+            stalled = true
+            let gone = CACurrentMediaTime() - last, missed = renderer.missed
+            let visible = window?.occlusionState.contains(.visible) == true
+            Self.log.error("The Dock's sky has drawn nothing for \(gone, format: .fixed(precision: 1)) s: \(missed, privacy: .public) tries without a drawable, view \(Int(self.bounds.width))x\(Int(self.bounds.height)), window visible \(visible, privacy: .public)")
         }
     }
 
@@ -712,15 +762,25 @@ extension MidnightBackdrop {
 
         func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+        /// When a frame was last drawn (on `CACurrentMediaTime`'s clock), and how many tries since
+        /// had nothing to draw into.
+        private(set) var lastFrame: CFTimeInterval?
+        private(set) var missed = 0
+
         func draw(in view: MTKView) {
             guard view.bounds.width > 0, let pass = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
                   let buffer = queue.makeCommandBuffer(), let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
-            else { return }
+            else {
+                missed += 1
+                return
+            }
             let time = CACurrentMediaTime() - Self.epoch
             encode(encoder, pixels: view.drawableSize, scale: view.drawableSize.width / view.bounds.width, time: time)
             encoder.endEncoding()
             buffer.present(drawable)
             buffer.commit()
+            lastFrame = CACurrentMediaTime()
+            missed = 0
         }
 
         /// Draws one frame into whatever `encoder` renders to, `pixels` big at `scale` pixels a point:
