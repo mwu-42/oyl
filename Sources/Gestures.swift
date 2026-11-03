@@ -1158,9 +1158,10 @@ enum HandShape {
                 together = 3
             }
         }
+        let tips = indexTip.flatMap { index in middleTip.map { shown(CGPoint(x: (index.x + $0.x) / 2, y: (index.y + $0.y) / 2)) } }
         return HandPose(time: time, aspect: aspect, anchor: anchor, tip: indexTip.map(shown), size: palm,
                         gesture: gesture, pinch: pinch, middlePinch: middlePinch, middleAhead: middleAhead, reach: reach, middleReach: middleReach, uncurled: uncurled, together: together,
-                        fistLike: fistLike, joints: HandTrack.hand(joints))
+                        tips: tips, fistLike: fistLike, joints: HandTrack.hand(joints))
     }
 }
 
