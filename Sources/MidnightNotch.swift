@@ -6,7 +6,8 @@ import SwiftUI
 /// its foot flowing and dissolving into the desktop. Under the notch, the usual strip and page, in
 /// Midnight's type; across the sky, the hands the camera sees, as a constellation (the camera
 /// itself isn't shown, but it's on while the band's up, for the gestures); on the right,
-/// tonight's moon, which holds the band open until it's clicked again. How deep it is follows the
+/// the moon, which tells the time (new at midnight, full at noon) and holds the band open until
+/// it's clicked again. How deep it is follows the
 /// page: the page, and some sky.
 struct MidnightNotch: View {
     @ObservedObject var state: NotchState

@@ -158,8 +158,8 @@ struct MidnightArch: Shape {
 /// Everything behind the band's content, drawn by one Metal shader: a Victorian celestial atlas
 /// plate engraved in silver-white on deep night, spread across the top of the screen. The notch
 /// is the celestial pole, with a polar grid round it; stars sized by magnitude and the Milky Way
-/// across it; a planisphere on the left, an orrery and then tonight's moon (its real phase, in a
-/// dial of its month) on the right; the Plough on the planisphere, Cygnus under the page. It's
+/// across it; a planisphere on the left, an orrery and then the moon on the right, a clock (new at
+/// midnight, full at noon, in a dial of the day); the Plough on the planisphere, Cygnus under the page. It's
 /// laid out on `MidnightArch(bloom:notch:reach:)`, but it's never that shape: its foot flows like
 /// ink in water, swelling and pinching in slow lobes that wander along it and come and go, its
 /// deepest part drifting off center, a lasting swell under the moon; never pinching in over the
@@ -172,7 +172,7 @@ struct MidnightArch: Shape {
 ///
 /// Opening, it blooms out of the notch like a flower (see `Flower`), and the sky with it: stars
 /// ignite as its front reaches them, the grid sweeps on, the charts draw on and turn into place,
-/// the moon waxes to tonight's phase; then what drifts out of it comes out. Open, it carries on quietly: the dials turn, stars twinkle, dust
+/// the moon waxes to the hour's phase; then what drifts out of it comes out. Open, it carries on quietly: the dials turn, stars twinkle, dust
 /// drifts, and now and then a star falls. Growing to a taller page draws new rings and stars into
 /// the new room. The page's column is kept quiet.
 struct MidnightBackdrop: View, Animatable {
@@ -667,13 +667,14 @@ extension MidnightBackdrop {
         var overflow = (side: CGFloat(0), below: CGFloat(0))
         /// The page, in the frame's points (see `MidnightBackdrop.page`).
         var page: CGRect = .zero
-        /// The night to draw the moon and the hour for: now, unless it's set.
+        /// The moment to draw the moon (a clock) and the hour for: now, unless it's set.
         var date: Date?
         /// Turned over, and without its charts (see `MidnightBackdrop`).
         var flipped = false
         var charts = true
         private let queue: MTLCommandQueue
-        /// Tonight's moon (0 new, ½ full) and the hour (0–24), and when they were last worked out.
+        /// The moon's phase as the clock has it (0 new, ½ full) and the hour (0–24), and when they
+        /// were last worked out.
         private var night = (phase: 0.0, hour: 0.0)
         private var nightChecked = -Double.infinity
         /// How far the pinned moon's dial has turned, and the time it was last drawn.
@@ -1041,13 +1042,24 @@ extension MidnightBackdrop.Renderer {
         return CGPoint(x: length * (eccentricity - cos(anomaly)), y: Double(Design.wandererWidth) * sin(anomaly))
     }
 
-    /// The moon's phase on `date` (a synodic month of 29.530589 days from the new moon of 6 January
-    /// 2000, 18:14 UTC: 0 new, ½ full), and the hour there (0–24).
+    /// The moon's phase at `date`, the moon being a clock (see `clockPhase`), and the hour there
+    /// (0–24).
     static func night(at date: Date) -> (phase: Double, hour: Double) {
-        let days = (date.timeIntervalSince1970 - 947_182_440) / 86_400
-        let age = days / 29.530589
-        let clock = Calendar.current.dateComponents([.hour, .minute], from: date)
-        return (age - age.rounded(.down), Double(clock.hour ?? 0) + Double(clock.minute ?? 0) / 60)
+        let clock = Calendar.current.dateComponents([.hour, .minute, .second], from: date)
+        let hour = Double(clock.hour ?? 0) + Double(clock.minute ?? 0) / 60 + Double(clock.second ?? 0) / 3600
+        return (clockPhase(hour / 24), hour)
+    }
+
+    /// The moon's phase (0 new, ½ full) at `day` (0 to 1, from midnight), as the clock it is: new
+    /// at midnight, it waxes, lit by as much of its face as the morning's gone (half at six), till
+    /// it's full at noon; then it wanes, dark by as much as the afternoon and evening have, till
+    /// it's new again at midnight. (Its terminator's the real one's, so the phase that lights a
+    /// share of the face isn't that share: a crescent's lit by less than its phase says.)
+    static func clockPhase(_ day: Double) -> Double {
+        let day = day - day.rounded(.down)
+        let lit = day < 0.5 ? day * 2 : 2 - day * 2
+        let phase = acos(min(max(1 - 2 * lit, -1), 1)) / (2 * .pi)
+        return day < 0.5 ? phase : 1 - phase
     }
 
     /// How far round something that turns once each `period` seconds is at `time`, in radians.
@@ -1082,7 +1094,7 @@ struct Uniforms {
     float pole;                      // the notch's foot, in design points down
     float reach, grownFrom, growth;  // design points; growth 0 to 1
     float bloom, lit, time;
-    float phase, hour;               // tonight's moon (0 new, 0.5 full); the hour, 0 to 24
+    float phase, hour;               // the moon, a clock (0 new at midnight, 0.5 full at noon); the hour, 0 to 24
     float disc;                      // the planisphere's star disc, turned
     float planet1, planet2, planet3, planet4, moonlet, colure, dial;
     float streakX, streakY, streakDX, streakDY, streakLength, streakAlong;   // along < 0: none falling
@@ -1281,6 +1293,15 @@ float moonLit(float2 p, float radius, float phase) {
     float side = phase < 0.5 ? 1.0 : -1.0;
     float w = sqrt(max(radius * radius - p.y * p.y, 0.0));
     return (side * p.x - cos(TAU * phase) * w) * 0.8;
+}
+
+// The moon's phase at `day` (0 to 1 from midnight), as the clock it is: lit by as much of its face
+// as the morning's gone, then dark by as much as the afternoon and evening have (see
+// `MidnightBackdrop.clockPhase`).
+float clockPhase(float day) {
+    float lit = day < 0.5 ? day * 2 : 2 - day * 2;
+    float phase = acos(clamp(1 - 2 * lit, -1.0, 1.0)) / TAU;
+    return day < 0.5 ? phase : 1 - phase;
 }
 
 // The distances to each weight of line, nearest first (design points), and how much engraved
@@ -1492,10 +1513,12 @@ void orrery(float2 p, Sky s, float grow, constant Uniforms &u, thread Trace &t, 
     }
 }
 
-// Tonight's moon, low right, in a dial of its month: the lit part engraved silver with its craters,
-// the dark part hatched; round it a ring a day, the eight phases, and a glint for today. Opening,
-// the dial trims on and the disc waxes from new to tonight; pinned, the dial turns and a starlight
-// lamp breathes round it. `p` is from its center.
+// The moon, low right, a clock: new at midnight, waxing through the morning, full at noon and
+// waning to midnight again (see `clockPhase`), the lit part engraved silver with its craters, the
+// dark part hatched. Round it a dial of the day: midnight at the top, noon at the foot, a tick an
+// hour (longer every three, longest every six), the moon at every third hour, and a glint for now.
+// Opening, the dial trims on and the disc waxes from new to the hour's phase; pinned, the dial
+// turns and a starlight lamp breathes round it. `p` is from its center.
 void moon(float2 p, Sky s, constant Uniforms &u, thread Trace &t, thread float3 &light) {
     float r = length(p);
     float opening = saturate((s.bloom - 0.45) / 0.55);
@@ -1526,10 +1549,10 @@ void moon(float2 p, Sky s, constant Uniforms &u, thread Trace &t, thread float3 
     }
     if (r < 44 || r > 60) return;
     float turned = fract(around - u.dial / TAU + 1);
-    float day = turned * 29.530589, k = min(round(day), 29.0);
-    if (k / 29.530589 < trim - 0.02) {
-        float tick = fmod(k, 7.0) == 0 ? 6.0 : 3.0;
-        float across = abs(day - k) * TAU / 29.530589 * r;
+    float hours = turned * 24, k = fmod(round(hours), 24.0);
+    if (k / 24 < trim - 0.02) {
+        float tick = fmod(k, 6.0) == 0 ? 6.0 : fmod(k, 3.0) == 0 ? 4.5 : 3.0;
+        float across = abs(hours - round(hours)) * TAU / 24 * r;
         t.fine = min(t.fine, length(float2(across, max(max(46 - r, r - 46 - tick), 0.0))));
     }
     float j = fmod(round(turned * 8), 8.0);
@@ -1538,10 +1561,10 @@ void moon(float2 p, Sky s, constant Uniforms &u, thread Trace &t, thread float3 
         float2 pip = p - 54.5 * float2(sin(a), -cos(a));
         float pr = length(pip);
         t.fine = min(t.fine, abs(pr - 2.3));
-        light += SILVER * 0.7 * saturate(moonLit(pip, 2.3, j / 8) * s.ppu * 2 + 0.5) * spot(pr * iso, 2.3, s.scale);
+        light += SILVER * 0.7 * saturate(moonLit(pip, 2.3, clockPhase(j / 8)) * s.ppu * 2 + 0.5) * spot(pr * iso, 2.3, s.scale);
     }
-    float today = u.phase * TAU + u.dial;
-    float2 mark = (p - 58 * float2(sin(today), -cos(today))) * iso;
+    float now = u.hour / 24 * TAU + u.dial;
+    float2 mark = (p - 58 * float2(sin(now), -cos(now))) * iso;
     light += mix(WHITE, STARLIGHT, u.lit) * (glint(mark, 4.5) * 0.9 + spot(length(mark), 1.1, s.scale)) * smoothstep(0.75, 1.0, opening);
 }
 

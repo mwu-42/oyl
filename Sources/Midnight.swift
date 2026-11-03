@@ -12,7 +12,7 @@ enum NotchTheme: String {
 /// Midnight Oyl: a second look for the notch, for display as much as use. A Victorian celestial
 /// atlas plate, engraved in silver-white on deep night and seen through TouchDesigner's glass:
 /// the notch is the celestial pole, with a star chart drawn round it, a planisphere and an orrery
-/// set into its wings, and tonight's moon for a pin. It blooms out along the menu bar and down
+/// set into its wings, and a moon that tells the time for a pin. It blooms out along the menu bar and down
 /// into a band across the whole top of the screen, its foot flowing and dissolving into the
 /// desktop with no edge to it. The camera isn't shown: your hands are, as a constellation in its
 /// sky. Every word is set in a High Victorian face, and the Oyls on the menu bar are moyls,
