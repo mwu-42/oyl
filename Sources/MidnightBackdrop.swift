@@ -52,117 +52,6 @@ struct MidnightArch: Shape {
         path.closeSubpath()
         return path
     }
-
-    /// The glass's mask in a frame of `size`: whole where the plate always is, however its outline
-    /// flows, thinning out over `Design.glassFeather` points toward where it can pinch up to (the
-    /// foot pulled up as far as it ever pinches there, clear of the page, and the dissolve's
-    /// furthest start), to nothing `Design.glassInset` short of that; and whole behind the moon's
-    /// dial. So the blur never shows past the plate, nor an edge. Where the plate swells out past
-    /// that, it's dark glass without the blur (the backdrop darkens it a little more there). (In
-    /// steps, each a stroke of that line clipped to it, narrower and fainter toward it: the window
-    /// server's blur takes only an image.) It's drawn small, a pixel for each 4 points, and
-    /// stretched: it's soft all through, and that keeps it quick to draw again each frame the band
-    /// opens or grows.
-    func glassMask(in size: CGSize, page: CGRect) -> NSImage {
-        let scale: CGFloat = 0.25
-        let frame = CGRect(origin: .zero, size: size)
-        let width = max(Int((size.width * scale).rounded(.up)), 1), height = max(Int((size.height * scale).rounded(.up)), 1)
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
-        else { return NSImage(size: size) }
-        // Measured down from the top, as the shape is.
-        context.translateBy(x: 0, y: CGFloat(height))
-        context.scaleBy(x: scale, y: -scale)
-
-        // Where the plate always is: the foot pulled up as far as it ever pinches, from the right
-        // edge to the left (squeezed, as the shape is, while it opens). (Every other point along
-        // it is plenty, for strokes this wide; always both ends.)
-        let plate = Plate(size: size, reach: reach)
-        let moon = MidnightBackdrop.moon(in: size, reach: plate.reach)
-        let liquid = Liquid.smooth((bloom - 0.4) / 0.6)
-        // (It runs on past the screen's edges, so the strokes don't stop short of them.)
-        let every = Array(stride(from: Liquid.count - 1, to: 0, by: -2)) + [0]
-        var line = every.map { index -> CGPoint in
-            let point = Liquid.point(around: Liquid.around(index, plate), plate: plate, size: size, page: page, moon: moon,
-                                     overflow: (0, 0))
-            let inward = point.room * liquid + 5.3
-            return CGPoint(x: point.at.x - point.out.x * inward, y: point.at.y - point.out.y * inward)
-        }
-        line = [CGPoint(x: plate.width + 100, y: line[0].y)] + line + [CGPoint(x: -100, y: line[line.count - 1].y)]
-        var edge = Path()
-        edge.addLines(line)
-        var always = edge
-        always.addLine(to: CGPoint(x: -100, y: 0))
-        always.addLine(to: CGPoint(x: plate.width + 100, y: 0))
-        always.closeSubpath()
-        // Opening, only as far as the flower's come, its edge thinning out too.
-        if bloom < 1 {
-            let flower = Flower.path(plate, bloom: bloom, time: time ?? MidnightBackdrop.clock, inset: 0.6)
-            always = always.intersection(flower)
-            edge = always
-        }
-
-        // Its edge is never shown (there's no glass that near it), so it's left hard: softened,
-        // each stroke after would leave a little of the fill along it.
-        context.setShouldAntialias(false)
-        context.addPath(Self.band(in: frame, reach: reach).cgPath)
-        context.clip()
-        context.addPath(always.cgPath)
-        context.clip()
-        context.setShouldAntialias(true)
-        context.setFillColor(.black)
-        context.fill(frame)
-        context.setBlendMode(.copy)
-        context.setLineJoin(.bevel)
-        // Narrower while it's small, opening, as the plate's dissolve is.
-        let opened = CGFloat(0.2 + 0.8 * Liquid.smooth((bloom - 0.1) / 0.7))
-        let stroked = edge.cgPath
-        let steps = 8
-        for step in 0...steps {
-            // Each stroke sets everything nearer the edge than `inward` to its alpha, and each
-            // narrower one after takes back the part nearer still: so the glass steps down, band
-            // by band, from whole to none.
-            let through = CGFloat(step) / CGFloat(steps)
-            let inward = (Design.glassInset + Design.glassFeather * (1 - through)) * opened
-            let middle = 1 - (CGFloat(step) + 0.5) / CGFloat(steps)
-            let alpha = step == steps ? 0 : middle * middle * (3 - 2 * middle)
-            context.setStrokeColor(CGColor(gray: 0, alpha: alpha))
-            context.setLineWidth(2 * inward)
-            context.addPath(stroked)
-            context.strokePath()
-        }
-        // Behind the moon's dial, whole, thinning out short of the foot, as it comes into view.
-        // (The outline never pinches in there.)
-        context.resetClip()
-        context.setShouldAntialias(false)
-        context.addPath(Self.band(in: frame, reach: reach).cgPath)
-        context.clip()
-        if bloom < 1 {
-            context.addPath(Flower.path(plate, bloom: bloom, time: time ?? MidnightBackdrop.clock, inset: 0.6).cgPath)
-            context.clip()
-        }
-        context.setShouldAntialias(true)
-        let shown = CGFloat(min(max((bloom - 0.7) / 0.3, 0), 1))
-        if shown > 0, let fade = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                            colors: [CGColor(gray: 0, alpha: shown), CGColor(gray: 0, alpha: 0)] as CFArray,
-                                            locations: [0, 1]) {
-            context.setBlendMode(.normal)
-            context.drawRadialGradient(fade, startCenter: moon.center, startRadius: moon.radius * 64 / 58,
-                                       endCenter: moon.center, endRadius: moon.radius * 76 / 58, options: [.drawsBeforeStartLocation])
-        }
-        guard let image = context.makeImage() else { return NSImage(size: size) }
-        let mask = NSImage(cgImage: image, size: size)
-        // Stretched over the band. (With no cap insets at all, AppKit leaves a mask its own size,
-        // a quarter of the band's, in the window's top right corner: a little grey copy of the
-        // band's glass, blooming by itself up there, and none under the band.)
-        mask.resizingMode = .stretch
-        mask.capInsets = NSEdgeInsets(top: Self.maskCap, left: Self.maskCap, bottom: Self.maskCap, right: Self.maskCap)
-        return mask
-    }
-
-    /// The glass mask's cap insets: a hair, so it's all stretched.
-    static let maskCap: CGFloat = 0.01
 }
 
 /// Everything behind the band's content, drawn by one Metal shader: a Victorian celestial atlas
@@ -329,8 +218,8 @@ private enum Design {
     }
     static var wandererDots: CGFloat { 2 * .pi * wandererRound / (2 * .pi * wandererRound / 4.6).rounded() }
 
-    /// The glass's blur, thinned out toward where the plate dissolves: none in the last
-    /// `glassInset` points, whole by `glassFeather` further in.
+    /// Where the plate's at its usual ink, in from where it can pinch up to: none of it in the last
+    /// `glassInset` points, all by `glassFeather` further in (out past that, a little more ink).
     static let glassInset: CGFloat = 4, glassFeather: CGFloat = 60
 }
 
@@ -457,7 +346,7 @@ private enum Liquid {
 
     /// At a point along the foot, now: how far it's flowed out (points, negative in), where the
     /// plate starts to dissolve up from it and over how far, and the furthest it ever pinches in
-    /// there (which the glass's blur keeps clear of).
+    /// there.
     struct Sample {
         var flow: Float, start: Float, width: Float, pinch: Float
     }
@@ -2197,8 +2086,8 @@ fragment float4 backdropFragment(Fragment in [[stage_in]], constant Uniforms &u 
     // the edge so the desktop shows faintly through, a breath of moonlight low down.
     float top = 1 - smoothstep(0, 46, point.y);
     float alpha = min(mix(0.6, 0.82, smoothstep(6, 150, depth)) + 0.3 * top, 0.97);
-    // Where the glass's blur doesn't reach (out where the outline swells and pinches), a little
-    // more ink, so the plate doesn't show lighter there.
+    // Out where the outline swells and pinches, a little more ink, so the plate doesn't show
+    // lighter there.
     alpha += (1 - alpha) * 0.35 * (1 - smoothstep(GLASS_INSET, GLASS_INSET + GLASS_FEATHER, inside - pinch - 5.3));
     alpha *= plate;
     float3 tint = INK + MOONLIGHT * 0.015 * smoothstep(R * 0.45, R, tq.y) + foil * sheen * ruling * 0.04;

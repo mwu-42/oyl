@@ -32,13 +32,8 @@ struct MidnightNotch: View {
     private static var showing = 0
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            BloomGlass(bloom: opening.bloom, reach: opening.reach, size: state.bloomSize, notch: state.metrics.size,
-                       page: BloomLayout(state: state, size: state.bloomSize, reach: opening.reach).page)
-                .allowsHitTesting(false)
-            MidnightBloom(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
-                          bedtime: bedtime, gestures: gestures, stats: stats, opening: opening)
-        }
+        MidnightBloom(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
+                      bedtime: bedtime, gestures: gestures, stats: stats, opening: opening)
         // A bloom that's wilting after the look's changed keeps its type.
         .environment(\.notchTheme, .midnight)
         .onAppear {
@@ -96,7 +91,7 @@ final class BloomOpening: ObservableObject {
     }
 }
 
-/// Everything drawn in the band (all but the glass behind) at a given moment of its opening.
+/// Everything drawn in the band at a given moment of its opening.
 struct MidnightBloom: View {
     @ObservedObject var state: NotchState
     @ObservedObject var nowPlaying: NowPlaying
@@ -125,7 +120,7 @@ struct MidnightBloom: View {
                 .allowsHitTesting(false)
 
             ZStack(alignment: .topLeading) {
-                // The hardware notch, carried on into the glass: the black it all grows from.
+                // The hardware notch, carried on into the band: the black it all grows from.
                 UnevenRoundedRectangle(bottomLeadingRadius: 9, bottomTrailingRadius: 9, style: .continuous)
                     .fill(.black)
                     .frame(width: notch.width, height: notch.height)
@@ -201,7 +196,7 @@ struct BloomLayout {
     }
 }
 
-// MARK: - Glass
+// MARK: - Backdrop
 
 /// The backdrop as it animates, frame by frame (it's handed each step, not just the end).
 private struct Backdrop: View, Animatable {
@@ -230,75 +225,6 @@ private struct Backdrop: View, Animatable {
         MidnightBackdrop(bloom: bloom, active: true, notch: notch, reach: reach, grownFrom: grownFrom, growth: growth,
                          lit: lit, overflow: Midnight.overflow, page: page)
             .frame(width: size.width, height: size.height)
-    }
-}
-
-/// The glass as it animates (and wilts, and grows to the page).
-private struct BloomGlass: View, Animatable {
-    var bloom: Double
-    var reach: CGFloat
-    let size: CGSize
-    let notch: CGSize
-    let page: CGRect
-
-    @Environment(\.midnightWilt) private var wilt
-
-    var animatableData: AnimatablePair<Double, CGFloat> {
-        get { AnimatablePair(bloom, reach) }
-        set {
-            bloom = newValue.first
-            reach = newValue.second
-        }
-    }
-
-    var body: some View {
-        // Going, the glass goes first, folded and faded well before the plate over it is: left to
-        // the end, a blur with next to nothing drawn over it would hang there as it faded, a grey
-        // smudge under the notch.
-        let going = min(wilt * 1.8, 1)
-        Glass(bloom: bloom * (1 - going), fade: 1 - going, reach: reach, size: size, notch: notch, page: page)
-            .frame(width: size.width, height: size.height)
-    }
-}
-
-/// The desktop behind, blurred and darkened, only where the plate always is, however its foot
-/// flows, thinning out over a wide band toward where it can pinch up to; past that, out where it
-/// swells and pinches, it's dark glass without the blur. (A mask that moved with the foot would
-/// need drawing again a dozen times a second, and the window server's blur swapping its mask that
-/// often is a risk of flicker; this one's drawn again only when the shape, or the page, changes.)
-/// It's masked by an image, the one way the window server's blur takes one.
-private struct Glass: NSViewRepresentable {
-    let bloom: Double
-    /// How much of it shows (all, till it's going).
-    var fade: Double = 1
-    let reach: CGFloat
-    let size: CGSize
-    let notch: CGSize
-    let page: CGRect
-
-    final class Coordinator {
-        var drawn: (bloom: Double, reach: CGFloat, size: CGSize, notch: CGSize, page: CGRect)?
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .hudWindow
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.appearance = NSAppearance(named: .darkAqua)
-        return view
-    }
-
-    func updateNSView(_ view: NSVisualEffectView, context: Context) {
-        // (Set on the view itself, so the window server's blur fades with it, whatever SwiftUI's
-        // opacity does or doesn't reach.)
-        if view.alphaValue != CGFloat(fade) { view.alphaValue = CGFloat(fade) }
-        if let drawn = context.coordinator.drawn, drawn.bloom == bloom, drawn.reach == reach, drawn.size == size,
-           drawn.notch == notch, drawn.page == page { return }
-        context.coordinator.drawn = (bloom, reach, size, notch, page)
-        view.maskImage = MidnightArch(bloom: bloom, notch: notch, reach: reach).glassMask(in: size, page: page)
     }
 }
 
