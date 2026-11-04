@@ -87,13 +87,26 @@ extension NotchState {
 /// Three lines, the way Spotify shows lyrics: the one before, the one being sung, the one next.
 struct LyricsView: View {
     let lyrics: Lyrics
-    @ObservedObject var nowPlaying: NowPlaying
+    /// The song's color, which their ground's tinted with.
+    let accent: NSColor
+    /// How far into the song it is at a moment.
+    let position: (Date) -> Double
     @Environment(\.notchTheme) private var theme
+
+    init(lyrics: Lyrics, accent: NSColor, position: @escaping (Date) -> Double) {
+        self.lyrics = lyrics
+        self.accent = accent
+        self.position = position
+    }
+
+    init(lyrics: Lyrics, nowPlaying: NowPlaying) {
+        self.init(lyrics: lyrics, accent: nowPlaying.accent) { [weak nowPlaying] in nowPlaying?.position(at: $0) ?? 0 }
+    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.25)) { context in
             // A touch early, so a line is up as it's sung rather than just after.
-            let position = nowPlaying.position(at: context.date) + 0.25
+            let position = position(context.date) + 0.25
             let index = lyrics.lines.lastIndex { $0.time <= position } ?? -1
             VStack(alignment: .leading, spacing: 3) {
                 line(index - 1, size: 12, opacity: 0.4)
@@ -108,7 +121,7 @@ struct LyricsView: View {
         .padding(.horizontal, 14)
         .frame(height: Layout.lyricsHeight - 8)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(theme.tint(Color(nsColor: nowPlaying.accent)).opacity(0.2)))
+            .fill(theme.tint(Color(nsColor: accent)).opacity(0.2)))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 

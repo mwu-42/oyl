@@ -165,6 +165,10 @@ final class NotchState: ObservableObject {
     @Published var showsLyrics = UserDefaults.standard.bool(forKey: "music.lyrics") {
         didSet { UserDefaults.standard.set(showsLyrics, forKey: "music.lyrics") }
     }
+    /// The lyrics while the notch is closed too, under it (see `ClosedLyrics`). Off at first.
+    @Published var showsLyricsClosed = UserDefaults.standard.bool(forKey: "music.lyricsClosed") {
+        didSet { UserDefaults.standard.set(showsLyricsClosed, forKey: "music.lyricsClosed") }
+    }
     @Published var selfie: Selfie?       // just taken: its Oyl holds it up for a bit
     /// Oyls (and the calendar bar) on the menu bar at all.
     @Published var oylsVisible = UserDefaults.standard.object(forKey: "oyls.visible") as? Bool ?? true {
@@ -571,6 +575,7 @@ final class NotchController {
     private let state: NotchState
     private let gestures: GestureWatcher
     private let walkers = WalkerOverlay()
+    private let closedLyrics: ClosedLyrics
     private var dock: DockController?
     private var controlTaps: TapWatcher?
     private var songKeys: SongKeys?
@@ -593,6 +598,7 @@ final class NotchController {
                            power: PowerWatcher(), bedtime: Bedtime(), dictation: Dictation())
         state.startPhone()
         gestures = GestureWatcher()
+        closedLyrics = ClosedLyrics(nowPlaying: nowPlaying)
 
         let hostingView = NotchHostingView(rootView: NotchView(state: state, nowPlaying: nowPlaying, timers: timers,
                                                                awake: awake, agents: agents, bedtime: state.bedtime,
@@ -872,6 +878,7 @@ final class NotchController {
         state.dictation.resting = resting
         state.notes.resting = resting
         if resting { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
+        if resting { closedLyrics.hideNow() }
     }
 
     /// Three taps of control switch Oyl off, or back on. Off, it's put away, closing first if it's
@@ -969,6 +976,7 @@ final class NotchController {
     /// Sends Oyls out on the menu bar for what's going on, or calls them back.
     private func castOyls() {
         guard let screen else { return }
+        showClosedLyrics(on: screen)
         // The closed notch (and what's beside it), which the calendar goes right of; and what the
         // notch covers right now, open or closed, which Oyls skip across and don't stop behind.
         let closed = state.mode == .expanded ? (state.compact.isEmpty ? NotchMode.idle : .compact) : state.mode
@@ -992,6 +1000,15 @@ final class NotchController {
         }
         walkers.notchOpen(to: state.mode == .expanded ? middle + state.size(for: .expanded).width / 2 + NotchState.topRadius(.expanded) : nil)
         walkers.inFullscreen = state.inFullscreen
+    }
+
+    /// The lyrics under the closed notch, while they're wanted there; the Oyl singing along
+    /// leaves the line to them meanwhile, so it isn't up twice.
+    private func showClosedLyrics(on screen: NSScreen) {
+        let wanted = state.wantsLyricsUnderNotch
+        closedLyrics.show(wanted ? state.nowPlaying.lyrics : nil, theme: state.theme, on: screen, metrics: state.metrics,
+                          opened: state.mode == .expanded)
+        if walkers.walkers.lyricsUnderNotch != wanted { walkers.walkers.lyricsUnderNotch = wanted }
     }
 
     private func updateScreen() {

@@ -1475,15 +1475,18 @@ final class Walkers: ObservableObject {
     var describe: (Walker.Job) -> String = { _ in "" }
     /// The line being sung right now, for the music Oyl to sing along.
     var lyricLine: (Date) -> String? = { _ in nil }
+    /// The lyrics are up under the closed notch, so the Oyl singing along doesn't say the line.
+    var lyricsUnderNotch = false
 
     /// How long moyls take to fade away under Midnight's band as it opens.
     static let fadeUnder: TimeInterval = 0.45
 
     /// What an Oyl's saying now, if anything: what it's been asked, or the line it's singing. (A
-    /// moyl doesn't sing the line: the lyrics float in the band's sky by themselves.)
+    /// moyl doesn't sing the line: the lyrics float in the band's sky by themselves; nor does an
+    /// Oyl while they're under the closed notch.)
     func saying(for walker: Walker, at date: Date) -> Saying? {
         if let saying = sayings[walker.id], saying.isShowing(at: date) { return saying }
-        guard case .music(_, .singing) = walker.job, !walker.leaving, theme != .midnight else { return nil }
+        guard case .music(_, .singing) = walker.job, !walker.leaving, theme != .midnight, !lyricsUnderNotch else { return nil }
         return Saying(text: "♪ " + (lyricLine(date) ?? "…"), image: nil, from: date, until: date.addingTimeInterval(1))
     }
 

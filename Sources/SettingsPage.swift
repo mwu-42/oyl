@@ -56,6 +56,14 @@ struct SettingsPage: View {
                 SettingItem(id: "lyrics", title: "Lyrics", hint: midnight ? "Floating in the sky under the notch, from song to song"
                                 : "Under the song, sung by its Oyl, from song to song",
                             isOn: state.showsLyrics) { state.showsLyrics.toggle() },
+                SettingItem(id: "lyricsClosed", title: "Lyrics, notch closed",
+                            hint: midnight ? "Floating under the notch while it's closed too, over whatever's there"
+                                : "Under the notch while it's closed too, in place of the \(oyl)'s bubble",
+                            isOn: state.showsLyricsClosed) {
+                    state.showsLyricsClosed.toggle()
+                    // Turned on, they need the lyrics on to show at all.
+                    if state.showsLyricsClosed { state.showsLyrics = true }
+                },
                 feature(.visualizer, "Visualizer", "Listens to the music, for the wave and the beat"),
                 feature(.songTitleOpensPlayer, "Song name opens player", "Click the song's name for Spotify or Music"),
                 feature(.timersPage, "Timers page", "Timers and reminders"),
