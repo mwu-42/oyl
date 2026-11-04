@@ -21,6 +21,7 @@ extension NotchState {
 /// the notch in a break (and before the first line), the left for a song without lyrics. They
 /// take no clicks. They come as soon as they're wanted and go once they haven't been for a
 /// moment, so the gap between songs doesn't make them flicker; when the notch opens, straight away.
+/// From one song to the next, the last's fade out quickly as the next's fade in.
 @MainActor
 final class ClosedLyrics {
     private let panel: NSPanel
@@ -65,6 +66,9 @@ final class ClosedLyrics {
         hiding = nil
         place(on: screen, metrics: metrics)
         if model.lyrics?.trackID != lyrics?.trackID || model.seed != seed {
+            // A new song (or its lyrics come): what was up goes quickly, where it had got to, as
+            // this comes in.
+            model.outgoing = model.shown ? (model.lyrics, model.seed, model.lastPosition) : nil
             model.lyrics = lyrics
             model.seed = seed
             model.swapped = Date()
@@ -118,8 +122,17 @@ final class ClosedLyricsModel: ObservableObject {
     /// The song's lyrics; nil for one without (its constellation pulses instead), whose `seed` it is.
     @Published var lyrics: Lyrics?
     @Published var seed = ""
-    /// When the song (or its lyrics) last changed, for what's new to come in.
+    /// When the song (or its lyrics) last changed, for what's new to come in; and what was up
+    /// before, going, where it had got to.
     @Published var swapped = Date.distantPast
+    @Published var outgoing: (lyrics: Lyrics?, seed: String, position: Double)?
+    /// How far into the song they were last drawn (not watched: kept for when the song changes).
+    var lastPosition = 0.0
+
+    func remember(_ position: Double) -> Bool {
+        lastPosition = position
+        return true
+    }
     /// Where the notch is in their window.
     @Published var notch = CGRect(origin: .zero, size: NotchMetrics.fallback.size)
 }
@@ -131,12 +144,20 @@ struct ClosedLyricsView: View {
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !model.live)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            ClosedLyricsFrame(lyrics: model.lyrics, seed: model.seed, position: position(context.date) + LyricsSky.lead,
-                              time: MidnightBackdrop.clock,
-                              presence: ClosedLyricsFrame.presence(shown: model.shown, since: context.date.timeIntervalSince(model.changed)),
-                              fresh: context.date.timeIntervalSince(model.swapped), notch: model.notch,
-                              beat: (Double(Beat.level), Beat.position(at: time)))
+            let time = context.date.timeIntervalSinceReferenceDate, clock = MidnightBackdrop.clock
+            let presence = ClosedLyricsFrame.presence(shown: model.shown, since: context.date.timeIntervalSince(model.changed))
+            let swapped = context.date.timeIntervalSince(model.swapped), at = position(context.date) + LyricsSky.lead
+            let beat = (Double(Beat.level), Beat.position(at: time))
+            let _ = model.remember(at)
+            ZStack {
+                // From one song to the next, a quick fade out and in.
+                if let outgoing = model.outgoing, swapped < ClosedLyricsFrame.swap.out {
+                    ClosedLyricsFrame(lyrics: outgoing.lyrics, seed: outgoing.seed, position: outgoing.position, time: clock,
+                                      presence: presence, fade: ClosedLyricsFrame.going(swapped), notch: model.notch, beat: beat)
+                }
+                ClosedLyricsFrame(lyrics: model.lyrics, seed: model.seed, position: at, time: clock, presence: presence,
+                                  fade: ClosedLyricsFrame.coming(swapped), notch: model.notch, beat: beat)
+            }
         }
         .allowsHitTesting(false)
     }
@@ -144,7 +165,7 @@ struct ClosedLyricsView: View {
 
 /// The lyrics by the notch at one moment: `position` seconds into the song (or, with no lyrics,
 /// the constellation `seed` picks), `time` on Midnight's clock, `presence` of the way out from
-/// behind the notch, `fresh` seconds since the song changed, the notch at `notch` in the frame
+/// behind the notch, `fade` of it showing (as songs change), the notch at `notch` in the frame
 /// (the strip's whole width, the menu bar's depth), the music's bass `beat.level` and where it
 /// is in the beat.
 struct ClosedLyricsFrame: View {
@@ -153,7 +174,8 @@ struct ClosedLyricsFrame: View {
     let position: Double
     let time: Double
     let presence: Double
-    var fresh: Double = 10
+    /// How much of it shows, as one song gives way to the next.
+    var fade: Double = 1
     let notch: CGRect
     var beat: (level: Double, phase: Double?) = (0, nil)
 
@@ -168,6 +190,15 @@ struct ClosedLyricsFrame: View {
     static let approach = 0.7, fading = 6.0, makingWay = 1.0
     /// How bright a line's words are before they sparkle in.
     static let faint: Double = 0.3
+    /// From one song to the next: how long the last's take to fade out, and the next's to come
+    /// in, a little after.
+    static let swap = (out: 0.25, after: 0.15, in: 0.35)
+
+    /// How much of the last song's is left, `since` seconds after the next began.
+    static func going(_ since: Double) -> Double { 1 - LyricsSkyFrame.ease(since / swap.out) }
+
+    /// How much of the next song's has come in, `since` seconds after it began.
+    static func coming(_ since: Double) -> Double { LyricsSkyFrame.ease((since - swap.after) / swap.in) }
 
     /// How far out from behind the notch they are, `since` seconds after they were last `shown`
     /// or hidden.
@@ -232,7 +263,7 @@ struct ClosedLyricsFrame: View {
         guard presence > 0 else { return }
         let bar = notch.height
         let room = (left: max(notch.minX - pad, 0), right: max(size.width - notch.maxX - pad, 0))
-        let words = LyricsSkyFrame.ease((presence - 0.2) / 0.8) * LyricsSkyFrame.ease(frame.fresh / 0.6)
+        let words = LyricsSkyFrame.ease((presence - 0.2) / 0.8) * frame.fade
         // Out from behind the notch as they come, and back as they go.
         let hidden = CGFloat(1 - LyricsSkyFrame.ease(presence))
         let baseline = bar / 2 + 0.5
