@@ -70,10 +70,11 @@ struct Lyrics: Equatable, Sendable {
 
 extension NotchState {
     /// Shows or hides the lyrics under the song, if it has any; from elsewhere, goes to the song.
+    /// In Midnight Oyl, where they float in the sky over any page, it stays where it is.
     func toggleLyrics() {
         guard nowPlaying.lyrics != nil else { return }
         withAnimation(NotchView.open) {
-            if page == .music {
+            if page == .music || theme == .midnight {
                 showsLyrics.toggle()
             } else {
                 page = .music

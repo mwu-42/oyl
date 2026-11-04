@@ -53,7 +53,8 @@ struct SettingsPage: View {
         case .notch:
             var items = [
                 feature(.musicPage, "Music page", "The song, its cover and controls"),
-                SettingItem(id: "lyrics", title: "Lyrics", hint: "Under the song, sung by its \(oyl), from song to song",
+                SettingItem(id: "lyrics", title: "Lyrics", hint: midnight ? "Floating in the sky under the notch, from song to song"
+                                : "Under the song, sung by its Oyl, from song to song",
                             isOn: state.showsLyrics) { state.showsLyrics.toggle() },
                 feature(.visualizer, "Visualizer", "Listens to the music, for the wave and the beat"),
                 feature(.songTitleOpensPlayer, "Song name opens player", "Click the song's name for Spotify or Music"),

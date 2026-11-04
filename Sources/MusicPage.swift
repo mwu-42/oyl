@@ -44,7 +44,8 @@ struct MusicPage: View {
                     }
                     .frame(height: Layout.artSize)
                 }
-                if state.showsLyrics, let lyrics = nowPlaying.lyrics {
+                // (Midnight Oyl floats them in the sky under the page instead: `LyricsSky`.)
+                if state.showsLyrics, theme != .midnight, let lyrics = nowPlaying.lyrics {
                     LyricsView(lyrics: lyrics, nowPlaying: nowPlaying)
                         .padding(.top, 8)
                         .transition(.opacity.combined(with: .move(edge: .top)))

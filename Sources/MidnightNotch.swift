@@ -155,6 +155,12 @@ struct MidnightBloom: View {
                 ChartLabels(bloom: open, reach: reach, size: size, page: layout.page)
                     .allowsHitTesting(false)
 
+                // The lyrics, while they're on, drifting in the sky under the page.
+                if let area = layout.lyrics, let lyrics = nowPlaying.lyrics {
+                    LyricsSky(lyrics: lyrics, nowPlaying: nowPlaying, area: area, shown: shown)
+                        .transition(.opacity)
+                }
+
                 // The hands, a constellation across the sky.
                 HandConstellation(size: size, reach: reach, page: layout.page, bloom: open)
 
@@ -170,11 +176,12 @@ struct MidnightBloom: View {
 // MARK: - Layout
 
 /// Where things go in the band: the page at the top, under the notch; the moon on the right,
-/// where the backdrop draws it.
+/// where the backdrop draws it; and the lyrics, while they float, in the sky under the page.
 struct BloomLayout {
     let size: CGSize
     let page: CGRect
     let moon: (center: CGPoint, radius: CGFloat)
+    let lyrics: CGRect?
 
     @MainActor
     init(state: NotchState, size: CGSize, reach: CGFloat) {
@@ -182,6 +189,15 @@ struct BloomLayout {
         page = CGRect(x: (size.width - state.openWidth) / 2, y: 0, width: state.openWidth,
                       height: state.headerHeight + state.contentHeight)
         moon = MidnightBackdrop.moon(in: size, reach: min(reach, size.height))
+        lyrics = state.floatsLyrics ? Self.lyrics(under: page, reach: min(reach, size.height)) : nil
+    }
+
+    /// Room for the lyrics under `page`, as wide as it (or a good line's width), in a band reaching
+    /// `reach`: kept clear of the foot where the band dissolves, however deep the page.
+    static func lyrics(under page: CGRect, reach: CGFloat) -> CGRect {
+        let width = max(page.width, 560), height = Midnight.lyricsSky + 42
+        let top = min(page.maxY - 6, reach - 84 - height)
+        return CGRect(x: page.midX - width / 2, y: max(top, page.maxY - 30), width: width, height: height)
     }
 }
 

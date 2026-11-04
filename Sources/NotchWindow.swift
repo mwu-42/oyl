@@ -315,9 +315,10 @@ final class NotchState: ObservableObject {
 
     /// How far down Midnight Oyl's band reaches for what it's showing, in points from the top of
     /// the screen: the page, and some sky under it, so a short page makes a shallow band and a
-    /// tall one a deep one. Never past `bloomSize`.
+    /// tall one a deep one; and further, while the lyrics float in that sky. Never past `bloomSize`.
     var bloomReach: CGFloat {
-        min(max(headerHeight + contentHeight + Midnight.sky, Midnight.shallowest), bloomSize.height)
+        let sky = Midnight.sky + (floatsLyrics ? Midnight.lyricsSky : 0)
+        return min(max(headerHeight + contentHeight + sky, Midnight.shallowest), bloomSize.height)
     }
 
     /// Open for a timer that's done (or bedtime), rather than for the pointer.
@@ -385,7 +386,9 @@ final class NotchState: ObservableObject {
         if !agents.approvals.isEmpty { return Layout.approvalHeight }
         if isAlerting { return Layout.alertHeight }
         switch page {
-        case .music: return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil ? Layout.lyricsHeight : 0)
+        case .music:
+            // (In Midnight Oyl the lyrics float in the sky under the page instead; see `bloomReach`.)
+            return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil && theme != .midnight ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
         case .ideas: return Layout.ideasHeight(list: ideaListHeight)
         case .awake: return Layout.awakeHeight
@@ -982,7 +985,8 @@ final class NotchController {
             let size = state.bloomSize, reach = state.bloomReach
             let layout = BloomLayout(state: state, size: size, reach: reach)
             walkers.band = BandSky(size: size, reach: reach, page: layout.page, moon: layout.moon.center, moonRadius: layout.moon.radius,
-                                   top: state.metrics.size.height, left: middle - size.width / 2 - screen.frame.minX)
+                                   top: state.metrics.size.height, left: middle - size.width / 2 - screen.frame.minX,
+                                   lyrics: layout.lyrics)
         } else {
             walkers.band = nil
         }

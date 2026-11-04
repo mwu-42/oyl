@@ -1479,10 +1479,11 @@ final class Walkers: ObservableObject {
     /// How long moyls take to fade away under Midnight's band as it opens.
     static let fadeUnder: TimeInterval = 0.45
 
-    /// What an Oyl's saying now, if anything: what it's been asked, or the line it's singing.
+    /// What an Oyl's saying now, if anything: what it's been asked, or the line it's singing. (A
+    /// moyl doesn't sing the line: the lyrics float in the band's sky by themselves.)
     func saying(for walker: Walker, at date: Date) -> Saying? {
         if let saying = sayings[walker.id], saying.isShowing(at: date) { return saying }
-        guard case .music(_, .singing) = walker.job, !walker.leaving else { return nil }
+        guard case .music(_, .singing) = walker.job, !walker.leaving, theme != .midnight else { return nil }
         return Saying(text: "♪ " + (lyricLine(date) ?? "…"), image: nil, from: date, until: date.addingTimeInterval(1))
     }
 
@@ -1501,18 +1502,21 @@ struct BandSky: Equatable {
     let moonRadius: CGFloat
     let top: CGFloat
     let left: CGFloat
+    /// Where the lyrics float, while they do.
+    var lyrics: CGRect? = nil
 
     /// How far up from the foot they keep: past where the band dissolves into the desktop.
     static let footClear: CGFloat = 64
 
     /// Whether a moyl `room` across could float at `point` (in their window): clear of the page,
-    /// the moon's dial and its words, the planisphere's hub and the screen's edges, below the
-    /// strip by the notch and well above the foot.
+    /// the lyrics, the moon's dial and its words, the planisphere's hub and the screen's edges,
+    /// below the strip by the notch and well above the foot.
     func isClear(_ point: CGPoint, room: CGFloat) -> Bool {
         let point = CGPoint(x: point.x - left, y: point.y), half = room / 2
         guard point.x > half + 12, point.x < size.width - half - 12, point.y > top + half + 12,
               point.y < MidnightBackdrop.foot(atX: point.x, in: size, reach: reach) - half - Self.footClear,
               !page.insetBy(dx: -half - 20, dy: -half - 18).contains(point),
+              !(lyrics?.insetBy(dx: -half - 8, dy: -half).contains(point) ?? false),
               hypot(point.x - moon.x, point.y - moon.y) > moonRadius * 67 / 58 + half + 16 else { return false }
         let hub = MidnightBackdrop.planisphere(in: size, reach: reach)
         return hypot(point.x - hub.x, point.y - hub.y) > 34 + half
