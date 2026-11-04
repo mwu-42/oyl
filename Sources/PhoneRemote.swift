@@ -408,6 +408,15 @@ struct PhoneSnapshot: Codable, Equatable {
         var playing: Bool
         /// Changes with the cover, which is at /api/art; nil for none.
         var art: String?
+        /// Seconds into the song at the snapshot's `now`, for the lyrics to keep time by.
+        var position: Double = 0
+        /// The song's synced lyrics, while they're on (as in the notch): each line's time and words.
+        var lyrics: [Line]? = nil
+
+        struct Line: Codable, Equatable {
+            var t: Double
+            var text: String
+        }
     }
 
     struct Timer: Codable, Equatable {
@@ -481,7 +490,10 @@ final class NotchPhoneControls: PhoneControls {
         let music = playing.track.flatMap { track in
             playing.player.map { player in
                 PhoneSnapshot.Music(player: player.name, title: track.title, artist: track.artist, playing: playing.isPlaying,
-                                    art: playing.artwork == nil ? nil : String(track.id.hashValue, radix: 36))
+                                    art: playing.artwork == nil ? nil : String(track.id.hashValue, radix: 36),
+                                    position: playing.position(at: now),
+                                    lyrics: state.showsLyrics && playing.lyrics?.trackID == track.id
+                                        ? playing.lyrics?.lines.map { .init(t: $0.time, text: $0.text) } : nil)
             }
         }
         var awake = PhoneSnapshot.Awake(on: state.awake.isActive)

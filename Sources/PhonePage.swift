@@ -58,6 +58,12 @@ enum PhonePage {
     .now { display: flex; gap: 14px; align-items: center; }
     #art { width: 72px; height: 72px; border-radius: 14px; object-fit: cover; background: var(--fill); flex: none; }
     .controls { display: flex; justify-content: center; align-items: center; gap: 20px; margin-top: 14px; }
+    .lyrics { margin-top: 14px; padding: 10px 14px; border-radius: 16px; background: var(--fill); font-weight: 700; overflow: hidden; }
+    .lyrics .line { min-height: 1.3em; }
+    .lyrics .was, .lyrics .next { font-size: 13px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .lyrics .sung { font-size: 17px; margin: 3px 0; }
+    .lyrics .fresh { animation: up .35s ease-out; }
+    @keyframes up { from { transform: translateY(10px); opacity: 0; } }
     .left { font-variant-numeric: tabular-nums; font-weight: 600; flex: none; }
     input { font: inherit; color: var(--fg); background: var(--fill); border: 0; border-radius: 12px; padding: 10px 12px; min-width: 0; outline: none; }
     input::placeholder { color: var(--faint); }
@@ -139,9 +145,30 @@ enum PhonePage {
     body[data-look=midnight] .idea .later button { padding: 6px 1px 4px; font-size: 11px; }
     body[data-look=midnight] footer { font-family: Copperplate, serif; letter-spacing: .2em; margin-left: 9%; text-align: left; }
     body[data-look=midnight] footer em { font-family: Superclarendon, Georgia, serif; font-style: italic; text-transform: none; font-size: 13px; }
+    body[data-look=midnight] .lyrics { background: none; border-radius: 0; padding: 8px 0 4px; overflow: visible; font-weight: 300;
+      font-family: Superclarendon, Georgia, serif; font-style: italic; animation: drift 11s ease-in-out infinite; }
+    body[data-look=midnight] .lyrics .sung { font-size: 21px; line-height: 1.32; margin: 6px 0 7px; text-shadow: 0 0 9px rgba(204,222,255,.38); }
+    body[data-look=midnight] .lyrics .was { opacity: .5; filter: blur(.5px); translate: -10px 0; }
+    body[data-look=midnight] .lyrics .next { opacity: .45; filter: blur(1.1px); margin-left: 11%; }
+    body[data-look=midnight] .lyrics .was.fresh { animation: rising .9s ease-out; }
+    body[data-look=midnight] .lyrics .next.fresh { animation: nearing 1.1s ease-out; }
+    body[data-look=midnight] .lyrics .sung.fresh { animation: none; }
+    body[data-look=midnight] .word { display: inline-block; position: relative; animation: bob 4.4s ease-in-out infinite;
+      animation-delay: var(--b); }
+    body[data-look=midnight] .fresh .word { animation: lit .8s ease-out both, bob 4.4s ease-in-out infinite; animation-delay: var(--d), var(--b); }
+    body[data-look=midnight] .fresh .word::after { content: "\2726"; position: absolute; right: -4px; top: -2px; font-size: 9px; font-style: normal;
+      color: #fff3dc; opacity: 0; animation: glint .9s ease-out both; animation-delay: var(--d); }
+    body[data-look=midnight] .break { letter-spacing: .5em; font-style: normal; font-size: 14px; }
+    body[data-look=midnight] .break .word { animation: twinkle 2.4s ease-in-out infinite; animation-delay: var(--b); }
+    @keyframes lit { from { opacity: .25; filter: blur(3px); transform: translateY(5px); } }
+    @keyframes glint { 30% { opacity: .95; transform: scale(1.3); } to { opacity: 0; transform: scale(.4); } }
+    @keyframes bob { 50% { translate: 0 -2px; } }
+    @keyframes drift { 50% { transform: translate(6px, 2px); } }
+    @keyframes rising { from { transform: translateY(26px); opacity: 1; filter: none; } }
+    @keyframes nearing { from { opacity: 0; filter: blur(4px); transform: translateY(8px); } }
     @keyframes twinkle { 50% { opacity: .3; } }
     @keyframes turn { to { transform: rotate(360deg); } }
-    @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
     </style>
     </head>
     <body data-look="standard">
@@ -168,6 +195,7 @@ enum PhonePage {
       <section id="music" hidden>
         <h2>Playing</h2>
         <div class="now"><img id="art" alt="" hidden><div class="grow"><div class="name" id="song"></div><div class="sub" id="artist"></div></div></div>
+        <div class="lyrics" id="lyrics" hidden><div class="line was" id="lyricWas"></div><div class="line sung" id="lyricNow"></div><div class="line next" id="lyricNext"></div></div>
         <div class="controls">
           <button class="round" data-do="previous" aria-label="Previous">&#x23EE;&#xFE0E;</button>
           <button class="round big" data-do="playPause" id="playPause" aria-label="Play or pause">&#x25B6;&#xFE0E;</button>
@@ -394,6 +422,38 @@ enum PhonePage {
       art.hidden = !(music && music.art);
       if (music && music.art && art.dataset.art !== music.art) { art.dataset.art = music.art; art.src = "/api/art?v=" + encodeURIComponent(music.art); }
       art.classList.toggle("turning", !!(music && music.playing));
+      const lines = music && music.lyrics && music.lyrics.length ? music.lyrics : null;
+      song = lines ? { lines, position: music.position, at: next.now * 1000, playing: music.playing, name: music.title + "\n" + music.artist } : null;
+      $("lyrics").hidden = !song;
+      sing();
+    }
+
+    // The lyrics, kept in time here between snapshots: the line being sung, the one before and the next.
+    let song = null, sung = null, singing = null;
+    function sing() {
+      clearTimeout(singing);
+      if (!song || document.hidden) return;
+      const position = song.position + (song.playing ? (clock() - song.at) / 1000 : 0) + 0.25;
+      let index = -1;
+      while (index + 1 < song.lines.length && song.lines[index + 1].t <= position) index++;
+      const key = song.name + "\n" + index;
+      if (key !== sung) {
+        sung = key;
+        const text = (i) => i >= 0 && i < song.lines.length ? song.lines[i].text : "";
+        const was = $("lyricWas"), now = $("lyricNow"), coming = $("lyricNext");
+        was.textContent = text(index - 1);
+        coming.textContent = text(index + 1);
+        const words = text(index) === "\u266A" ? ["\u2726", "\u00B7", "\u2727", "\u00B7", "\u2726"] : text(index).split(" ").filter(Boolean);
+        now.classList.toggle("break", text(index) === "\u266A");
+        now.replaceChildren(...words.flatMap((word, i) => {
+          const span = el("span", "word", word);
+          span.style.setProperty("--d", (i * Math.min(0.2, 1.6 / words.length)).toFixed(2) + "s");
+          span.style.setProperty("--b", (-((i * 0.7) % 4.4)).toFixed(2) + "s");
+          return i ? [document.createTextNode(" "), span] : [span];
+        }));
+        for (const line of [was, now, coming]) { line.classList.remove("fresh"); void line.offsetWidth; line.classList.add("fresh"); }
+      }
+      singing = setTimeout(sing, 150);
     }
 
     function showTimers(next) {
@@ -446,7 +506,7 @@ enum PhonePage {
     }
     setInterval(tick, 1000);
     for (const control of document.querySelectorAll("[data-do]")) control.addEventListener("click", () => act({ do: control.dataset.do }));
-    document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(); poll(); } });
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { load(); poll(); sing(); } });
 
     // MARK: Midnight's sky: stars turning slowly round a pole off to the upper left, a few engraved
     // rings round it, the odd shooting star. Only drawn in Midnight Oyl's look.
