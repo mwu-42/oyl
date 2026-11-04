@@ -13,24 +13,20 @@ extension NotchState {
 
 /// Midnight Oyl's lyrics while the notch is closed, if that's on (it's off at first): right up in
 /// the menu bar's strip beside the notch, never below it, on no ground of their own (just stars).
-/// Each line's sung on the other side of the notch from the last, the first on the left: its
-/// words sparkling in one after another, each with a glint, specks of light twinkling round
-/// them, while the last fades slowly away on its side. Where nothing's being sung (a song without lyrics, a break, the start before
-/// the first line), the song's own constellation pulses to the beat instead. They keep to the
-/// room either side of the notch that the app's menus and the menu bar's icons leave, and take no
-/// clicks. They come as soon as they're wanted and go once they haven't been for a moment, so
-/// the gap between songs doesn't make them flicker; when the notch opens, straight away.
+/// Each line's sung on the other side of the notch from the last, the first on the left: it fades
+/// in faintly just before it's sung, then its words sparkle in one after another, each with a
+/// glint, specks of light twinkling round them, while the last fades slowly away on its side. A
+/// long line stretches as far along its side as it needs, shrinking only past nine tenths of it.
+/// Where nothing's being sung, the song's own constellation pulses to the beat: both sides of
+/// the notch in a break (and before the first line), the left for a song without lyrics. They
+/// take no clicks. They come as soon as they're wanted and go once they haven't been for a
+/// moment, so the gap between songs doesn't make them flicker; when the notch opens, straight away.
 @MainActor
 final class ClosedLyrics {
     private let panel: NSPanel
     private let model = ClosedLyricsModel()
     private var hiding: DispatchWorkItem?
     private var placed: CGRect?
-    private var screen: NSScreen?
-    private var metrics = NotchMetrics.fallback
-    private var fullscreen = false
-    private var measuring: Timer?
-    private var watching: NSObjectProtocol?
 
     /// How long they stay once they're not wanted.
     static let linger: TimeInterval = 1.5
@@ -56,8 +52,7 @@ final class ClosedLyrics {
     /// Shows the song's lyrics (or, with none, its constellation: `seed` picks it) by the notch on
     /// `screen` while `wanted`, or hides them: at once if `opened` (the notch has opened over
     /// them, or the look's changed).
-    func show(wanted: Bool, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics, fullscreen: Bool,
-              opened: Bool) {
+    func show(wanted: Bool, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics, opened: Bool) {
         if opened { hideNow() }
         guard wanted, !opened else {
             guard model.shown, hiding == nil else { return }
@@ -68,24 +63,17 @@ final class ClosedLyrics {
         }
         hiding?.cancel()
         hiding = nil
-        let moved = self.screen != screen || self.metrics != metrics || self.fullscreen != fullscreen
-        self.screen = screen
-        self.metrics = metrics
-        self.fullscreen = fullscreen
         place(on: screen, metrics: metrics)
         if model.lyrics?.trackID != lyrics?.trackID || model.seed != seed {
             model.lyrics = lyrics
             model.seed = seed
             model.swapped = Date()
         }
-        if model.notch != metrics.size { model.notch = metrics.size }
-        if moved { measure() }
         guard !model.shown else { return }
         model.shown = true
         model.changed = Date()
         model.live = true
         panel.orderFrontRegardless()
-        startMeasuring()
     }
 
     /// Gone straight away (back behind the notch, quickly).
@@ -99,7 +87,6 @@ final class ClosedLyrics {
         guard model.shown else { return }
         model.shown = false
         model.changed = Date()
-        stopMeasuring()
         DispatchQueue.main.asyncAfter(deadline: .now() + ClosedLyricsFrame.going + 0.05) { [weak self] in
             guard let self, !self.model.shown else { return }
             self.panel.orderOut(nil)
@@ -108,108 +95,16 @@ final class ClosedLyrics {
         }
     }
 
-    /// Across the top of the screen, centered on the notch, as deep as the menu bar's strip.
+    /// Along the whole top of the screen, as deep as the menu bar's strip, the notch where it is.
     private func place(on screen: NSScreen, metrics: NotchMetrics) {
-        let size = ClosedLyricsFrame.size(notch: metrics.size)
-        let frame = CGRect(x: (metrics.centerX - size.width / 2).rounded(), y: screen.frame.maxY - size.height,
-                           width: size.width, height: size.height)
+        let frame = CGRect(x: screen.frame.minX, y: screen.frame.maxY - metrics.size.height, width: screen.frame.width,
+                           height: metrics.size.height)
+        let notch = CGRect(x: metrics.centerX - screen.frame.minX - metrics.size.width / 2, y: 0, width: metrics.size.width,
+                           height: metrics.size.height)
+        if model.notch != notch { model.notch = notch }
         guard placed != frame else { return }
         placed = frame
         panel.setFrame(frame, display: false)
-    }
-
-    // MARK: The room beside the notch
-
-    /// Measured now, and again whenever another app's menus take the bar, and every few seconds
-    /// (icons come and go), while they're up.
-    private func startMeasuring() {
-        measure()
-        measuring?.invalidate()
-        let timer = Timer(timeInterval: 6, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.measure() }
-        }
-        timer.tolerance = 2
-        RunLoop.main.add(timer, forMode: .common)
-        measuring = timer
-        if watching == nil {
-            watching = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
-                                                                         object: nil, queue: .main) { [weak self] _ in
-                // (The new app's menus are up a moment after it is.)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { MainActor.assumeIsolated { self?.measure() } }
-            }
-        }
-    }
-
-    private func stopMeasuring() {
-        measuring?.invalidate()
-        measuring = nil
-        if let watching { NSWorkspace.shared.notificationCenter.removeObserver(watching) }
-        watching = nil
-    }
-
-    /// The room left and right of the notch: from its edges out to the end of the app's menus and
-    /// the start of the bar's icons. In a fullscreen app, with the bar out of the way, all of it.
-    private func measure() {
-        guard let screen else { return }
-        let reach = ClosedLyricsFrame.reach, notch = metrics
-        let edges = (left: notch.centerX - notch.size.width / 2, right: notch.centerX + notch.size.width / 2)
-        guard !fullscreen else {
-            setRoom((reach, reach))
-            return
-        }
-        let icons = WalkerOverlay.menuBarIcons(on: screen.frame).map(\.span.lowerBound).filter { $0 > edges.right }.min()
-        let right = min(max((icons ?? .greatestFiniteMagnitude) - MenuBarRoom.gap - edges.right, 0), reach)
-        guard let pid = NSWorkspace.shared.menuBarOwningApplication?.processIdentifier, AXIsProcessTrusted() else {
-            // Without leave to look at the app's menus, a guess at where most end.
-            setRoom((min(MenuBarRoom.guess, reach), right))
-            return
-        }
-        Task.detached(priority: .userInitiated) {
-            let end = MenuBarRoom.menusEnd(of: pid)
-            await MainActor.run { [weak self] in
-                let left = end.map { min(max(edges.left - MenuBarRoom.gap - $0, 0), reach) } ?? min(MenuBarRoom.guess, reach)
-                self?.setRoom((left, right))
-            }
-        }
-    }
-
-    private func setRoom(_ room: (left: CGFloat, right: CGFloat)) {
-        if model.room.left != room.left || model.room.right != room.right { model.room = room }
-    }
-}
-
-/// Where the app's menus end along the menu bar (to keep lyrics off them).
-enum MenuBarRoom {
-    /// Kept between the lyrics and the menus or icons.
-    static let gap: CGFloat = 14
-    /// How far left of the notch they go without leave to look at the menus.
-    static let guess: CGFloat = 180
-
-    /// The right end of the menus of the app with `pid`, as the screen measures across (nil if
-    /// they can't be read), asking it for at most a quarter of a second.
-    nonisolated static func menusEnd(of pid: pid_t) -> CGFloat? {
-        let app = AXUIElementCreateApplication(pid)
-        AXUIElementSetMessagingTimeout(app, 0.25)
-        var bar: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &bar) == .success, let bar,
-              CFGetTypeID(bar) == AXUIElementGetTypeID() else { return nil }
-        var children: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(bar as! AXUIElement, kAXChildrenAttribute as CFString, &children) == .success,
-              let items = children as? [AXUIElement] else { return nil }
-        var end: CGFloat?
-        for item in items {
-            var position: CFTypeRef?, size: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(item, kAXPositionAttribute as CFString, &position) == .success,
-                  AXUIElementCopyAttributeValue(item, kAXSizeAttribute as CFString, &size) == .success,
-                  let position, let size, CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID()
-            else { continue }
-            var point = CGPoint.zero, extent = CGSize.zero
-            AXValueGetValue(position as! AXValue, .cgPoint, &point)
-            AXValueGetValue(size as! AXValue, .cgSize, &extent)
-            guard extent.width > 0 else { continue }
-            end = max(end ?? 0, point.x + extent.width)
-        }
-        return end
     }
 }
 
@@ -225,9 +120,8 @@ final class ClosedLyricsModel: ObservableObject {
     @Published var seed = ""
     /// When the song (or its lyrics) last changed, for what's new to come in.
     @Published var swapped = Date.distantPast
-    @Published var notch = NotchMetrics.fallback.size
-    /// How far they can go either side of the notch.
-    @Published var room: (left: CGFloat, right: CGFloat) = (MenuBarRoom.guess, ClosedLyricsFrame.reach)
+    /// Where the notch is in their window.
+    @Published var notch = CGRect(origin: .zero, size: NotchMetrics.fallback.size)
 }
 
 struct ClosedLyricsView: View {
@@ -241,7 +135,7 @@ struct ClosedLyricsView: View {
             ClosedLyricsFrame(lyrics: model.lyrics, seed: model.seed, position: position(context.date) + LyricsSky.lead,
                               time: MidnightBackdrop.clock,
                               presence: ClosedLyricsFrame.presence(shown: model.shown, since: context.date.timeIntervalSince(model.changed)),
-                              fresh: context.date.timeIntervalSince(model.swapped), notch: model.notch, room: model.room,
+                              fresh: context.date.timeIntervalSince(model.swapped), notch: model.notch,
                               beat: (Double(Beat.level), Beat.position(at: time)))
         }
         .allowsHitTesting(false)
@@ -250,9 +144,9 @@ struct ClosedLyricsView: View {
 
 /// The lyrics by the notch at one moment: `position` seconds into the song (or, with no lyrics,
 /// the constellation `seed` picks), `time` on Midnight's clock, `presence` of the way out from
-/// behind the notch, `fresh` seconds since the song changed, beside a notch of `notch`'s size (in
-/// the middle of the top of the frame) with `room` either side of it, the music's bass `beat.level`
-/// and where it is in the beat.
+/// behind the notch, `fresh` seconds since the song changed, the notch at `notch` in the frame
+/// (the strip's whole width, the menu bar's depth), the music's bass `beat.level` and where it
+/// is in the beat.
 struct ClosedLyricsFrame: View {
     let lyrics: Lyrics?
     var seed = ""
@@ -260,28 +154,31 @@ struct ClosedLyricsFrame: View {
     let time: Double
     let presence: Double
     var fresh: Double = 10
-    let notch: CGSize
-    let room: (left: CGFloat, right: CGFloat)
+    let notch: CGRect
     var beat: (level: Double, phase: Double?) = (0, nil)
 
-    /// The furthest either side of the notch they go, however much room there is.
-    static let reach: CGFloat = 420
-    /// Between the notch and the words.
+    /// Between the notch and the words, and the words and the screen's edge.
     static let pad: CGFloat = 12
+    /// How much of its side a line can take before it's shrunk to fit; and no smaller than this.
+    static let stretch: CGFloat = 0.9, smallest: CGFloat = 0.6
     /// How long they take to come out from behind the notch, and to go back.
     static let coming = 0.7, going = 0.45
-    /// With less room than this on one side of the notch (an app with a lot of menus, say), every
-    /// line goes on the other.
-    static let tight: CGFloat = 110
-
-    static func size(notch: CGSize) -> CGSize {
-        CGSize(width: notch.width + 2 * reach, height: notch.height)
-    }
+    /// How long a line fades in, faint, before it's sung; how long it takes to fade once the next
+    /// is up; and, where a later one's coming in on its side, to make way.
+    static let approach = 0.7, fading = 6.0, makingWay = 1.0
+    /// How bright a line's words are before they sparkle in.
+    static let faint: Double = 0.3
 
     /// How far out from behind the notch they are, `since` seconds after they were last `shown`
     /// or hidden.
     static func presence(shown: Bool, since: TimeInterval) -> Double {
         shown ? LyricsSkyFrame.ease(since / coming) : 1 - LyricsSkyFrame.ease(since / going)
+    }
+
+    /// 0 to 1, slower still at both ends than `ease`: for fading out.
+    static func smoother(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        return t * t * t * (t * (6 * t - 15) + 10)
     }
 
     var body: some View {
@@ -291,8 +188,7 @@ struct ClosedLyricsFrame: View {
     }
 
     /// A line laid out to fit `room`: its words and their widths at full size, the gap between
-    /// them, how much it's shrunk (no smaller than 0.72) and how many words fit (the rest cut,
-    /// with an ellipsis); or a break, where the constellation is.
+    /// them, how much it's shrunk and how many words fit (any past that cut, with an ellipsis).
     struct Laid {
         var words: [GraphicsContext.ResolvedText] = []
         var widths: [CGFloat] = []
@@ -300,11 +196,9 @@ struct ClosedLyricsFrame: View {
         var scale: CGFloat = 1
         var fits = 0
         var ellipsis: GraphicsContext.ResolvedText?
-        var breaking = false
 
         /// As wide as it's drawn.
         var width: CGFloat {
-            if breaking { return ClosedLyricsFrame.constellationWidth }
             let shown = widths.prefix(fits).reduce(0, +) + space * CGFloat(max(fits - 1, 0))
             return (shown + (ellipsis == nil ? 0 : space * 0.4 + 10)) * scale
         }
@@ -312,17 +206,14 @@ struct ClosedLyricsFrame: View {
 
     static func lay(_ text: String, size: CGFloat, room: CGFloat, in context: GraphicsContext) -> Laid {
         var laid = Laid()
-        let words = LyricsSkyFrame.words(text)
-        guard !words.isEmpty else {
-            laid.breaking = true
-            return laid
+        laid.words = LyricsSkyFrame.words(text).map {
+            context.resolve(Text($0).font(Midnight.flourish(size)).foregroundStyle(Midnight.white))
         }
-        laid.words = words.map { context.resolve(Text($0).font(Midnight.flourish(size)).foregroundStyle(Midnight.white)) }
-        laid.widths = laid.words.map { $0.measure(in: CGSize(width: 2000, height: 200)).width }
+        laid.widths = laid.words.map { $0.measure(in: CGSize(width: 4000, height: 200)).width }
         laid.space = size * 0.3
-        let full = laid.widths.reduce(0, +) + laid.space * CGFloat(words.count - 1)
-        laid.scale = max(min(1, room / max(full, 1)), 0.72)
-        laid.fits = words.count
+        let full = laid.widths.reduce(0, +) + laid.space * CGFloat(max(laid.words.count - 1, 0))
+        laid.scale = max(min(1, room / max(full, 1)), smallest)
+        laid.fits = laid.words.count
         if full * laid.scale > room {
             laid.ellipsis = context.resolve(Text("…").font(Midnight.flourish(size)).foregroundStyle(Midnight.white))
             while laid.fits > 1 && laid.width > room { laid.fits -= 1 }
@@ -330,41 +221,29 @@ struct ClosedLyricsFrame: View {
         return laid
     }
 
-    /// Which side of the notch `line` goes: the first with words (`first`) left, then right, and
-    /// so on, each on the other side from the last (a break too, its constellation; what's before
-    /// the first, right); or, with too little room on one side (an app with a lot of menus,
-    /// say), all on the other.
-    static func onLeft(_ line: Int, first: Int = 0, room: (left: CGFloat, right: CGFloat)) -> Bool {
-        switch (room.left >= tight, room.right >= tight) {
-        case (true, false): return true
-        case (false, true): return false
-        case (false, false): return room.left >= room.right
-        case (true, true): return line >= first ? (line - first).isMultiple(of: 2) : false
-        }
+    /// Which side of the notch `line` is sung on: the first with words (`first`) left, then
+    /// right, and so on, each on the other side from the last.
+    static func onLeft(_ line: Int, first: Int = 0) -> Bool {
+        line >= first ? (line - first).isMultiple(of: 2) : false
     }
 
-    /// How long a line takes to fade once the next is being sung on the other side; and on the
-    /// same side, where it has to make way.
-    static let fading = 2.4, makingWay = 0.3
-
     static func draw(_ frame: ClosedLyricsFrame, in context: GraphicsContext, size: CGSize) {
-        let presence = frame.presence, notch = frame.notch, room = frame.room
+        let presence = frame.presence, notch = frame.notch
         guard presence > 0 else { return }
-        let middle = size.width / 2, bar = notch.height
-        let edges = (left: middle - notch.width / 2, right: middle + notch.width / 2)
+        let bar = notch.height
+        let room = (left: max(notch.minX - pad, 0), right: max(size.width - notch.maxX - pad, 0))
         let words = LyricsSkyFrame.ease((presence - 0.2) / 0.8) * LyricsSkyFrame.ease(frame.fresh / 0.6)
         // Out from behind the notch as they come, and back as they go.
         let hidden = CGFloat(1 - LyricsSkyFrame.ease(presence))
         let baseline = bar / 2 + 0.5
 
-        // Each side's words only in the strip, in that side's room: past the notch's edge (behind
-        // which they slip as they come and go), and fading out toward its far end.
+        // Each side's words only in the strip, past the notch's edge (behind which they slip as
+        // they come and go), fading out toward the screen's edge.
         func side(left: Bool) -> GraphicsContext {
-            let width = left ? room.left : room.right
             var clipped = context
-            let rect = left ? CGRect(x: edges.left - width, y: 0, width: width, height: bar)
-                : CGRect(x: edges.right, y: 0, width: width, height: bar)
-            let soft = min(22, width / 3) / max(width, 1), inner = min(4, width / 6) / max(width, 1)
+            let rect = left ? CGRect(x: 0, y: 0, width: notch.minX, height: bar)
+                : CGRect(x: notch.maxX, y: 0, width: max(size.width - notch.maxX, 0), height: bar)
+            let width = max(rect.width, 1), soft = min(24, width / 3) / width, inner = min(4, width / 6) / width
             let stops: [Gradient.Stop] = left
                 ? [.init(color: .clear, location: 0), .init(color: .white, location: soft),
                    .init(color: .white, location: 1 - inner), .init(color: .clear, location: 1)]
@@ -378,14 +257,18 @@ struct ClosedLyricsFrame: View {
         }
         let sides = (left: side(left: true), right: side(left: false))
         // Set from the notch outward: leftward on the left (ending at the notch), rightward on the right.
-        func from(_ left: Bool) -> CGFloat { left ? edges.left - pad : edges.right + pad }
+        func from(_ left: Bool) -> CGFloat { left ? notch.minX - pad : notch.maxX + pad }
         // Back toward the notch: rightward on the left, leftward on the right.
         func inward(_ left: Bool) -> CGFloat { left ? 1 : -1 }
+        func stars(_ left: Bool, opacity: Double) {
+            constellation(seed: frame.seed + (left ? "" : " right"), at: from(left), leftward: left, bar: bar, opacity: opacity,
+                          shift: inward(left) * (constellationWidth + pad) * hidden, beat: frame.beat, time: frame.time,
+                          in: left ? sides.left : sides.right)
+        }
 
         guard let lyrics = frame.lyrics, !lyrics.lines.isEmpty else {
             // No lyrics: the song's constellation, pulsing to the beat, on the left.
-            constellation(seed: frame.seed, at: from(true), leftward: true, bar: bar, opacity: words,
-                          shift: (constellationWidth + pad) * hidden, beat: frame.beat, time: frame.time, in: sides.left)
+            stars(true, opacity: words)
             return
         }
         let lines = lyrics.lines
@@ -393,53 +276,57 @@ struct ClosedLyricsFrame: View {
         let since = index >= 0 ? frame.position - lines[index].time : 0
         let type = (bar * 0.43).rounded()
         let lingering = 1 - 0.4 * LyricsSkyFrame.ease((since - 9) / 3)
-        let first = lines.firstIndex { $0.text != "♪" } ?? 0
-        func onLeft(_ line: Int) -> Bool { Self.onLeft(line, first: first, room: room) }
+        let first = lines.firstIndex { $0.text != "♪" } ?? lines.count
+        // A break (and the start, before the first line): stars on both sides; a line, its side.
+        func isBreak(_ line: Int) -> Bool { line < first || lines[line].text == "♪" }
+        func takes(_ line: Int, left: Bool) -> Bool { isBreak(line) || onLeft(line, first: first) == left }
+        // When a line starts to come in: a little before it's sung.
+        func arriving(_ line: Int) -> Double { lines[line].time - approach }
 
-        // The line being sung, and the two before it, fading (the start before the first counts as
-        // a line, as a break does: the constellation's there). Each its own side.
-        for line in max(index - 2, -1)...index {
-            let left = onLeft(line)
-            let width = left ? room.left : room.right
-            let laid = line >= 0 ? lay(lines[line].text, size: type, room: width - 2 * pad, in: context) : nil
-            let into = left ? sides.left : sides.right
-            var opacity = words
-            if line < index {
-                // Done: fading slowly once the next is up; quickly, where a later one's on its side.
-                let over = frame.position - lines[line + 1].time
-                opacity *= 1 - LyricsSkyFrame.ease(over / fading)
-                if let later = ((line + 1)...index).first(where: { onLeft($0) == left }) {
-                    opacity *= 1 - LyricsSkyFrame.ease((frame.position - lines[later].time) / makingWay)
+        // The line being sung, the one coming (faintly, just before it's sung), and the two before,
+        // fading slowly; each on its side, making way for a later one coming in on it.
+        for line in max(index - 2, -1)...min(index + 1, lines.count - 1) {
+            for left in [true, false] where takes(line, left: left) {
+                var opacity = words
+                if line > index {
+                    let ahead = lines[line].time - frame.position
+                    guard ahead < approach else { continue }
+                    opacity *= LyricsSkyFrame.ease((approach - ahead) / approach)
+                } else if line < index {
+                    opacity *= 1 - smoother((frame.position - lines[line + 1].time) / fading)
+                } else {
+                    opacity *= lingering
                 }
-                opacity *= 0.8
-            } else {
-                opacity *= lingering
-            }
-            guard opacity > 0.01 else { continue }
-            let drawnWidth = laid.map { $0.width } ?? constellationWidth
-            let shift = inward(left) * (drawnWidth + pad) * hidden
-            if let laid, !laid.breaking {
-                let over = line < index ? CGFloat(frame.position - lines[line + 1].time) : 0
+                if let later = (line + 1..<index + 2).first(where: { lines.indices.contains($0) && takes($0, left: left) }) {
+                    opacity *= 1 - smoother((frame.position - arriving(later)) / makingWay)
+                }
+                guard opacity > 0.01 else { continue }
+                if isBreak(line) {
+                    stars(left, opacity: opacity)
+                    continue
+                }
+                let laid = lay(lines[line].text, size: type, room: stretch * (left ? room.left : room.right) - pad, in: context)
+                let over = line < index ? smoother((frame.position - lines[line + 1].time) / fading) : 0
                 write(laid, line: line, from: from(left), leading: !left, y: baseline, opacity: opacity,
-                      lighting: line == index ? (since, LyricsSkyFrame.spread(lines, index, words: laid.words.count)) : nil,
-                      shift: shift, blur: min(over / CGFloat(fading), 1) * 1.6, time: frame.time, in: into)
+                      lighting: line >= index ? (frame.position - lines[line].time, LyricsSkyFrame.spread(lines, line, words: laid.words.count)) : nil,
+                      shift: inward(left) * (laid.width + pad) * hidden, blur: 1.4 * CGFloat(over), time: frame.time,
+                      in: left ? sides.left : sides.right)
                 if line == index {
-                    specks(along: from(left), out: laid.width, leftward: left, bar: bar, strength: opacity, time: frame.time, in: into)
+                    specks(along: from(left), out: laid.width, leftward: left, bar: bar, strength: opacity, time: frame.time,
+                           in: left ? sides.left : sides.right)
                 }
-            } else {
-                constellation(seed: frame.seed, at: from(left), leftward: left, bar: bar, opacity: opacity, shift: shift,
-                              beat: frame.beat, time: frame.time, in: into)
             }
         }
     }
 
     /// `laid`'s words set out from `x` (rightward if `leading`, else leftward), centered on `y`,
-    /// moved `shift` along, each bobbing a little; while `lighting` (how long the line's been up,
-    /// and how long its words take to light), each in turn, with a glint.
+    /// moved `shift` along, each bobbing a little; while `lighting` (how long since the line's
+    /// time, negative before it, and how long its words take to light), faint till each in turn
+    /// sparkles in, with a glint.
     private static func write(_ laid: Laid, line: Int, from x: CGFloat, leading: Bool, y: CGFloat, opacity: Double,
                               lighting: (since: Double, spread: Double)?, shift: CGFloat, blur: CGFloat = 0, time: Double,
                               in context: GraphicsContext) {
-        guard opacity > 0.01, !laid.breaking else { return }
+        guard opacity > 0.01, laid.fits > 0 else { return }
         var layer = context
         layer.opacity = opacity
         if blur > 0.05 { layer.addFilter(.blur(radius: blur)) }
@@ -455,9 +342,9 @@ struct ClosedLyricsFrame: View {
                 let lit = lighting.map { LyricsSkyFrame.ease(($0.since - litAt) / 0.45) } ?? 1
                 let bob = 0.7 * sin(time * 0.9 + Double(word) * 0.8 + Double(line) * 1.3)
                 var glyph = row
-                glyph.opacity = 0.42 + 0.58 * lit
+                glyph.opacity = faint + (1 - faint) * lit
                 glyph.draw(laid.words[word], at: CGPoint(x: along, y: CGFloat(bob) + 1.5 * CGFloat(1 - lit)), anchor: .leading)
-                // A glint as it lights.
+                // A glint as it sparkles in.
                 if let lighting {
                     let glint = LyricsSkyFrame.bump((lighting.since - litAt) / 0.8)
                     if glint > 0.01 {
@@ -477,7 +364,7 @@ struct ClosedLyricsFrame: View {
         }
     }
 
-    /// How wide the constellation is.
+    /// How wide a constellation is.
     static let constellationWidth: CGFloat = 132
 
     /// The song's constellation (the same for the same `seed`): seven stars across the strip,

@@ -1009,7 +1009,7 @@ final class NotchController {
     private func showClosedLyrics(on screen: NSScreen) {
         let playing = state.nowPlaying
         closedLyrics.show(wanted: state.wantsLyricsByNotch, lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil,
-                          seed: playing.track?.id ?? "", on: screen, metrics: state.metrics, fullscreen: state.inFullscreen,
+                          seed: playing.track?.id ?? "", on: screen, metrics: state.metrics,
                           opened: state.mode == .expanded || state.theme != .midnight)
     }
 
