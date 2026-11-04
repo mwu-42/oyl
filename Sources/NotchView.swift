@@ -77,7 +77,7 @@ struct NotchView: View {
                     .transition(Self.swap)
             case .compact:
                 CompactNotch(layout: state.compact, size: size, notchWidth: state.metrics.size.width,
-                             dictation: state.dictation)
+                             dictation: state.dictation, timers: timers)
                     .transition(Self.swap)
             case .idle:
                 EmptyView()
@@ -138,8 +138,17 @@ struct CompactNotch: View {
     let size: CGSize
     let notchWidth: CGFloat
     let dictation: Dictation
+    @ObservedObject var timers: TimerStore
 
     var body: some View {
+        if let timer = layout.focus.flatMap({ focus in timers.timers.first { $0.id == focus.id } }) {
+            HeldTimer(timer: timer, size: size, notchWidth: notchWidth)
+        } else {
+            dictating
+        }
+    }
+
+    private var dictating: some View {
         HStack(spacing: 0) {
             if layout.dictating {
                 Image(systemName: "mic.fill")
@@ -155,6 +164,49 @@ struct CompactNotch: View {
         }
         .padding(.horizontal, layout.inset)
         .frame(width: size.width, height: size.height)
+    }
+}
+
+/// The timer held on the closed notch: its ring and name on the left, its time on the right (a
+/// reminder with no time, its name there instead), ticking each second.
+struct HeldTimer: View {
+    let timer: ReminderTimer
+    let size: CGSize
+    let notchWidth: CGFloat
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        Countdown(timer: timer) { remaining, left in
+            let tint = timer.isEndless ? theme.tint(Oyl.noteYellow) : timer.tint(fractionLeft: left, theme: theme)
+            HStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    if timer.isEndless {
+                        Image(systemName: "infinity")
+                            .notchSymbol(size: 10, weight: .bold)
+                            .foregroundStyle(tint)
+                            .frame(width: 14, height: 14)
+                    } else {
+                        TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2, color: tint)
+                            .frame(width: 14, height: 14)
+                        Text(timer.title)
+                            .notchFont(size: 11, weight: .medium)
+                            .foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(1)
+                    }
+                }
+                .frame(width: CompactLayout.timerWing - 12, alignment: .leading)
+                Spacer(minLength: notchWidth)
+                Text(timer.isEndless ? timer.title : ReminderTimer.format(remaining))
+                    .notchFont(size: timer.isEndless ? 11 : 13, weight: timer.isEndless ? .medium : .semibold,
+                               design: timer.isEndless ? .default : .rounded, digits: !timer.isEndless)
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+                    .frame(width: CompactLayout.timerWing - 12, alignment: .trailing)
+            }
+            .padding(.horizontal, 6)
+            .frame(width: size.width, height: size.height)
+        }
+        .help("\(timer.title), held on the notch")
     }
 }
 

@@ -52,6 +52,7 @@ enum PhonePage {
     button.round { width: 52px; height: 52px; padding: 0; font-size: 19px; display: inline-flex; align-items: center; justify-content: center; }
     button.big { width: 64px; height: 64px; font-size: 24px; }
     button.x { width: 34px; height: 34px; padding: 0; font-size: 15px; flex: none; }
+    button.x.held { background: #fff; color: #000; }
     .buttons { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
     .request { background: rgba(217,119,87,.15); border-radius: 16px; padding: 12px 14px; margin-bottom: 8px; position: relative; }
     .request .buttons button { flex: 1; }
@@ -128,6 +129,7 @@ enum PhonePage {
     body[data-look=midnight] button.round { border-radius: 50%; background: radial-gradient(circle, rgba(214,222,237,.11), transparent 68%);
       font-family: Didot, serif; letter-spacing: 0; text-transform: none; }
     body[data-look=midnight] button.x { background: none; letter-spacing: 0; }
+    body[data-look=midnight] button.x.held { background: none; color: var(--accent); }
     body[data-look=midnight] .request { background: none; border-radius: 0; padding: 4px 0 12px 18px; }
     body[data-look=midnight] .request::before { content: "\2726"; position: absolute; left: 0; top: 5px; color: var(--accent); font-size: 11px;
       animation: twinkle 1.1s ease-in-out infinite; }
@@ -476,6 +478,9 @@ enum PhonePage {
         if (timer.ends) left.dataset.ends = String(timer.ends);
         else left.textContent = timer.endless ? "" : length(timer.left || 0);
         row.append(text, left);
+        const hold = button(timer.focused ? "\u25C9" : "\u25CB", "x" + (timer.focused ? " held" : ""), () => act({ do: "focusTimer", id: timer.id }));
+        hold.setAttribute("aria-label", timer.focused ? "Let go of the notch" : "Hold on the notch");
+        row.append(hold);
         if (!timer.endless) row.append(button(timer.ends ? "❙❙" : "▶︎", "x", () => act({ do: "pauseTimer", id: timer.id })));
         row.append(button("✕", "x", () => act({ do: "cancelTimer", id: timer.id })));
         return row;

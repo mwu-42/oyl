@@ -122,18 +122,23 @@ struct NotchMetrics: Equatable {
 /// the rest are Oyls out on the menu bar; see `WalkerOverlay`.)
 struct CompactLayout {
     let dictating: Bool
+    /// The timer held on the notch, while nothing's being dictated.
+    let focus: ReminderTimer?
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, dictating: Bool) {
+    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil) {
         self.dictating = dictating
+        self.focus = dictating ? nil : focus
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    var isEmpty: Bool { !dictating }
+    var isEmpty: Bool { !dictating && focus == nil }
 
-    var wing: CGFloat { inset + (isEmpty ? 0 : art) + 10 }
+    /// How far it reaches either side of the notch: for a timer, room for its name and its time.
+    var wing: CGFloat { focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
+    static let timerWing: CGFloat = 70
 }
 
 @MainActor
@@ -331,7 +336,8 @@ final class NotchState: ObservableObject {
     var isAnnouncing: Bool { isAlerting && !isHovering && agents.approvals.isEmpty }
 
     var compact: CompactLayout {
-        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn)
+        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
+                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil)
     }
 
     /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
@@ -1010,6 +1016,7 @@ final class NotchController {
         let playing = state.nowPlaying
         closedLyrics.show(wanted: state.wantsLyricsByNotch, lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil,
                           seed: playing.track?.id ?? "", on: screen, metrics: state.metrics,
+                          beside: state.compact.isEmpty ? 0 : state.compact.wing,
                           opened: state.mode == .expanded || state.theme != .midnight)
     }
 

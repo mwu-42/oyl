@@ -7,7 +7,7 @@ extension NotchState {
     /// notch is closed with nothing else beside it (open, it shows them itself).
     var wantsLyricsByNotch: Bool {
         theme == .midnight && showsLyricsClosed && showsLyrics && nowPlaying.isPlaying && !(nowPlaying.track?.isAudiobook ?? true)
-            && mode != .expanded && compact.isEmpty && !isResting && !isViewingDesktops
+            && mode != .expanded && !compact.dictating && !isResting && !isViewingDesktops
     }
 }
 
@@ -51,9 +51,10 @@ final class ClosedLyrics {
     }
 
     /// Shows the song's lyrics (or, with none, its constellation: `seed` picks it) by the notch on
-    /// `screen` while `wanted`, or hides them: at once if `opened` (the notch has opened over
-    /// them, or the look's changed).
-    func show(wanted: Bool, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics, opened: Bool) {
+    /// `screen` (past what's `beside` it either side: a timer held on it) while `wanted`, or hides
+    /// them: at once if `opened` (the notch has opened over them, or the look's changed).
+    func show(wanted: Bool, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics, beside: CGFloat = 0,
+              opened: Bool) {
         if opened { hideNow() }
         guard wanted, !opened else {
             guard model.shown, hiding == nil else { return }
@@ -64,7 +65,7 @@ final class ClosedLyrics {
         }
         hiding?.cancel()
         hiding = nil
-        place(on: screen, metrics: metrics)
+        place(on: screen, metrics: metrics, beside: beside)
         if model.lyrics?.trackID != lyrics?.trackID || model.seed != seed {
             // A new song (or its lyrics come): what was up goes quickly, where it had got to, as
             // this comes in.
@@ -99,12 +100,13 @@ final class ClosedLyrics {
         }
     }
 
-    /// Along the whole top of the screen, as deep as the menu bar's strip, the notch where it is.
-    private func place(on screen: NSScreen, metrics: NotchMetrics) {
+    /// Along the whole top of the screen, as deep as the menu bar's strip, the notch (and what's
+    /// `beside` it) where it is.
+    private func place(on screen: NSScreen, metrics: NotchMetrics, beside: CGFloat) {
         let frame = CGRect(x: screen.frame.minX, y: screen.frame.maxY - metrics.size.height, width: screen.frame.width,
                            height: metrics.size.height)
-        let notch = CGRect(x: metrics.centerX - screen.frame.minX - metrics.size.width / 2, y: 0, width: metrics.size.width,
-                           height: metrics.size.height)
+        let width = metrics.size.width + 2 * beside
+        let notch = CGRect(x: metrics.centerX - screen.frame.minX - width / 2, y: 0, width: width, height: metrics.size.height)
         if model.notch != notch { model.notch = notch }
         guard placed != frame else { return }
         placed = frame

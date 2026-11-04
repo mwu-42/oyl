@@ -177,6 +177,7 @@ struct TimerRow: View {
                     name
                     Spacer(minLength: 8)
                 }
+                hold
                 RoundButton(symbol: "checkmark", tint: theme.tint(Oyl.noteYellow)) {
                     timers.resolve(timer.id)
                 }
@@ -188,6 +189,15 @@ struct TimerRow: View {
         } else {
             countdown
         }
+    }
+
+    /// Holds it on the closed notch (letting go of any other), or lets it go.
+    private var hold: some View {
+        let held = timers.focused == timer.id
+        return RoundButton(symbol: held ? "pin.fill" : "pin", tint: held ? .white : .white.opacity(0.55)) {
+            timers.focus(timer.id)
+        }
+        .help(held ? "Let go of the notch" : "Hold on the notch")
     }
 
     /// All of it, however long, wrapping onto as many lines as it takes.
@@ -212,6 +222,7 @@ struct TimerRow: View {
                         .notchFont(size: 16, weight: .semibold, design: .rounded, digits: true)
                         .foregroundStyle(tint)
                 }
+                hold
                 RoundButton(symbol: "plus", tint: tint, action: add)
                     .help("More time")
                 RoundButton(symbol: timer.isRunning ? "pause.fill" : "play.fill", tint: tint) {

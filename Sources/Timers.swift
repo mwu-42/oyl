@@ -62,6 +62,10 @@ final class TimerStore: ObservableObject {
     /// Timers that have gone off, latest first: the last ten, from the past day.
     @Published private(set) var history: [ExpiredTimer] = []
 
+    /// The one timer held on the closed notch, if one's been picked (remembered across launches;
+    /// let go of when it's gone).
+    @Published private(set) var focused: UUID? = UserDefaults.standard.string(forKey: "timers.focused").flatMap(UUID.init)
+
     private var waiting: [ReminderTimer] = []  // finished timers queued behind `ringing`
     private var completion: Timer?
     private var chime: Timer?
@@ -81,9 +85,20 @@ final class TimerStore: ObservableObject {
         reschedule()
     }
 
-    /// The timer the closed notch shows: the next one to finish, else a paused one.
+    /// The timer held on the notch, if it's still here.
+    var focusedTimer: ReminderTimer? { focused.flatMap { id in timers.first { $0.id == id } } }
+
+    /// Holds `id` on the notch, in place of any other; or, if it's held already, lets it go.
+    func focus(_ id: UUID) {
+        focused = focused == id ? nil : id
+        UserDefaults.standard.set(focused?.uuidString, forKey: "timers.focused")
+    }
+
+    /// The timer the open notch's strip shows: the one held on the notch, else the next one to
+    /// finish, else a paused one.
     var next: ReminderTimer? {
-        timers.filter(\.isRunning).min { $0.endDate! < $1.endDate! } ?? timers.first { !$0.isEndless }
+        if let focusedTimer { return focusedTimer }
+        return timers.filter(\.isRunning).min { $0.endDate! < $1.endDate! } ?? timers.first { !$0.isEndless }
     }
 
     /// The least time left first (a paused timer by what it has left), then reminders with no
@@ -190,6 +205,10 @@ final class TimerStore: ObservableObject {
     private func changed() {
         let data = try? JSONEncoder().encode(timers)
         UserDefaults.standard.set(data, forKey: Self.storageKey)
+        if let focused, !timers.contains(where: { $0.id == focused }) {
+            self.focused = nil
+            UserDefaults.standard.removeObject(forKey: "timers.focused")
+        }
         reschedule()
     }
 

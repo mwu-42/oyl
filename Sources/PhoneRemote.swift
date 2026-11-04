@@ -336,7 +336,7 @@ enum PhoneAction: Equatable {
     case allow(String), deny(String)
     case playPause, next, previous
     case startTimer(minutes: Double, label: String)
-    case pauseTimer(UUID), cancelTimer(UUID), dismissRinging
+    case pauseTimer(UUID), cancelTimer(UUID), focusTimer(UUID), dismissRinging
     /// Kept awake that many hours, or (nil) till it's stopped; or let sleep.
     case awake(hours: Double?)
     case sleep
@@ -360,6 +360,7 @@ enum PhoneAction: Equatable {
             self = .startTimer(minutes: minutes, label: String((fields["label"] as? String ?? "").prefix(60)))
         case "pauseTimer": guard let uuid = id.flatMap(UUID.init) else { return nil }; self = .pauseTimer(uuid)
         case "cancelTimer": guard let uuid = id.flatMap(UUID.init) else { return nil }; self = .cancelTimer(uuid)
+        case "focusTimer": guard let uuid = id.flatMap(UUID.init) else { return nil }; self = .focusTimer(uuid)
         case "dismissRinging": self = .dismissRinging
         case "awake":
             let hours = fields["hours"] as? Double
@@ -427,6 +428,8 @@ struct PhoneSnapshot: Codable, Equatable {
         var left: Double?
         var endless: Bool
         var duration: Double
+        /// Held on the notch.
+        var focused = false
     }
 
     struct Awake: Codable, Equatable {
@@ -513,7 +516,7 @@ final class NotchPhoneControls: PhoneControls {
             music: music,
             timers: timers.soonestFirst(at: now).map { timer in
                 .init(id: timer.id.uuidString, title: timer.title, ends: timer.endDate?.timeIntervalSince1970,
-                      left: timer.pausedRemaining, endless: timer.isEndless, duration: timer.duration)
+                      left: timer.pausedRemaining, endless: timer.isEndless, duration: timer.duration, focused: timer.id == timers.focused)
             },
             ringing: timers.ringing?.title, awake: awake,
             ideas: IdeaBoard.rows(state.tod.ideas, now: now).map { row in
@@ -539,9 +542,13 @@ final class NotchPhoneControls: PhoneControls {
         case .next: state.nowPlaying.next()
         case .previous: state.nowPlaying.previous()
         case let .startTimer(minutes, label): state.timers.start(duration: (minutes * 60).rounded(), label: label)
-        case let .pauseTimer(id), let .cancelTimer(id):
+        case let .pauseTimer(id), let .cancelTimer(id), let .focusTimer(id):
             guard state.timers.timers.contains(where: { $0.id == id }) else { return false }
-            if case .pauseTimer = action { state.timers.togglePause(id) } else { state.timers.cancel(id) }
+            switch action {
+            case .pauseTimer: state.timers.togglePause(id)
+            case .focusTimer: state.timers.focus(id)
+            default: state.timers.cancel(id)
+            }
         case .dismissRinging: state.timers.dismissRinging()
         case let .awake(hours):
             if let hours {
