@@ -21,8 +21,8 @@ extension NotchState {
 /// it's sung, then its words sparkle in one after another, each with a glint, specks of light
 /// twinkling round them, while the last fades slowly away on its side. A long line stretches as
 /// far along its side as it needs, shrinking only past nine tenths of it.
-/// Where nothing's being sung, the song's own constellation pulses to the beat: both sides of
-/// the notch in a break (and before the first line), the left for a song without lyrics. They
+/// Where nothing's being sung, the song's own constellations pulse to the beat, one either side
+/// of the notch: in a break, before the first line, and all through a song without lyrics. They
 /// take no clicks. They come as soon as they're wanted and go once they haven't been for a
 /// moment, so the gap between songs doesn't make them flicker; when the notch opens, straight away.
 /// From one song to the next, the last's fade out quickly as the next's fade in; and as the song's
@@ -346,8 +346,9 @@ struct ClosedLyricsFrame: View {
         }
 
         guard let lyrics = frame.lyrics, !lyrics.lines.isEmpty else {
-            // No lyrics: the song's constellation, pulsing to the beat, on the left.
+            // No lyrics: the song's constellations, pulsing to the beat, either side.
             stars(true, opacity: words)
+            stars(false, opacity: words)
             return
         }
         let lines = lyrics.lines
