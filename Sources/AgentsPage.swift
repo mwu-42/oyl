@@ -57,20 +57,7 @@ struct OylsPage: View {
                     option("Stay open", isOn: state.isPinned) { state.isPinned.toggle() }
                 }
                 Spacer(minLength: 0)
-                // Everything else, and more of these.
-                Button { withAnimation(NotchView.open) { state.page = .settings } } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "gearshape")
-                            .notchSymbol(size: 11, weight: .semibold)
-                        Text("Settings")
-                            .notchFont(size: 11, weight: .medium)
-                    }
-                    .foregroundStyle(.white.opacity(0.75))
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle())
-                .help("Turn any of Oyl on or off")
-                .padding(.trailing, 10)
+                // (Everything else is on the settings tab, the last.)
                 // Quits, and stays off (not opening at login) till it's opened again.
                 Button { Quitting.turnOff(awake) } label: {
                     HStack(spacing: 5) {

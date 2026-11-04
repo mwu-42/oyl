@@ -272,7 +272,7 @@ struct PageTabs: View {
     /// What the lead agent is doing, if any is running; its tab acts it out.
     let agent: AgentActivity?
     let skin: Color
-    /// Those turned on, Oyl's first.
+    /// Those turned on, Oyl's first and the settings last.
     let tabs: [NotchPage]
     @Environment(\.notchTheme) private var theme
 
@@ -292,6 +292,7 @@ struct PageTabs: View {
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
             if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }
+            tab(.settings, symbol: "gearshape")
         }
         .padding(2)
         // Midnight Oyl's is engraved: an outline, not a fill.

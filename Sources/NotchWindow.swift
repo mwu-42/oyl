@@ -277,12 +277,13 @@ final class NotchState: ObservableObject {
         min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
-    /// The pages with tabs, in order: Oyl's own (always), then those turned on.
+    /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
+    /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .ideas, .awake, .activity, .mirror].filter(shows)
+        [.agents, .music, .timers, .ideas, .awake, .activity, .mirror, .settings].filter(shows)
     }
 
-    /// Whether `page` is one of the notch's now (settings always are, though tabless).
+    /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
     func shows(_ page: NotchPage) -> Bool {
         switch page {
         case .agents, .settings: return true
