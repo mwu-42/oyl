@@ -5,8 +5,11 @@ extension NotchState {
     /// Midnight Oyl's lyrics are wanted by the closed notch now: that's on, the lyrics are, a song
     /// is playing (with lyrics or without: then its constellation pulses to the beat), and the
     /// notch is closed with nothing else beside it (open, it shows them itself).
-    var wantsLyricsByNotch: Bool {
-        theme == .midnight && showsLyricsClosed && showsLyrics && nowPlaying.isPlaying && !(nowPlaying.track?.isAudiobook ?? true)
+    var wantsLyricsByNotch: Bool { wouldShowLyricsByNotch && nowPlaying.isPlaying }
+
+    /// They would be, but for the song being paused.
+    var wouldShowLyricsByNotch: Bool {
+        theme == .midnight && showsLyricsClosed && showsLyrics && !(nowPlaying.track?.isAudiobook ?? true)
             && mode != .expanded && !compact.dictating && !isResting && !isViewingDesktops
     }
 }
@@ -21,13 +24,18 @@ extension NotchState {
 /// the notch in a break (and before the first line), the left for a song without lyrics. They
 /// take no clicks. They come as soon as they're wanted and go once they haven't been for a
 /// moment, so the gap between songs doesn't make them flicker; when the notch opens, straight away.
-/// From one song to the next, the last's fade out quickly as the next's fade in.
+/// From one song to the next, the last's fade out quickly as the next's fade in; and as the song's
+/// paused they fade out where they are, fading back in as it plays.
 @MainActor
 final class ClosedLyrics {
     private let panel: NSPanel
     private let model = ClosedLyricsModel()
     private var hiding: DispatchWorkItem?
     private var placed: CGRect?
+    /// They're not up for the song being paused: so they fade back in as it plays.
+    private var paused = false
+    /// Counts their going, so the window's only put away after the last.
+    private var goings = 0
 
     /// How long they stay once they're not wanted.
     static let linger: TimeInterval = 1.5
@@ -52,11 +60,18 @@ final class ClosedLyrics {
 
     /// Shows the song's lyrics (or, with none, its constellation: `seed` picks it) by the notch on
     /// `screen` (past what's `beside` it either side: a timer held on it) while `wanted`, or hides
-    /// them: at once if `opened` (the notch has opened over them, or the look's changed).
-    func show(wanted: Bool, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics, beside: CGFloat = 0,
-              opened: Bool) {
+    /// them: at once if `opened` (the notch has opened over them, or the look's changed), fading
+    /// them out at once if they're only not wanted for the song being `paused`.
+    func show(wanted: Bool, paused: Bool = false, lyrics: Lyrics?, seed: String, on screen: NSScreen, metrics: NotchMetrics,
+              beside: CGFloat = 0, opened: Bool) {
         if opened { hideNow() }
         guard wanted, !opened else {
+            self.paused = paused && !opened
+            if self.paused {
+                hiding?.cancel()
+                hide(fading: true)
+                return
+            }
             guard model.shown, hiding == nil else { return }
             let work = DispatchWorkItem { [weak self] in self?.hide() }
             hiding = work
@@ -69,14 +84,15 @@ final class ClosedLyrics {
         if model.lyrics?.trackID != lyrics?.trackID || model.seed != seed {
             // A new song (or its lyrics come): what was up goes quickly, where it had got to, as
             // this comes in.
-            model.outgoing = model.shown ? (model.lyrics, model.seed, model.lastPosition) : nil
+            model.outgoing = model.live ? (model.lyrics, model.seed, model.lastPosition) : nil
             model.lyrics = lyrics
             model.seed = seed
             model.swapped = Date()
         }
         guard !model.shown else { return }
-        model.shown = true
-        model.changed = Date()
+        // Playing again after a pause, they fade back in; else, out from behind the notch.
+        model.turn(shown: true, fades: self.paused)
+        self.paused = false
         model.live = true
         panel.orderFrontRegardless()
     }
@@ -87,16 +103,20 @@ final class ClosedLyrics {
         hide()
     }
 
-    private func hide() {
+    /// Back behind the notch, or `fading` where they are (as the song's paused: kept, to fade back
+    /// in as it plays).
+    private func hide(fading: Bool = false) {
         hiding = nil
         guard model.shown else { return }
-        model.shown = false
-        model.changed = Date()
-        DispatchQueue.main.asyncAfter(deadline: .now() + ClosedLyricsFrame.going + 0.05) { [weak self] in
-            guard let self, !self.model.shown else { return }
+        model.turn(shown: false, fades: fading)
+        goings += 1
+        let going = goings
+        DispatchQueue.main.asyncAfter(deadline: .now() + (fading ? ClosedLyricsFrame.pause.out : ClosedLyricsFrame.going) + 0.05) {
+            [weak self] in
+            guard let self, self.goings == going, !self.model.shown else { return }
             self.panel.orderOut(nil)
             self.model.live = false
-            self.model.lyrics = nil
+            if !fading { self.model.lyrics = nil }
         }
     }
 
@@ -117,8 +137,11 @@ final class ClosedLyrics {
 @MainActor
 final class ClosedLyricsModel: ObservableObject {
     @Published var shown = false
-    /// When they last came or started going.
+    /// When they last came or started going; whether by fading (as the song plays or pauses), not
+    /// out from behind the notch or back; and how far they were showing then, to go on from.
     @Published var changed = Date.distantPast
+    @Published var fades = false
+    var from = 0.0
     /// Their window's up (they're showing, or on their way out).
     @Published var live = false
     /// The song's lyrics; nil for one without (its constellation pulses instead), whose `seed` it is.
@@ -135,6 +158,19 @@ final class ClosedLyricsModel: ObservableObject {
         lastPosition = position
         return true
     }
+
+    /// How far they're showing (out from behind the notch, or faded in).
+    func level(at date: Date = Date()) -> Double {
+        ClosedLyricsFrame.presence(shown: shown, since: date.timeIntervalSince(changed), from: from, fades: fades)
+    }
+
+    /// Now coming or going (fading, or not), from as far as they were.
+    func turn(shown: Bool, fades: Bool) {
+        from = level()
+        self.shown = shown
+        self.fades = fades
+        changed = Date()
+    }
     /// Where the notch is in their window.
     @Published var notch = CGRect(origin: .zero, size: NotchMetrics.fallback.size)
 }
@@ -147,7 +183,9 @@ struct ClosedLyricsView: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !model.live)) { context in
             let time = context.date.timeIntervalSinceReferenceDate, clock = MidnightBackdrop.clock
-            let presence = ClosedLyricsFrame.presence(shown: model.shown, since: context.date.timeIntervalSince(model.changed))
+            // Out from behind the notch, or fading in where they are.
+            let level = model.level(at: context.date)
+            let presence = model.fades ? 1 : level, faded = model.fades ? level : 1
             let swapped = context.date.timeIntervalSince(model.swapped), at = position(context.date) + LyricsSky.lead
             let beat = (Double(Beat.level), Beat.position(at: time))
             let _ = model.remember(at)
@@ -155,10 +193,11 @@ struct ClosedLyricsView: View {
                 // From one song to the next, a quick fade out and in.
                 if let outgoing = model.outgoing, swapped < ClosedLyricsFrame.swap.out {
                     ClosedLyricsFrame(lyrics: outgoing.lyrics, seed: outgoing.seed, position: outgoing.position, time: clock,
-                                      presence: presence, fade: ClosedLyricsFrame.going(swapped), notch: model.notch, beat: beat)
+                                      presence: presence, fade: faded * ClosedLyricsFrame.going(swapped), notch: model.notch,
+                                      beat: beat)
                 }
                 ClosedLyricsFrame(lyrics: model.lyrics, seed: model.seed, position: at, time: clock, presence: presence,
-                                  fade: ClosedLyricsFrame.coming(swapped), notch: model.notch, beat: beat)
+                                  fade: faded * ClosedLyricsFrame.coming(swapped), notch: model.notch, beat: beat)
             }
         }
         .allowsHitTesting(false)
@@ -185,8 +224,10 @@ struct ClosedLyricsFrame: View {
     static let pad: CGFloat = 12
     /// How much of its side a line can take before it's shrunk to fit; and no smaller than this.
     static let stretch: CGFloat = 0.9, smallest: CGFloat = 0.6
-    /// How long they take to come out from behind the notch, and to go back.
+    /// How long they take to come out from behind the notch, and to go back; and, as the song's
+    /// paused and plays again, to fade out and in.
     static let coming = 0.7, going = 0.45
+    static let pause = (out: 0.35, in: 0.45)
     /// How long a line fades in, faint, before it's sung; how long it takes to fade once the next
     /// is up; and, where a later one's coming in on its side, to make way.
     static let approach = 0.7, fading = 6.0, makingWay = 1.0
@@ -202,10 +243,13 @@ struct ClosedLyricsFrame: View {
     /// How much of the next song's has come in, `since` seconds after it began.
     static func coming(_ since: Double) -> Double { LyricsSkyFrame.ease((since - swap.after) / swap.in) }
 
-    /// How far out from behind the notch they are, `since` seconds after they were last `shown`
-    /// or hidden.
-    static func presence(shown: Bool, since: TimeInterval) -> Double {
-        shown ? LyricsSkyFrame.ease(since / coming) : 1 - LyricsSkyFrame.ease(since / going)
+    /// How far out from behind the notch they are (or, if it `fades`, faded in), `since` seconds
+    /// after they were last `shown` or hidden, going on `from` where they were then (all the
+    /// way in or out, if not said).
+    static func presence(shown: Bool, since: TimeInterval, from: Double? = nil, fades: Bool = false) -> Double {
+        let from = from ?? (shown ? 0 : 1)
+        let ramp = LyricsSkyFrame.ease(since / (shown ? (fades ? pause.in : coming) : (fades ? pause.out : going)))
+        return shown ? from + (1 - from) * ramp : from * (1 - ramp)
     }
 
     /// 0 to 1, slower still at both ends than `ease`: for fading out.

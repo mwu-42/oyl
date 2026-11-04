@@ -1011,11 +1011,11 @@ final class NotchController {
     }
 
     /// Midnight's lyrics in the menu bar's strip by the closed notch, while they're wanted there
-    /// (or, for a song without, its constellation).
+    /// (or, for a song without, its constellation), fading out while the song's paused.
     private func showClosedLyrics(on screen: NSScreen) {
         let playing = state.nowPlaying
-        closedLyrics.show(wanted: state.wantsLyricsByNotch, lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil,
-                          seed: playing.track?.id ?? "", on: screen, metrics: state.metrics,
+        closedLyrics.show(wanted: state.wantsLyricsByNotch, paused: state.wouldShowLyricsByNotch && !playing.isPlaying,
+                          lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil, seed: playing.track?.id ?? "", on: screen, metrics: state.metrics,
                           beside: state.compact.isEmpty ? 0 : state.compact.wing,
                           opened: state.mode == .expanded || state.theme != .midnight)
     }
