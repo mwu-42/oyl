@@ -16,10 +16,11 @@ extension NotchState {
 
 /// Midnight Oyl's lyrics while the notch is closed, if that's on (it's off at first): right up in
 /// the menu bar's strip beside the notch, never below it, on no ground of their own (just stars).
-/// Each line's sung on the other side of the notch from the last, the first on the left: it fades
-/// in faintly just before it's sung, then its words sparkle in one after another, each with a
-/// glint, specks of light twinkling round them, while the last fades slowly away on its side. A
-/// long line stretches as far along its side as it needs, shrinking only past nine tenths of it.
+/// Each line's sung on the other side of the notch from the last (a break between them aside), the
+/// first on the left, so they're sung either side about as much: it fades in faintly just before
+/// it's sung, then its words sparkle in one after another, each with a glint, specks of light
+/// twinkling round them, while the last fades slowly away on its side. A long line stretches as
+/// far along its side as it needs, shrinking only past nine tenths of it.
 /// Where nothing's being sung, the song's own constellation pulses to the beat: both sides of
 /// the notch in a break (and before the first line), the left for a song without lyrics. They
 /// take no clicks. They come as soon as they're wanted and go once they haven't been for a
@@ -298,10 +299,11 @@ struct ClosedLyricsFrame: View {
         return laid
     }
 
-    /// Which side of the notch `line` is sung on: the first with words (`first`) left, then
-    /// right, and so on, each on the other side from the last.
-    static func onLeft(_ line: Int, first: Int = 0) -> Bool {
-        line >= first ? (line - first).isMultiple(of: 2) : false
+    /// Which side of the notch `line` of `lines` is sung on: the first with words left, then
+    /// right, and so on, each on the other side from the last with words (a break between them
+    /// doesn't count), so they're sung either side about as much.
+    static func onLeft(_ line: Int, of lines: [Lyrics.Line]) -> Bool {
+        lines.prefix(max(line, 0)).filter { $0.text != "♪" }.count.isMultiple(of: 2)
     }
 
     static func draw(_ frame: ClosedLyricsFrame, in context: GraphicsContext, size: CGSize) {
@@ -356,7 +358,7 @@ struct ClosedLyricsFrame: View {
         let first = lines.firstIndex { $0.text != "♪" } ?? lines.count
         // A break (and the start, before the first line): stars on both sides; a line, its side.
         func isBreak(_ line: Int) -> Bool { line < first || lines[line].text == "♪" }
-        func takes(_ line: Int, left: Bool) -> Bool { isBreak(line) || onLeft(line, first: first) == left }
+        func takes(_ line: Int, left: Bool) -> Bool { isBreak(line) || onLeft(line, of: lines) == left }
         // When a line starts to come in: a little before it's sung.
         func arriving(_ line: Int) -> Double { lines[line].time - approach }
 
