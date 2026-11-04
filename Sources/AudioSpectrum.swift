@@ -208,8 +208,16 @@ enum AudioProcess {
 
     /// Whether it has the microphone (or any input) open.
     static func isTakingInput(_ object: AudioObjectID) -> Bool {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioProcessPropertyIsRunningInput,
-                                                 mScope: kAudioObjectPropertyScopeGlobal,
+        isRunning(kAudioProcessPropertyIsRunningInput, object)
+    }
+
+    /// Whether any of `bundleID`'s processes is playing sound on this Mac.
+    static func isMakingSound(_ bundleID: String) -> Bool {
+        objects(matching: bundleID).contains { isRunning(kAudioProcessPropertyIsRunningOutput, $0) }
+    }
+
+    private static func isRunning(_ selector: AudioObjectPropertySelector, _ object: AudioObjectID) -> Bool {
+        var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
                                                  mElement: kAudioObjectPropertyElementMain)
         var running: UInt32 = 0
         var size = UInt32(MemoryLayout<UInt32>.size)

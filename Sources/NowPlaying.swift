@@ -110,6 +110,44 @@ struct Track: Equatable, Sendable {
     }
 }
 
+/// Whether Spotify's really playing on this Mac, by what it says and what's heard of it. It can go
+/// on saying a song's playing here while it's playing on another device (Spotify Connect: from the
+/// phone, say), the song it says long gone; so it's taken at its word only while its sound's been
+/// heard in the last few seconds, or for those few seconds after it says it's started (or a new
+/// song has) or it's told to do something, while its sound starts.
+struct Earshot {
+    /// How long it can say it's playing without being heard.
+    static let silence: TimeInterval = 5
+
+    private(set) var heard = Date.distantPast
+    /// What it last said: playing or not, and which song.
+    private(set) var saysPlaying = false
+    private var track: String?
+
+    /// It says it's `playing` `track`, `sounding` (or not) at `now`: is it playing here?
+    mutating func says(_ playing: Bool, track: String?, sounding: Bool, at now: Date = Date()) -> Bool {
+        if playing, !saysPlaying || track != self.track { heard = now }
+        saysPlaying = playing
+        self.track = track
+        return playing && hears(sounding, at: now)
+    }
+
+    /// It's `sounding` (or not) at `now`, between askings: is it still heard?
+    mutating func hears(_ sounding: Bool, at now: Date = Date()) -> Bool {
+        if sounding { heard = now }
+        return now.timeIntervalSince(heard) < Self.silence
+    }
+
+    /// It's been told to do something: a moment for its sound to start.
+    mutating func told(at now: Date = Date()) { heard = now }
+
+    /// It's quit.
+    mutating func forget() {
+        saysPlaying = false
+        track = nil
+    }
+}
+
 struct PlayerStatus: Sendable {
     var isPlaying: Bool
     var track: Track?
@@ -213,6 +251,8 @@ final class NowPlaying: ObservableObject {
     private var lyricsTask: Task<Void, Never>?
     private var lyricsCache: [String: Lyrics?] = [:]  // nil: looked up, and none
     private var analyzing: AnyCancellable?
+    /// Whether Spotify's playing here, or only says so (playing on another device).
+    private var spotify = Earshot()
 
     init() {
         // The visualizer turned on or off: its sound's analyzed, or not, straight away.
@@ -265,7 +305,9 @@ final class NowPlaying: ObservableObject {
         setAnchor(position(at: Date()))
         isPlaying.toggle()
         spectrum.follow(isPlaying && Feature.visualizer.isOn ? player : nil)
-        perform("playpause", on: player)
+        // What the button shows, not a toggle: Spotify can say it's playing a song that's really
+        // playing on another device, which toggling would pause there.
+        perform(isPlaying ? "play" : "pause", on: player)
     }
 
     func next() {
@@ -304,6 +346,7 @@ final class NowPlaying: ObservableObject {
 
     private func perform(_ command: String, on player: Player, cache: Bool = true) {
         lastCommand = Date()
+        if player == .spotify { spotify.told() }
         runner.send(player.script(command), cache: cache)
         refresh()
     }
@@ -332,6 +375,12 @@ final class NowPlaying: ObservableObject {
         // and only twice a minute with nothing to be seen at all.
         let every = resting ? 30 : isPlaying ? (onScreen ? 1 : 5) : 8
         if ticks % every == 0 { refresh() }
+        // Spotify saying it's playing, listened for between askings: gone quiet here (its playing
+        // moved to another device), or heard again (moved back).
+        if player == .spotify, spotify.saysPlaying, !resting,
+           spotify.hears(AudioProcess.isMakingSound(Player.spotify.bundleID)) != isPlaying {
+            refresh()
+        }
     }
 
     func refresh() {
@@ -367,6 +416,15 @@ final class NowPlaying: ObservableObject {
     }
 
     private func apply(_ statuses: [Player: PlayerStatus]) {
+        var statuses = statuses
+        // Spotify's playing only if it's heard here.
+        if var status = statuses[.spotify] {
+            status.isPlaying = spotify.says(status.isPlaying, track: status.track?.id,
+                                            sounding: status.isPlaying && AudioProcess.isMakingSound(Player.spotify.bundleID))
+            statuses[.spotify] = status
+        } else if !Player.spotify.isRunning {
+            spotify.forget()
+        }
         let order = [player, lastActive].compactMap { $0 } + Player.allCases
         let chosen = order.first { statuses[$0]?.track != nil && statuses[$0]?.isPlaying == true }
             ?? order.first { statuses[$0]?.track != nil }
