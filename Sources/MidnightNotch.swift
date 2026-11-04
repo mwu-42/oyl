@@ -252,7 +252,11 @@ private struct BloomGlass: View, Animatable {
     }
 
     var body: some View {
-        Glass(bloom: bloom * (1 - wilt), reach: reach, size: size, notch: notch, page: page)
+        // Going, the glass goes first, folded and faded well before the plate over it is: left to
+        // the end, a blur with next to nothing drawn over it would hang there as it faded, a grey
+        // smudge under the notch.
+        let going = min(wilt * 1.8, 1)
+        Glass(bloom: bloom * (1 - going), fade: 1 - going, reach: reach, size: size, notch: notch, page: page)
             .frame(width: size.width, height: size.height)
     }
 }
@@ -265,6 +269,8 @@ private struct BloomGlass: View, Animatable {
 /// It's masked by an image, the one way the window server's blur takes one.
 private struct Glass: NSViewRepresentable {
     let bloom: Double
+    /// How much of it shows (all, till it's going).
+    var fade: Double = 1
     let reach: CGFloat
     let size: CGSize
     let notch: CGSize
@@ -286,6 +292,9 @@ private struct Glass: NSViewRepresentable {
     }
 
     func updateNSView(_ view: NSVisualEffectView, context: Context) {
+        // (Set on the view itself, so the window server's blur fades with it, whatever SwiftUI's
+        // opacity does or doesn't reach.)
+        if view.alphaValue != CGFloat(fade) { view.alphaValue = CGFloat(fade) }
         if let drawn = context.coordinator.drawn, drawn.bloom == bloom, drawn.reach == reach, drawn.size == size,
            drawn.notch == notch, drawn.page == page { return }
         context.coordinator.drawn = (bloom, reach, size, notch, page)
