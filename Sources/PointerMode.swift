@@ -601,6 +601,18 @@ struct PointerTuning {
     var flickReach: CGFloat = 0.06
     var flickTime: TimeInterval = 0.35
     var flickStill: CGFloat = 0.25
+    /// Turned at the wrist, away from how the fingers pointed as they came together, the
+    /// fingertips sweeping round the palm (at least `pivotShare` of how far they went), a flick
+    /// needn't be as quick as one of the whole hand: `pivotSpeed` screens a
+    /// second at its fastest, `pivotReach` of one far, over within `pivotTime`. (A wrist turns a
+    /// little slower than a hand darts; and a hand moved bodily, slowly, is a scroll.) And it has to
+    /// have gone fairly straight there, at least `pivotStraight` of the way the fingertips wandered:
+    /// the camera's jitter wanders, and a quick enough shiver could pass.
+    var pivotShare: CGFloat = 0.35
+    var pivotSpeed: CGFloat = 0.4
+    var pivotReach: CGFloat = 0.06
+    var pivotTime: TimeInterval = 0.55
+    var pivotStraight: CGFloat = 0.5
     var flickRest: TimeInterval = 0.15
     var flickRestRadius: CGFloat = 8
     /// Resting the pointer clicks: held within `restRadius` for `restSettle`, then `restTime` more
@@ -699,15 +711,24 @@ struct Flicker {
     var last: CGPoint
     var time: TimeInterval
     var velocity = CGVector.zero
-    /// The move under way: where and when it started, how fast it's gone at its fastest, and the
-    /// farthest it's got.
-    private var move: (from: CGPoint, start: TimeInterval, peak: CGVector, far: CGPoint)?
+    /// How far out to the side of the palm the fingertips were last (the wrist turned).
+    var lastTurn: CGFloat = 0
+    /// The move under way: where and when it started, how fast it's gone at its fastest, the
+    /// farthest it's got, how far the wrist was turned at its start and there, and how far the
+    /// fingertips have wandered on the way.
+    private var move: (from: CGPoint, start: TimeInterval, peak: CGVector, far: CGPoint, turnedFrom: CGFloat, turned: CGFloat,
+                       wandered: CGFloat)?
+
+    /// How quickly the speed follows the fingertips: over about a frame at 30 a second, by the
+    /// clock, so a camera slowed to 15 (in dim light, say) reads a flick as fast as it is.
+    static let easing: TimeInterval = 0.036
     /// Flicks so far.
     private(set) var flicks = 0
 
-    init(last: CGPoint, time: TimeInterval) {
+    init(last: CGPoint, time: TimeInterval, lastTurn: CGFloat = 0) {
         self.last = last
         self.time = time
+        self.lastTurn = lastTurn
     }
 
     var isMoving: Bool { move != nil }
@@ -717,37 +738,64 @@ struct Flicker {
     var fastest: CGVector? { move?.peak }
     var going: CGVector? { move.map { CGVector(dx: $0.far.x - $0.from.x, dy: $0.far.y - $0.from.y) } }
 
-    /// The move under way may yet turn out a flick (it's not been going too long).
-    func mayFlick(at time: TimeInterval, tuning: PointerTuning) -> Bool {
-        move.map { time - $0.start <= tuning.flickTime } ?? false
+    /// The move under way isn't one (the thumb's on its way to the tips, say, or just leaving
+    /// them, which sweeps them aside as a turned wrist would).
+    mutating func forget() {
+        move = nil
     }
 
-    /// The fingertips at `time`, on a screen `height` tall: a flick that's just ended, if one has:
-    /// how far it went, and how fast at its fastest, straightened to across or up and down if it
-    /// mostly went one way (a wrist's flick sweeps an arc).
-    mutating func take(_ tips: CGPoint, at time: TimeInterval, tuning: PointerTuning, height: CGFloat)
+    /// The move under way may yet turn out a flick (it's not been going too long).
+    func mayFlick(at time: TimeInterval, tuning: PointerTuning) -> Bool {
+        guard let move else { return false }
+        let gone = hypot(move.far.x - move.from.x, move.far.y - move.from.y)
+        return time - move.start <= (Self.pivoted(move.turned - move.turnedFrom, gone, tuning) ? tuning.pivotTime : tuning.flickTime)
+    }
+
+    /// The fingertips went `gone` far, `turned` of it round the palm: mostly the wrist turning.
+    private static func pivoted(_ turned: CGFloat, _ gone: CGFloat, _ tuning: PointerTuning) -> Bool {
+        gone > 0 && abs(turned) >= tuning.pivotShare * gone
+    }
+
+    /// The fingertips at `time` (`turn` out to the side of the palm), on a screen `height` tall: a
+    /// flick that's just ended, if one has: how far it went, and how fast at its fastest,
+    /// straightened to across or up and down if it mostly went one way (a wrist's flick sweeps an
+    /// arc).
+    mutating func take(_ tips: CGPoint, turn: CGFloat = 0, at time: TimeInterval, tuning: PointerTuning, height: CGFloat)
         -> (gone: CGVector, velocity: CGVector)? {
-        let step = time - self.time, previous = last
+        let step = time - self.time, previous = last, turnedBefore = lastTurn
         last = tips
+        lastTurn = turn
         self.time = time
         guard step > 0 else { return nil }
-        velocity = CGVector(dx: velocity.dx + ((tips.x - previous.x) / step - velocity.dx) * 0.6,
-                            dy: velocity.dy + ((tips.y - previous.y) / step - velocity.dy) * 0.6)
+        let follow = CGFloat(1 - exp(-step / Self.easing))
+        velocity = CGVector(dx: velocity.dx + ((tips.x - previous.x) / step - velocity.dx) * follow,
+                            dy: velocity.dy + ((tips.y - previous.y) / step - velocity.dy) * follow)
         let speed = hypot(velocity.dx, velocity.dy), moving = tuning.flickStill * height
         guard var move else {
-            if speed > moving { self.move = (previous, time - step, velocity, tips) }
+            if speed > moving {
+                self.move = (previous, time - step, velocity, tips, turnedBefore, turn, hypot(tips.x - previous.x, tips.y - previous.y))
+            }
             return nil
         }
+        move.wandered += hypot(tips.x - previous.x, tips.y - previous.y)
         if speed > hypot(move.peak.dx, move.peak.dy) { move.peak = velocity }
-        if hypot(tips.x - move.from.x, tips.y - move.from.y) > hypot(move.far.x - move.from.x, move.far.y - move.from.y) { move.far = tips }
+        if hypot(tips.x - move.from.x, tips.y - move.from.y) > hypot(move.far.x - move.from.x, move.far.y - move.from.y) {
+            move.far = tips
+            move.turned = turn
+        }
         self.move = move
         // Slowed right down again, or turned back (as a wrist's flick does, at once): over.
         let peak = hypot(move.peak.dx, move.peak.dy)
         guard speed < max(moving, 0.35 * peak) || velocity.dx * move.peak.dx + velocity.dy * move.peak.dy < 0 else { return nil }
         self.move = nil
         let gone = CGVector(dx: move.far.x - move.from.x, dy: move.far.y - move.from.y)
-        guard peak >= tuning.flickSpeed * height, hypot(gone.dx, gone.dy) >= tuning.flickReach * height,
-              time - move.start <= tuning.flickTime else { return nil }
+        // (Turned away from how the fingers pointed as they came together: coming back, as a wrist
+        // does after a flick, takes a dart.)
+        let pivoted = Self.pivoted(move.turned - move.turnedFrom, hypot(gone.dx, gone.dy), tuning)
+            && hypot(gone.dx, gone.dy) >= tuning.pivotStraight * move.wandered && abs(move.turned) > abs(move.turnedFrom)
+        let (fastest, farthest, within) = pivoted ? (tuning.pivotSpeed, tuning.pivotReach, tuning.pivotTime)
+            : (tuning.flickSpeed, tuning.flickReach, tuning.flickTime)
+        guard peak >= fastest * height, hypot(gone.dx, gone.dy) >= farthest * height, time - move.start <= within else { return nil }
         flicks += 1
         if abs(gone.dx) > abs(gone.dy) * 1.3 { return (CGVector(dx: gone.dx, dy: 0), CGVector(dx: move.peak.dx, dy: 0)) }
         if abs(gone.dy) > abs(gone.dx) * 1.3 { return (CGVector(dx: 0, dy: gone.dy), CGVector(dx: 0, dy: move.peak.dy)) }
@@ -870,6 +918,9 @@ final class PointerHand {
     /// Which way the fingers pointed (on the screen) as they took the shape they're in: a flick's
     /// across it.
     private var pointed = CGVector(dx: 0, dy: -1)
+    /// How far out to the side of the palm the fingertips are, across that way, this frame: the
+    /// wrist turned (a flick that turns it needn't be as quick).
+    private var turned: CGFloat = 0
     /// Where the fingertip (smoothed) has stayed, give or take a little, and since when: held still
     /// a moment after a flick, the hand's done coming back.
     private var settled: (point: CGPoint, since: TimeInterval)?
@@ -958,6 +1009,7 @@ final class PointerHand {
         scrolling = nil
         swiping = nil
         settled = nil
+        turned = 0
         otherHeld = nil
         suspended = false
         needsOpen = false
@@ -1018,6 +1070,7 @@ final class PointerHand {
         }
         let aside = out.dx * -pointed.dy + out.dy * pointed.dx
         let swing = CGPoint(x: freePalm.x - pointed.dy * aside, y: freePalm.y + pointed.dx * aside)
+        turned = aside
         if let still = settled, hypot(tip.x - still.point.x, tip.y - still.point.y) <= tuning.flickRestRadius {} else {
             settled = (tip, time)
         }
@@ -1163,12 +1216,12 @@ final class PointerHand {
             meeting = 0
         }
         if let next { go(to: next, to: events) }
-        // The palm scrolls, but not while the thumb's on its way to a fingertip (to click), or the
-        // fingers are changing shape (unless they're darting off, which blurs them).
+        // The palm scrolls, but not while the thumb's on its way to a fingertip (to click) or just
+        // leaving it, or the fingers are changing shape (unless they're darting off, which blurs them).
         if shape == .scrolling {
             let blurred = scrolling?.flicker.isMoving == true
-            scroll(palm, tips: tips, at: time,
-                   holding: closing != nil || meeting > 0 || (held.together != 2 && held.frames > 1 && !blurred), to: events)
+            scroll(palm, tips: tips, at: time, holding: closing != nil || meeting > 0 || stillParting
+                   || (held.together != 2 && held.frames > 1 && !blurred), to: events)
         }
     }
 
@@ -1273,7 +1326,12 @@ final class PointerHand {
         guard var scroll = scrolling else { return }
         defer { scrolling = scroll }
         let wasMoving = scroll.flicker.isMoving
-        let flick = scroll.flicker.take(tips, at: time, tuning: tuning, height: bounds.height)
+        var flick = scroll.flicker.take(tips, turn: turned, at: time, tuning: tuning, height: bounds.height)
+        // Held, no move's a flick: the thumb at the tips moves them as a flick would.
+        if holding, scroll.coasting == nil {
+            scroll.flicker.forget()
+            flick = nil
+        }
         if !wasMoving, scroll.flicker.isMoving { scroll.sent = .zero }
         let off = hypot(palm.x - scroll.last.x, palm.y - scroll.last.y), past = max(off - tuning.deadZone, 0) / max(off, 0.001)
         let next = CGPoint(x: scroll.last.x + (palm.x - scroll.last.x) * past, y: scroll.last.y + (palm.y - scroll.last.y) * past)
@@ -1359,7 +1417,7 @@ final class PointerHand {
         defer { swiping = swipe }
         if swipe.way != nil, heldStill(at: time) { swipe.way = nil }
         let move = swipe.flicker.started
-        if let flick = swipe.flicker.take(tips, at: time, tuning: tuning, height: bounds.height) {
+        if let flick = swipe.flicker.take(tips, turn: turned, at: time, tuning: tuning, height: bounds.height) {
             let onward = swipe.way.map { flick.gone.dx * $0.dx + flick.gone.dy * $0.dy > 0 } ?? true
             if onward, move == nil || move != swipe.swept, let direction = Flicker.direction(of: flick.gone) {
                 swipe.done = true
@@ -1428,10 +1486,10 @@ final class PointerHand {
         guard let palm else { return }
         switch new {
         case .scrolling:
-            scrolling = Scroll(last: palm, time: time, flicker: Flicker(last: tips ?? palm, time: time))
+            scrolling = Scroll(last: palm, time: time, flicker: Flicker(last: tips ?? palm, time: time, lastTurn: turned))
             events.scroll(by: .zero, phase: .touched)
         case .swiping:
-            swiping = Swipe(from: palm, flicker: Flicker(last: tips ?? palm, time: time))
+            swiping = Swipe(from: palm, flicker: Flicker(last: tips ?? palm, time: time, lastTurn: turned))
         case .pointing, .zooming:
             break
         }
