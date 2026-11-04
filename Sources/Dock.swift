@@ -140,11 +140,13 @@ final class DockApps: ObservableObject {
             // Big enough for a letter on it to be lifted twice as fine.
             var rect = CGRect(x: 0, y: 0, width: DockGlyph.side * 2, height: DockGlyph.side * 2)
             guard let image = icon(for: item).cgImage(forProposedRect: &rect, context: nil, hints: nil) else { continue }
-            // Canva's its C: the first letter of the name on its icon.
-            let id = item.id, firstLetter = bundle == "com.canva.canvaeditor"
+            // Canva's its C: the first letter of the name on its icon. Activity Monitor's its pulse,
+            // without the grid behind it.
+            let id = item.id, firstLetter = bundle == "com.canva.canvaeditor", brightest = bundle == "com.apple.ActivityMonitor"
             Task { @MainActor [weak self] in
                 let glyph = await Task.detached(priority: .userInitiated) {
-                    firstLetter ? DockGlyphs.liftFirstLetter(image) ?? DockGlyphs.lift(image) : DockGlyphs.lift(image)
+                    firstLetter ? DockGlyphs.liftFirstLetter(image) ?? DockGlyphs.lift(image)
+                        : brightest ? DockGlyphs.liftBrightest(image) ?? DockGlyphs.lift(image) : DockGlyphs.lift(image)
                 }.value
                 if let glyph { self?.glyphs[id] = glyph }
             }

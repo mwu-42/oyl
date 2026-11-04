@@ -63,6 +63,25 @@ enum DockGlyphs {
         return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
     }
 
+    /// Only what's brightest on an icon: Activity Monitor's pulse, glowing white across its
+    /// screen, without the dimmer grid behind it (which `lift` would take too). Looked at nearly
+    /// to the tile's edge, since the pulse runs right off it.
+    nonisolated static func liftBrightest(_ icon: CGImage) -> DockGlyph? {
+        let side = DockGlyph.side
+        guard let pixels = Pixels(icon, side: side), let tile = pixels.solidBounds(), tile.width > CGFloat(side) / 3 else { return nil }
+        let inner = tile.insetBy(dx: tile.width * 0.06, dy: tile.height * 0.06)
+        var mask = [Float](repeating: 0, count: side * side)
+        for y in 0..<side {
+            for x in 0..<side where inner.contains(CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5)) {
+                let color = pixels.color(x, y)
+                mask[y * side + x] = smoothstep(0.62, 0.8, 0.2126 * color.x + 0.7152 * color.y + 0.0722 * color.z)
+            }
+        }
+        mask = Morphology.cleaned(mask, side: side)
+        guard mask.reduce(0, +) > Float(side * side) / 400 else { return nil }
+        return finish(mask)
+    }
+
     /// What's lifted off an icon, as a mask `side` pixels square (see `lift`).
     private nonisolated static func liftedMask(_ icon: CGImage, side: Int = DockGlyph.side) -> [Float]? {
         guard let pixels = Pixels(icon, side: side) else { return nil }
