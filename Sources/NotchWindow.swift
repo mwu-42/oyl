@@ -587,6 +587,7 @@ final class NotchController {
     private var dock: DockController?
     private var controlTaps: TapWatcher?
     private var songKeys: SongKeys?
+    private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
     /// The lid's shut with no other screen on.
     private var isShut = false
@@ -815,8 +816,22 @@ final class NotchController {
             },
         ])
         missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }
+        // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
+        // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
+        // twice again.
+        cameraTaps = TapWatcher([.control, .option], longest: 0.6, each: { [weak self] taps in
+            guard let self, taps == 1, !self.state.isOff, Feature.cameraKeys.isOn else { return }
+            self.gestures.wake(for: 3)
+        }, actions: [
+            2: { [weak self] in
+                guard let self, !self.state.isOff, Feature.cameraKeys.isOn || self.gestures.keptAwake else { return }
+                self.gestures.toggleAwake()
+            },
+        ])
         // Control-Option and an arrow: the next song, or the one before, while there's one on.
         songKeys = SongKeys { [weak self] forward in
+            // (Not a tap of control and option, for the camera.)
+            self?.cameraTaps?.interrupt()
             guard let self, !self.state.isOff, Feature.songKeys.isOn, self.state.nowPlaying.player != nil else { return false }
             if forward { self.state.nowPlaying.next() } else { self.state.nowPlaying.previous() }
             return true

@@ -1,8 +1,9 @@
 import AppKit
 
 /// Quick taps of one modifier key on its own (control twice takes a screenshot, three times
-/// switches Oyl off): a tap is the key pressed and let go within `press`, with no other modifier
-/// with it, and each comes within `gap` of the last. A key or a click in between starts the count
+/// switches Oyl off), or of a few pressed together (control and option, for the camera): a tap is
+/// the key (all of them) pressed and let go within `longest`, with no other modifier with it, and
+/// each comes within `gap` of the last. A key or a click in between starts the count
 /// again, so typing, shortcuts and Oyl's own Mission Control keys (control and an arrow, posted by
 /// the hand pointer) never count. The most taps that mean anything are told at once; fewer, once
 /// they're over (no more having come within `gap`), so two never count on the way to three.
@@ -12,14 +13,18 @@ struct ModifierTaps {
 
     let key: NSEvent.ModifierFlags
     let most: Int
-    private var count = 0
+    /// The longest a tap's held: `press`, or a little longer for keys pressed together.
+    let longest: TimeInterval
+    /// Taps so far.
+    private(set) var count = 0
     private var pressedAt: TimeInterval?
     private var releasedAt = -TimeInterval.infinity
     private var held = false
 
-    init(_ key: NSEvent.ModifierFlags, most: Int) {
+    init(_ key: NSEvent.ModifierFlags, most: Int, longest: TimeInterval = Self.press) {
         self.key = key
         self.most = most
+        self.longest = longest
     }
 
     /// The modifier keys are now `flags`, at `time` (seconds since the Mac started, as events
@@ -39,7 +44,7 @@ struct ModifierTaps {
         }
         guard !down, held, let pressedAt else { return nil }
         self.pressedAt = nil
-        guard time - pressedAt <= Self.press else {
+        guard time - pressedAt <= longest else {
             count = 0
             return nil
         }
@@ -66,25 +71,34 @@ struct ModifierTaps {
 
 /// Listens for `ModifierTaps` everywhere: over other apps (which needs Oyl allowed in Privacy &
 /// Security's Accessibility, as the hand pointer does) and its own windows. Each count of taps
-/// does what `actions` has for it.
+/// does what `actions` has for it, once they're over (or at once, the most); and `each` is told
+/// of every tap as it's let go, with how many so far.
 @MainActor
 final class TapWatcher {
     private var taps: ModifierTaps
     private let actions: [Int: @MainActor () -> Void]
+    private let each: (@MainActor (Int) -> Void)?
     private var monitors: [Any] = []
     private var settling: Timer?
 
-    init(_ key: NSEvent.ModifierFlags, actions: [Int: @MainActor () -> Void]) {
-        taps = ModifierTaps(key, most: actions.keys.max() ?? 1)
+    init(_ key: NSEvent.ModifierFlags, longest: TimeInterval = ModifierTaps.press, each: (@MainActor (Int) -> Void)? = nil,
+         actions: [Int: @MainActor () -> Void]) {
+        taps = ModifierTaps(key, most: actions.keys.max() ?? 1, longest: longest)
         self.actions = actions
+        self.each = each
         let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         let heard = { [weak self] (event: NSEvent) in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.type != .flagsChanged {
                     self.taps.interrupted()
-                } else if let count = self.taps.changed(event.modifierFlags, at: event.timestamp) {
-                    self.actions[count]?()
+                    return
+                }
+                let before = self.taps.count
+                let most = self.taps.changed(event.modifierFlags, at: event.timestamp)
+                if self.taps.count > before || most != nil { self.each?(most ?? self.taps.count) }
+                if let most {
+                    self.actions[most]?()
                 } else {
                     self.settleLater()
                 }
@@ -99,6 +113,12 @@ final class TapWatcher {
         }) {
             monitors.append(monitor)
         }
+    }
+
+    /// A key the watchers don't hear (one an event tap's kept for itself): the taps so far don't
+    /// count.
+    func interrupt() {
+        taps.interrupted()
     }
 
     /// Fewer taps than the most count once no more come.

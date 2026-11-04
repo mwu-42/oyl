@@ -146,7 +146,10 @@ final class GestureWatcher: ObservableObject {
     @Published var isEnabled = UserDefaults.standard.object(forKey: "gestures.enabled") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: "gestures.enabled")
-            if !isEnabled { endPointing() }
+            if !isEnabled {
+                endPointing()
+                forgetWaking()
+            }
             update()
         }
     }
@@ -187,13 +190,23 @@ final class GestureWatcher: ObservableObject {
     var isSuspended = false {
         didSet {
             guard isSuspended != oldValue else { return }
-            if isSuspended { endPointing() }
+            if isSuspended {
+                endPointing()
+                forgetWaking()
+            }
             update()
         }
     }
     /// An OK was held up with the bloom open: gestures stop counting, but the camera stays on for
     /// the bloom, until watching starts afresh.
     private var dismissed = false
+    /// Woken from the keyboard (control and option), wherever the pointer is and the notch shut or
+    /// not: the camera's on, quietly (nothing shows it but the Mac's own camera light), and the
+    /// gestures count as they do over the open notch, for a few seconds (`wake(for:)`) or, kept
+    /// awake, till it's put back to sleep.
+    @Published private(set) var keptAwake = false
+    private var wokenUntil: TimeInterval = 0
+    private var waking: DispatchWorkItem?
     /// The camera's picture, for the mirror (or Midnight Oyl's bloom) to show, once it's been set
     /// up.
     @Published private(set) var preview: AVCaptureVideoPreviewLayer?
@@ -283,14 +296,67 @@ final class GestureWatcher: ObservableObject {
         return camera
     }
 
-    /// Gestures count: they're on, and the pointer's over the open notch or an OK's wanted.
-    private var reading: Bool { isEnabled && (hovering || approving) }
+    /// Gestures count: they're on, and the pointer's over the open notch (or the camera's been
+    /// woken from the keyboard) or an OK's wanted.
+    private var reading: Bool { isEnabled && (attending || approving) }
+
+    /// The gestures count as they do with the pointer over the open notch.
+    private var attending: Bool { hovering || woken }
+
+    /// Woken from the keyboard, and not yet gone back to sleep.
+    private var woken: Bool { keptAwake || ProcessInfo.processInfo.systemUptime < wokenUntil }
+
+    /// The camera on for the gestures, from wherever, for `seconds` (or longer, if it's already
+    /// woken for longer, or kept awake). Not with gestures off, or while Oyl's resting.
+    func wake(for seconds: TimeInterval) {
+        guard isEnabled, !isSuspended else { return }
+        wokenUntil = max(wokenUntil, ProcessInfo.processInfo.systemUptime + seconds)
+        wakingChanged()
+    }
+
+    /// The camera kept on for the gestures till this is done again (or an OK's held up), or put
+    /// back to sleep now.
+    func toggleAwake() {
+        guard keptAwake || (isEnabled && !isSuspended) else { return }
+        keptAwake.toggle()
+        if !keptAwake { wokenUntil = 0 }
+        wakingChanged()
+    }
+
+    /// Back to sleep (gestures off, Oyl resting, or an OK held up).
+    private func forgetWaking() {
+        guard woken || waking != nil else { return }
+        keptAwake = false
+        wokenUntil = 0
+        wakingChanged()
+    }
+
+    /// The camera on or off for it, and off again when it's due to sleep: unless a gesture's held
+    /// then (a pinch turning the volume), when it waits till it's let go.
+    private func wakingChanged() {
+        waking?.cancel()
+        waking = nil
+        let left = wokenUntil - ProcessInfo.processInfo.systemUptime
+        if !keptAwake, left > 0 {
+            let work = DispatchWorkItem { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.waking = nil
+                    if self.held != nil { self.wokenUntil = ProcessInfo.processInfo.systemUptime + 0.5 }
+                    self.wakingChanged()
+                }
+            }
+            waking = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + left, execute: work)
+        }
+        update()
+    }
 
     /// The band's up to show the hands in, and gestures are on.
     private var showingHands: Bool { displaying && isEnabled }
 
-    /// Watches while hovering or approving (or with the mirror up, the band open with gestures on
-    /// or the hand the pointer), and stops once none is true, or Oyl's resting.
+    /// Watches while hovering, woken or approving (or with the mirror up, the band open with
+    /// gestures on or the hand the pointer), and stops once none is true, or Oyl's resting.
     private func update() {
         let pointing = pointer.isOn
         camera?.read(reading || showingHands || pointing)
@@ -299,10 +365,10 @@ final class GestureWatcher: ObservableObject {
         if !isSuspended && (reading || mirroring || showingHands || pointing) { watch() } else { stop() }
     }
 
-    /// The rock sign counts: in Midnight Oyl, with gestures on, while the band's up or the pointer's
-    /// in hand (wherever it's pointing then).
+    /// The rock sign counts: in Midnight Oyl, with gestures on, while the band's up, the camera's
+    /// woken or the pointer's in hand (wherever it's pointing then).
     private var rockCounts: Bool {
-        midnight && isEnabled && Feature.rockGesture.isOn && !dismissed && (pointer.isOn || displaying || hovering)
+        midnight && isEnabled && Feature.rockGesture.isOn && !dismissed && (pointer.isOn || displaying || attending)
     }
 
     /// The hand becomes the pointer: what it was doing as a gesture is let go, and the camera stays
@@ -438,7 +504,7 @@ final class GestureWatcher: ObservableObject {
             hold(candidate)
             if let held { fire(held) }
         }
-        if held == .pinch, hovering {
+        if held == .pinch, attending {
             if let reading, reading.gesture == .pinch { follow(reading) } else { gripAnchor = nil }
         }
     }
@@ -458,7 +524,7 @@ final class GestureWatcher: ObservableObject {
             announceQuiet = false
         }
         if scrubOffset != nil { scrubOffset = nil }
-        let turning = gesture == .pinch && hovering
+        let turning = gesture == .pinch && attending
         if isTurning != turning { isTurning = turning }
     }
 
@@ -506,15 +572,17 @@ final class GestureWatcher: ObservableObject {
     private func fire(_ gesture: HandGesture) {
         // One that's been turned off does nothing.
         if let feature = Feature(gesture), !feature.isOn { return }
-        // Without the pointer over the notch, the camera is only on for a thumbs up.
+        // Without the pointer over the notch (or the camera woken), it's only on for a thumbs up.
         switch gesture {
         case .thumbsUp:
             guard approving else { return }
             onApprove()
-        case _ where !hovering:
+        case _ where !attending:
             return
         case .ok:
-            // The bloom shows the camera always, so with it open, only the gestures stop.
+            // Woken, back to sleep. The bloom shows the camera always, so with it open, only the
+            // gestures stop.
+            forgetWaking()
             if displaying { dismissed = true } else { stop() }
         case .peace:
             takeSelfie()
@@ -552,7 +620,7 @@ final class GestureWatcher: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.pendingAnnounce = nil
-                guard self.hovering else { return }
+                guard self.attending else { return }
                 if self.isTilt(self.candidate) {
                     if ProcessInfo.processInfo.systemUptime - self.candidateSince < 0.15 { self.armAnnounce(after: 0.2) }
                     return
