@@ -152,8 +152,17 @@ struct MidnightArch: Shape {
                                        endCenter: moon.center, endRadius: moon.radius * 76 / 58, options: [.drawsBeforeStartLocation])
         }
         guard let image = context.makeImage() else { return NSImage(size: size) }
-        return NSImage(cgImage: image, size: size)
+        let mask = NSImage(cgImage: image, size: size)
+        // Stretched over the band. (With no cap insets at all, AppKit leaves a mask its own size,
+        // a quarter of the band's, in the window's top right corner: a little grey copy of the
+        // band's glass, blooming by itself up there, and none under the band.)
+        mask.resizingMode = .stretch
+        mask.capInsets = NSEdgeInsets(top: Self.maskCap, left: Self.maskCap, bottom: Self.maskCap, right: Self.maskCap)
+        return mask
     }
+
+    /// The glass mask's cap insets: a hair, so it's all stretched.
+    static let maskCap: CGFloat = 0.01
 }
 
 /// Everything behind the band's content, drawn by one Metal shader: a Victorian celestial atlas
