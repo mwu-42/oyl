@@ -1004,9 +1004,12 @@ final class NotchController {
         walkers.inFullscreen = state.inFullscreen
     }
 
-    /// Midnight's lyrics in the black bar by the closed notch, while they're wanted there.
+    /// Midnight's lyrics in the menu bar's strip by the closed notch, while they're wanted there
+    /// (or, for a song without, its constellation).
     private func showClosedLyrics(on screen: NSScreen) {
-        closedLyrics.show(state.wantsLyricsByNotch ? state.nowPlaying.lyrics : nil, on: screen, metrics: state.metrics,
+        let playing = state.nowPlaying
+        closedLyrics.show(wanted: state.wantsLyricsByNotch, lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil,
+                          seed: playing.track?.id ?? "", on: screen, metrics: state.metrics, fullscreen: state.inFullscreen,
                           opened: state.mode == .expanded || state.theme != .midnight)
     }
 

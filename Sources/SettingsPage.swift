@@ -60,7 +60,7 @@ struct SettingsPage: View {
             // Midnight Oyl's alone: the lyrics in the black bar by the closed notch.
             if midnight {
                 items.append(SettingItem(id: "lyricsClosed", title: "Lyrics, notch closed",
-                                         hint: "In a black bar by the notch while it's closed, too",
+                                         hint: "Beside the notch while it's closed too; a song without any, a constellation to its beat",
                                          isOn: state.showsLyricsClosed) {
                     state.showsLyricsClosed.toggle()
                     // Turned on, they need the lyrics on to show at all.

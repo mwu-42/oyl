@@ -624,7 +624,7 @@ final class WalkerOverlay {
     /// their names if the system gives them out (in screen coordinates; the window list measures
     /// down from the main screen's top). On macOS 26 they're only listed among all windows, not
     /// among those on screen.
-    private static func menuBarIcons(on frame: NSRect) -> [(name: String?, span: ClosedRange<CGFloat>)] {
+    static func menuBarIcons(on frame: NSRect) -> [(name: String?, span: ClosedRange<CGFloat>)] {
         let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
         let status = Int(CGWindowLevelForKey(.statusWindow))
         let top = Double((NSScreen.screens.first?.frame.maxY ?? 0) - frame.maxY)
