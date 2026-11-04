@@ -165,7 +165,8 @@ final class NotchState: ObservableObject {
     @Published var showsLyrics = UserDefaults.standard.bool(forKey: "music.lyrics") {
         didSet { UserDefaults.standard.set(showsLyrics, forKey: "music.lyrics") }
     }
-    /// The lyrics while the notch is closed too, under it (see `ClosedLyrics`). Off at first.
+    /// Midnight Oyl's lyrics while the notch is closed too, in a black bar by it (see
+    /// `ClosedLyrics`). Off at first.
     @Published var showsLyricsClosed = UserDefaults.standard.bool(forKey: "music.lyricsClosed") {
         didSet { UserDefaults.standard.set(showsLyricsClosed, forKey: "music.lyricsClosed") }
     }
@@ -1002,13 +1003,10 @@ final class NotchController {
         walkers.inFullscreen = state.inFullscreen
     }
 
-    /// The lyrics under the closed notch, while they're wanted there; the Oyl singing along
-    /// leaves the line to them meanwhile, so it isn't up twice.
+    /// Midnight's lyrics in the black bar by the closed notch, while they're wanted there.
     private func showClosedLyrics(on screen: NSScreen) {
-        let wanted = state.wantsLyricsUnderNotch
-        closedLyrics.show(wanted ? state.nowPlaying.lyrics : nil, theme: state.theme, on: screen, metrics: state.metrics,
-                          opened: state.mode == .expanded)
-        if walkers.walkers.lyricsUnderNotch != wanted { walkers.walkers.lyricsUnderNotch = wanted }
+        closedLyrics.show(state.wantsLyricsByNotch ? state.nowPlaying.lyrics : nil, on: screen, metrics: state.metrics,
+                          opened: state.mode == .expanded || state.theme != .midnight)
     }
 
     private func updateScreen() {
