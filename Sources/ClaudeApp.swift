@@ -5,7 +5,8 @@ import os
 /// Chats (and Cowork) in the Claude desktop app, which unlike Claude Code have no hooks. This reads
 /// the app's window through Accessibility, which you allow once: while Claude writes a reply the
 /// window has a "Stop" button, and while it waits for your OK, Allow and Deny buttons, which this
-/// can press for you.
+/// can press for you. A task waiting on you that isn't the one showing says so in the sidebar
+/// ("Awaiting …", "Needs …" by its name), which is always there: it's opened to be answered.
 ///
 /// Kept light: it runs only while the app is open and access is allowed, checks once a second
 /// on its own queue, asks the app to find the button itself (one call; walking the window
@@ -19,6 +20,14 @@ final class ClaudeAppChats: @unchecked Sendable {
         let title: String
         let isWriting: Bool
         let needsApproval: Bool
+        /// Tasks in the sidebar waiting on you, other than the one whose prompt is showing.
+        var waiting: [Waiting] = []
+    }
+
+    /// A task in the app's sidebar that says it's waiting on you: its name, and what it says.
+    struct Waiting: Equatable, Sendable {
+        let name: String
+        let status: String
     }
 
     static var isInstalled: Bool { NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) != nil }
@@ -44,6 +53,10 @@ final class ClaudeAppChats: @unchecked Sendable {
     private var unpaired: [String] = []
     private var last: Chat?
     private var approvalButtons: (allow: AXUIElement, deny: AXUIElement)?
+    /// The sidebar's entries for the tasks waiting on you, by name, to open.
+    private var entries: [String: AXUIElement] = [:]
+    /// Each status a waiting task's been seen with, logged once.
+    private var statuses: Set<String> = []
 
     /// `report` gets the app's state whenever it changes, nil once the app quits; on `queue`.
     init(report: @escaping @Sendable (Chat?) -> Void) {
@@ -82,14 +95,53 @@ final class ClaudeAppChats: @unchecked Sendable {
         }
     }
 
-    /// Presses the app's own Allow (or Deny) for the request it's showing.
-    func respond(allow: Bool) {
+    /// Presses the app's own Allow (or Deny) for the request it's showing; for a `task` waiting in
+    /// the sidebar, opens it first and presses them once its prompt's up, or if none comes (a task
+    /// wanting something else of you), leaves it open, `unanswered`.
+    func respond(allow: Bool, task: String? = nil, unanswered: @escaping @Sendable () -> Void = {}) {
         queue.async { [weak self] in
-            guard let self, let buttons = self.approvalButtons else { return }
-            AXUIElementPerformAction(allow ? buttons.allow : buttons.deny, kAXPressAction as CFString)
-            self.approvalButtons = nil
-            self.check()
+            guard let self else { return }
+            guard let task else {
+                guard let buttons = self.approvalButtons else { return }
+                AXUIElementPerformAction(allow ? buttons.allow : buttons.deny, kAXPressAction as CFString)
+                self.approvalButtons = nil
+                self.check()
+                return
+            }
+            guard let entry = self.entries[task] else { return unanswered() }
+            AXUIElementPerformAction(entry, kAXPressAction as CFString)
+            self.press(allow: allow, tries: 20, unanswered: unanswered)
         }
+    }
+
+    /// The app brought forward, on whatever it's showing.
+    @MainActor
+    static func bringForward() {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+    }
+
+    /// Opens a task waiting in the sidebar, to be answered there.
+    func open(task: String) {
+        queue.async { [weak self] in
+            guard let entry = self?.entries[task] else { return }
+            AXUIElementPerformAction(entry, kAXPressAction as CFString)
+        }
+    }
+
+    /// Presses Allow (or Deny) once the prompt's up, looking every 0.15 s, `tries` more times.
+    private func press(allow: Bool, tries: Int, unanswered: @escaping @Sendable () -> Void) {
+        let windows = app.map(ButtonReader.windows(of:)) ?? []
+        if let buttons = windows.lazy.compactMap({ self.approvalButtons(in: $0) }).first {
+            AXUIElementPerformAction(allow ? buttons.allow : buttons.deny, kAXPressAction as CFString)
+            approvalButtons = nil
+            check()
+            return
+        }
+        guard tries > 0 else { return unanswered() }
+        queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.press(allow: allow, tries: tries - 1, unanswered: unanswered) }
     }
 
     private func check() {
@@ -98,13 +150,21 @@ final class ClaudeAppChats: @unchecked Sendable {
         let windows = ButtonReader.windows(of: app)
         webAreas.removeAll { kept in !windows.contains { CFEqual($0, kept.window) } }
         var writing: String?
+        var entries: [String: AXUIElement] = [:], waiting: [Waiting] = []
         approvalButtons = nil
         for window in windows {
             if approvalButtons == nil { approvalButtons = self.approvalButtons(in: window) }
             if writing == nil, isWriting(in: window) { writing = Self.text(window, kAXTitleAttribute) ?? "" }
+            for found in waitingEntries(in: window) where entries[found.name] == nil {
+                entries[found.name] = found.entry
+                waiting.append(Waiting(name: found.name, status: found.status))
+            }
         }
-        let title = writing ?? windows.first.flatMap { Self.text($0, kAXTitleAttribute) } ?? ""
-        let chat = Chat(pid: pid, title: Self.chatName(title), isWriting: writing != nil, needsApproval: approvalButtons != nil)
+        self.entries = entries
+        let title = Self.chatName(writing ?? windows.first.flatMap { Self.text($0, kAXTitleAttribute) } ?? "")
+        // The one showing is asked about by its own prompt.
+        if approvalButtons != nil { waiting.removeAll { $0.name == title } }
+        let chat = Chat(pid: pid, title: title, isWriting: writing != nil, needsApproval: approvalButtons != nil, waiting: waiting)
         guard chat != last else { return }
         last = chat
         report(chat)
@@ -138,6 +198,41 @@ final class ClaudeAppChats: @unchecked Sendable {
 
     /// What a prompt's no says.
     static let denials = ["Deny", "Don't allow", "Decline", "Reject"]
+
+    /// How a sidebar task waiting on you says so, before its name.
+    static let waitingWords = ["Awaiting", "Needs"]
+
+    /// Whether a sidebar task's status (its icon's description: "Idle", "Awaiting …", "Needs …")
+    /// says it's waiting on you.
+    static func isWaiting(_ status: String) -> Bool {
+        let status = status.lowercased()
+        return waitingWords.contains { status.hasPrefix($0.lowercased()) }
+    }
+
+    /// The task called `label` ("Awaiting approval Plan the trip"), with its status said first:
+    /// its name.
+    static func taskName(_ label: String, status: String) -> String {
+        guard label.hasPrefix(status) else { return label }
+        return String(label.dropFirst(status.count)).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// The sidebar's tasks that say they're waiting on you: each entry a button holding its
+    /// status's icon (described as the status) and then its name, found by asking the page for
+    /// buttons that say so. Each status is logged the first time it's seen (just the status, never
+    /// the task).
+    private func waitingEntries(in window: AXUIElement) -> [(name: String, status: String, entry: AXUIElement)] {
+        let areas = webAreas(in: window)
+        guard !areas.isEmpty else { return [] }
+        return Self.waitingWords.flatMap { buttons(in: areas, matching: $0) }.compactMap { entry in
+            let parts = Self.elements(entry, kAXChildrenAttribute)
+            guard parts.count == 2, Self.text(parts[0], kAXRoleAttribute) == kAXImageRole as String,
+                  let status = Self.text(parts[0], kAXDescriptionAttribute), Self.isWaiting(status) else { return nil }
+            let name = Self.taskName(Self.label(of: entry), status: status)
+            guard !name.isEmpty else { return nil }
+            if statuses.insert(status).inserted { Self.log.notice("A Claude app task waiting on you says: \(status, privacy: .public)") }
+            return (name, status, entry)
+        }
+    }
 
     /// Which of a prompt's buttons, labelled `labels`, allows one use and no more: "Allow once"
     /// (with a shortcut after it, say), or a plain "Allow"; never "Always allow" or "Allow for

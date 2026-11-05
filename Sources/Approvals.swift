@@ -14,6 +14,9 @@ struct Approval: Identifiable, Equatable {
     let host: String?
     let action: String     // "Wants to use Bash"
     let detail: String?    // the command, file or site
+    /// A task in the Claude app's sidebar waiting on you, not the one showing: it's opened to be
+    /// answered (see `ClaudeAppChats.respond`).
+    var task: String? = nil
 }
 
 /// Claude Code's side of approving from the notch. Its PermissionRequest hook runs

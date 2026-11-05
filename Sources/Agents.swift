@@ -103,6 +103,11 @@ final class AgentMonitor: ObservableObject {
     private var appApproval: Approval?
     private var appApprovalDismissed = false
     private var appApprovalTimeout: DispatchWorkItem?
+    /// The Claude app's tasks waiting on you in its sidebar, not the one showing: a card each.
+    private var taskApprovals: [Approval] = []
+    /// Tasks whose cards have gone (answered, or given up on): until when they're not asked
+    /// about again, or (nil) till they stop waiting.
+    private var quietTasks: [String: Date?] = [:]
     private lazy var chats = ClaudeAppChats { [weak self] chat in
         DispatchQueue.main.async {
             MainActor.assumeIsolated { self?.apply(chat) }
@@ -227,8 +232,16 @@ final class AgentMonitor: ObservableObject {
             AgentInbox.answer(approval.id, allow: allow)
             codeApprovals.removeAll { $0.id == approval.id }
         case .claudeApp:
-            chats.respond(allow: allow)
-            appApproval = nil
+            guard let task = approval.task else {
+                chats.respond(allow: allow)
+                appApproval = nil
+                break
+            }
+            // It's opened, and answered once its prompt's up; with none, it's left open in front.
+            chats.respond(allow: allow, task: task) {
+                DispatchQueue.main.async { MainActor.assumeIsolated { ClaudeAppChats.bringForward() } }
+            }
+            quiet(task, for: 4)
         }
         updateApprovals()
     }
@@ -240,11 +253,49 @@ final class AgentMonitor: ObservableObject {
             AgentInbox.answer(approval.id, allow: nil)
             codeApprovals.removeAll { $0.id == approval.id }
         case .claudeApp:
-            appApproval = nil
-            appApprovalDismissed = true
+            guard let task = approval.task else {
+                appApproval = nil
+                appApprovalDismissed = true
+                break
+            }
+            chats.open(task: task)
+            ClaudeAppChats.bringForward()
+            quiet(task, for: nil)
+            updateApprovals()
+            return
         }
         if let session = sessions.first(where: { $0.id == approval.session }) { reveal(session) }
         updateApprovals()
+    }
+
+    /// No card for `task` for `seconds` (just answered: its sidebar takes a moment to catch up), or
+    /// (nil) till it stops waiting.
+    private func quiet(_ task: String, for seconds: TimeInterval?) {
+        quietTasks[task] = seconds.map { Date().addingTimeInterval($0) }
+        taskApprovals.removeAll { $0.task == task }
+    }
+
+    /// A card for each task waiting in the Claude app's sidebar, whichever page is showing (the
+    /// one showing has its own, by its prompt). Like the rest, each gives up after a while, the
+    /// camera with it, and isn't asked again till that task's stopped waiting and waits anew.
+    private func showWaiting(_ waiting: [ClaudeAppChats.Waiting]) {
+        let now = Date()
+        let names = Set(waiting.map(\.name))
+        quietTasks = quietTasks.filter { names.contains($0.key) && ($0.value.map { $0 > now } ?? true) }
+        taskApprovals = waiting.filter { quietTasks[$0.name] == nil }.map { task in
+            if let shown = taskApprovals.first(where: { $0.task == task.name }) { return shown }
+            let id = "\(Self.chatID):task:\(task.name)"
+            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(AgentInbox.approvalWait)) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.taskApprovals.contains(where: { $0.id == id }) else { return }
+                    self.quiet(task.name, for: nil)
+                    self.updateApprovals()
+                }
+            }
+            let session = sessions.first { $0.id.hasPrefix(Self.coworkPrefix) && $0.project == task.name }?.id
+            return Approval(id: id, source: .claudeApp, session: session, project: task.name, host: "Claude app",
+                            action: task.status, detail: nil, task: task.name)
+        }
     }
 
     /// Claude Code's requests name only the session; its project and app come from there.
@@ -254,7 +305,7 @@ final class AgentMonitor: ObservableObject {
             return Approval(id: approval.id, source: approval.source, session: approval.session, project: session.project,
                             host: session.host, action: approval.action, detail: approval.detail)
         }
-        let all = named + [appApproval].compactMap { $0 }
+        let all = named + [appApproval].compactMap { $0 } + taskApprovals
         if all != approvals { approvals = all }
     }
 
@@ -437,9 +488,11 @@ final class AgentMonitor: ObservableObject {
             if let index { sessions.remove(at: index) }
             publish(sessions)
             appApproval = nil
+            showWaiting([])
             updateApprovals()
             return
         }
+        showWaiting(chat.waiting)
         // Its own Allow and Deny buttons are up: it's waiting for you. Like Claude Code's
         // requests, the card (and the camera looking for a thumbs up) gives up after a while,
         // leaving it to be answered in the app.
@@ -465,7 +518,14 @@ final class AgentMonitor: ObservableObject {
             appApprovalDismissed = false
         }
         updateApprovals()
-        // A Cowork task's its own Oyl already: one asking for you is shown as waiting there.
+        // A Cowork task's its own Oyl already: one asking for you is shown as waiting there, on its
+        // page or in the sidebar.
+        for waiting in chat.waiting {
+            guard let task = sessions.firstIndex(where: { $0.id.hasPrefix(Self.coworkPrefix) && $0.project == waiting.name }),
+                  sessions[task].activity != .waiting else { continue }
+            sessions[task].activity = .waiting
+            sessions[task].since = Date()
+        }
         if let task = sessions.firstIndex(where: { $0.id.hasPrefix(Self.coworkPrefix) && $0.project == chat.title }) {
             if chat.needsApproval, sessions[task].activity != .waiting {
                 sessions[task].activity = .waiting
