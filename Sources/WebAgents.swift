@@ -254,7 +254,7 @@ final class WebAgents: @unchecked Sendable {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.25)
         var pages: [(address: String, working: Bool, signature: Int?, asking: Bool)] = []
-        for window in Self.elements(app, kAXWindowsAttribute) {
+        for window in ButtonReader.windows(of: app) {
             let title = Self.text(window, kAXTitleAttribute) ?? ""
             guard titles.contains(where: { !$0.isEmpty && title.hasPrefix($0) }) else { continue }
             var budget = 600

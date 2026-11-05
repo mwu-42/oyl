@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import os
 
 /// Chats (and Cowork) in the Claude desktop app, which unlike Claude Code have no hooks. This reads
 /// the app's window through Accessibility, which you allow once: while Claude writes a reply the
@@ -34,10 +35,13 @@ final class ClaudeAppChats: @unchecked Sendable {
     private var timer: DispatchSourceTimer?
     private var app: AXUIElement?
     private var pid: pid_t = 0
-    private var webArea: (window: AXUIElement, area: AXUIElement)?
+    /// Each window's web content, found every so often (see `webAreas`).
+    private var webAreas: [(window: AXUIElement, areas: [AXUIElement], at: Date)] = []
     private var searchWorks = true
     private var lastWalk = Date.distantPast
     private var walked: [(element: AXUIElement, label: String)] = []
+    /// What approval-like buttons were last seen that weren't a prompt's pair, so each is logged once.
+    private var unpaired: [String] = []
     private var last: Chat?
     private var approvalButtons: (allow: AXUIElement, deny: AXUIElement)?
 
@@ -55,7 +59,7 @@ final class ClaudeAppChats: @unchecked Sendable {
             self.timer?.cancel()
             self.timer = nil
             self.app = nil
-            self.webArea = nil
+            self.webAreas = []
             guard let target else {
                 if self.last != nil {
                     self.last = nil
@@ -90,7 +94,9 @@ final class ClaudeAppChats: @unchecked Sendable {
 
     private func check() {
         guard let app else { return }
-        let windows = Self.elements(app, kAXWindowsAttribute)
+        // Its main window too, when it's on a Space you're not on (a fullscreen one of its own).
+        let windows = ButtonReader.windows(of: app)
+        webAreas.removeAll { kept in !windows.contains { CFEqual($0, kept.window) } }
         var writing: String?
         approvalButtons = nil
         for window in windows {
@@ -107,20 +113,52 @@ final class ClaudeAppChats: @unchecked Sendable {
     /// The app's Allow and Deny buttons, when it's asking to use a tool: "Allow once" over
     /// "Always allow", so pressing it here never grants more than one use.
     private func approvalButtons(in window: AXUIElement) -> (allow: AXUIElement, deny: AXUIElement)? {
-        guard let area = webArea(in: window) else { return nil }
-        let allows = buttons(in: area, matching: "Allow")
-        let label = { (button: AXUIElement) in Self.label(of: button).lowercased() }
-        guard let allow = allows.first(where: { label($0) == "allow once" })
-                ?? allows.first(where: { label($0) == "allow" }) else { return nil }
+        let areas = webAreas(in: window)
+        guard !areas.isEmpty else { return nil }
+        let allows = buttons(in: areas, matching: "Allow")
+        let labels = allows.map { Self.label(of: $0) }
+        guard let index = Self.allowOnce(labels) else {
+            logUnpaired(labels)
+            return nil
+        }
+        let allow = allows[index]
         // Only a pair that sits together, the way a permission prompt shows them, not an Allow
         // and a Deny from different corners of the window.
-        let near = Self.ancestors(of: allow, levels: 3)
-        let denies = buttons(in: area, matching: "Deny") + buttons(in: area, matching: "Don't allow")
+        let near = Self.ancestors(of: allow, levels: 4)
+        let denies = Self.denials.flatMap { buttons(in: areas, matching: $0) }
         guard let deny = denies.first(where: { button in
-            Self.ancestors(of: button, levels: 3).contains { candidate in near.contains { CFEqual($0, candidate) } }
-        }) else { return nil }
+            Self.ancestors(of: button, levels: 4).contains { candidate in near.contains { CFEqual($0, candidate) } }
+        }) else {
+            logUnpaired(labels + denies.map { Self.label(of: $0) })
+            return nil
+        }
+        unpaired = []
         return (allow, deny)
     }
+
+    /// What a prompt's no says.
+    static let denials = ["Deny", "Don't allow", "Decline", "Reject"]
+
+    /// Which of a prompt's buttons, labelled `labels`, allows one use and no more: "Allow once"
+    /// (with a shortcut after it, say), or a plain "Allow"; never "Always allow" or "Allow for
+    /// this chat".
+    static func allowOnce(_ labels: [String]) -> Int? {
+        let words = labels.map { $0.lowercased().split { !$0.isLetter }.map(String.init) }
+        return words.firstIndex { $0.starts(with: ["allow", "once"]) }
+            ?? words.firstIndex { $0 == ["allow"] }
+    }
+
+    /// Approval-like buttons that weren't a prompt's pair, logged once each time they change (just
+    /// the buttons' own short labels, never what the chat says), so a prompt the app's started
+    /// labelling differently shows up (`log show --predicate 'subsystem == "local.nott"'`).
+    private func logUnpaired(_ labels: [String]) {
+        let short = labels.filter { $0.count <= 32 }
+        guard !short.isEmpty, short != unpaired else { return }
+        unpaired = short
+        Self.log.notice("Claude app buttons not taken for a prompt: \(short.joined(separator: " | "), privacy: .public)")
+    }
+
+    private static let log = Logger(subsystem: "local.nott", category: "claude")
 
     private static func ancestors(of element: AXUIElement, levels: Int) -> [AXUIElement] {
         var found: [AXUIElement] = []
@@ -137,50 +175,63 @@ final class ClaudeAppChats: @unchecked Sendable {
 
     /// Whether the window has the "Stop" button that shows while a reply is being written.
     private func isWriting(in window: AXUIElement) -> Bool {
-        guard let area = webArea(in: window) else { return false }
-        return buttons(in: area, matching: "Stop").contains { Self.label(of: $0).localizedCaseInsensitiveContains("stop") }
+        let areas = webAreas(in: window)
+        return !areas.isEmpty && buttons(in: areas, matching: "Stop").contains { Self.label(of: $0).localizedCaseInsensitiveContains("stop") }
     }
 
     /// Buttons whose label has `text` in it. Asks the app to search, the way VoiceOver jumps
     /// between buttons (Chromium answers it itself, in one call); without that, walks the page,
     /// but only every few seconds and only so far.
-    private func buttons(in area: AXUIElement, matching text: String) -> [AXUIElement] {
+    private func buttons(in areas: [AXUIElement], matching text: String) -> [AXUIElement] {
         if searchWorks {
             let predicate: [String: Any] = ["AXSearchKey": "AXButtonSearchKey", "AXSearchText": text,
                                             "AXResultsLimit": 8, "AXDirection": "AXDirectionNext"]
-            var result: CFTypeRef?
-            let error = AXUIElementCopyParameterizedAttributeValue(area, "AXUIElementsForSearchPredicate" as CFString,
-                                                                   predicate as CFDictionary, &result)
-            if error == .success {
-                return ((result as? [AXUIElement]) ?? []).filter(Self.isButton)
+            var found: [AXUIElement] = []
+            for area in areas where searchWorks {
+                var result: CFTypeRef?
+                let error = AXUIElementCopyParameterizedAttributeValue(area, "AXUIElementsForSearchPredicate" as CFString,
+                                                                       predicate as CFDictionary, &result)
+                if error == .success {
+                    found += ((result as? [AXUIElement]) ?? []).filter(Self.isButton)
+                } else if error == .invalidUIElement {
+                    webAreas = []
+                    return []
+                } else {
+                    searchWorks = false
+                }
             }
-            if error == .invalidUIElement {
-                webArea = nil
-                return []
-            }
-            searchWorks = false
+            if searchWorks { return found }
         }
         if Date().timeIntervalSince(lastWalk) > 4 {
             lastWalk = Date()
             var found: [(element: AXUIElement, label: String)] = []
             var budget = 3000
-            _ = Self.find(in: area, budget: &budget) { element in
-                if Self.isButton(element) { found.append((element, Self.label(of: element))) }
-                return false
+            for area in areas {
+                _ = Self.find(in: area, budget: &budget) { element in
+                    if Self.isButton(element) { found.append((element, Self.label(of: element))) }
+                    return false
+                }
             }
             walked = found
         }
         return walked.filter { $0.label.localizedCaseInsensitiveContains(text) }.map(\.element)
     }
 
-    /// The window's web content, found once and kept.
-    private func webArea(in window: AXUIElement) -> AXUIElement? {
-        if let webArea, CFEqual(webArea.window, window) { return webArea.area }
-        var budget = 400
-        guard let area = Self.find(in: window, budget: &budget, where: { Self.text($0, kAXRoleAttribute) == "AXWebArea" })
-        else { return nil }
-        webArea = (window, area)
-        return area
+    /// The window's web content: every web area in it, since the app's chat isn't in the first
+    /// (that's its frame's), found again every so often in case another's come.
+    private func webAreas(in window: AXUIElement) -> [AXUIElement] {
+        if let kept = webAreas.first(where: { CFEqual($0.window, window) }), Date().timeIntervalSince(kept.at) < 10 {
+            return kept.areas
+        }
+        var budget = 600
+        var areas: [AXUIElement] = []
+        _ = Self.find(in: window, budget: &budget) { element in
+            if Self.text(element, kAXRoleAttribute) == "AXWebArea" { areas.append(element) }
+            return false
+        }
+        webAreas.removeAll { CFEqual($0.window, window) }
+        webAreas.append((window, areas, Date()))
+        return areas
     }
 
     private static func isButton(_ element: AXUIElement) -> Bool {

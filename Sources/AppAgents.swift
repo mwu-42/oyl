@@ -117,7 +117,21 @@ final class ButtonReader {
         if electron { AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) }
     }
 
-    func windows() -> [AXUIElement] { Self.elements(app, kAXWindowsAttribute) }
+    func windows() -> [AXUIElement] { Self.windows(of: app) }
+
+    /// An app's windows: those on this Space, which is all Accessibility lists, and its main and
+    /// focused ones wherever they are (another app's fullscreen Space, say), which it still gives.
+    static func windows(of app: AXUIElement) -> [AXUIElement] {
+        var windows = elements(app, kAXWindowsAttribute)
+        for attribute in [kAXMainWindowAttribute, kAXFocusedWindowAttribute] {
+            var value: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(app, attribute as CFString, &value) == .success, let value,
+                  CFGetTypeID(value) == AXUIElementGetTypeID() else { continue }
+            let window = value as! AXUIElement
+            if !windows.contains(where: { CFEqual($0, window) }) { windows.append(window) }
+        }
+        return windows
+    }
 
     /// Whether the window has a button that says any of `labels`, as a word of its own ("Stop",
     /// "Stop generating", but not "Nonstop").
