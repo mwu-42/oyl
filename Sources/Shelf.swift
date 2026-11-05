@@ -9,7 +9,9 @@ import UniformTypeIdentifiers
 /// Screenshots are the files in the folder screenshots go to (the Desktop, unless it's been
 /// changed) that macOS has marked as screen captures, so nothing else there shows up. What's been
 /// saved is what's newest in Downloads, where what comes by AirDrop goes, and downloads from a
-/// browser, and attachments saved out of Messages; what's come from elsewhere onto the Desktop (an
+/// browser, and attachments saved out of Messages (and what's been saved since into the folders in
+/// it, two deep, as an app exports into a folder of its own there); what's come from elsewhere onto
+/// the Desktop (an
 /// attachment dragged out of Messages, say); and what's been saved into Photos from Messages and
 /// the like (see `SavedPhotos`). Not what's still downloading, or screenshots (they're on theirs).
 /// Watching starts the first time a shelf's opened, since reading these asks permission, and from
@@ -63,14 +65,20 @@ final class Shelf: ObservableObject {
     struct Watched: Equatable {
         let folder: URL
         var onlyReceived = false
+        /// How far into the folders in it what's saved there is looked for.
+        var depth = 0
     }
 
     private var folders: [Watched] = []
     private var watchers: [DispatchSourceFileSystemObject] = []
+    /// For the folders looked into: changes anywhere under them.
+    private var deepWatcher: FolderEvents?
     private var photos: SavedPhotos?
     /// What's been saved into Photos, copied out.
     private var fromPhotos: [Item] = []
     private var scanning: DispatchWorkItem?
+    /// And again a little after.
+    private var rescanning: DispatchWorkItem?
     /// What's in the folder it watches.
     private var watched: [Item] = []
     private var kept: [Item]
@@ -114,10 +122,13 @@ final class Shelf: ObservableObject {
     func stopWatching() {
         watchers.forEach { $0.cancel() }
         watchers = []
+        deepWatcher?.cancel()
+        deepWatcher = nil
         folders = []
         photos?.stop()
         photos = nil
         scanning?.cancel()
+        rescanning?.cancel()
     }
 
     /// Watches its folders (again, if where screenshots go has changed), and for what's been saved,
@@ -143,8 +154,13 @@ final class Shelf: ObservableObject {
         }
         watchers.forEach { $0.cancel() }
         watchers = []
+        deepWatcher?.cancel()
+        // A folder looked into is told of changes anywhere under it, which watching it alone isn't.
+        deepWatcher = FolderEvents(folders.filter { $0.depth > 0 }.map(\.folder)) { [weak self] in
+            MainActor.assumeIsolated { self?.scanSoon() }
+        }
         self.folders = folders
-        for watched in folders {
+        for watched in folders where watched.depth == 0 {
             let descriptor = Darwin.open(watched.folder.path, O_EVTONLY)
             guard descriptor >= 0 else { continue }
             let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: [.write, .rename, .delete],
@@ -166,7 +182,7 @@ final class Shelf: ObservableObject {
             return [Watched(folder: Self.screenshotFolder())]
         case .saved:
             let home = FileManager.default.homeDirectoryForCurrentUser
-            return [Watched(folder: home.appendingPathComponent("Downloads", isDirectory: true)),
+            return [Watched(folder: home.appendingPathComponent("Downloads", isDirectory: true), depth: 2),
                     Watched(folder: home.appendingPathComponent("Desktop", isDirectory: true), onlyReceived: true)]
         }
     }
@@ -190,14 +206,17 @@ final class Shelf: ObservableObject {
     /// and again a little after.
     private func scanSoon() {
         scanning?.cancel()
+        rescanning?.cancel()
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.scan() }
         }
-        scanning = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        let again = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated { self?.scan() }
         }
+        scanning = work
+        rescanning = again
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: again)
     }
 
     private func scan() {
@@ -216,6 +235,7 @@ final class Shelf: ObservableObject {
                         guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
                         return Self.item(url, values, source: source, onlyReceived: watched.onlyReceived)
                     }
+                    if watched.depth > 0 { found += Self.savedInside(urls, depth: watched.depth) }
                 } catch {
                     // The rest it can do without.
                     if index == 0 { blocked = true }
@@ -246,6 +266,37 @@ final class Shelf: ObservableObject {
                   !isScreenCapture(url), !onlyReceived || isReceived(url) else { return nil }
             return Item(url: url, kind: .saved, date: values.addedToDirectoryDate ?? values.creationDate ?? .distantPast)
         }
+    }
+
+    /// What's been saved into the folders among `entries` (a watched folder's), up to `depth` down:
+    /// each file (or folder) added to its folder over a minute (`margin`) after that folder came
+    /// there itself, so a folder unzipped or moved in whole shows as itself, not each file in it.
+    /// Only so many are looked through, in case one's huge.
+    nonisolated static func savedInside(_ entries: [URL], depth: Int, margin: TimeInterval = 60) -> [Item] {
+        let keys: Set<URLResourceKey> = [.creationDateKey, .addedToDirectoryDateKey, .isRegularFileKey, .isDirectoryKey, .isPackageKey]
+        var found: [Item] = []
+        var budget = 4000
+        func added(_ values: URLResourceValues) -> Date { values.addedToDirectoryDate ?? values.creationDate ?? .distantPast }
+        func look(in folder: URL, came: Date, level: Int) {
+            guard budget > 0, let contents = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys),
+                                                                                           options: [.skipsHiddenFiles]) else { return }
+            for url in contents {
+                budget -= 1
+                guard budget > 0 else { return }
+                guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+                let since = added(values)
+                if since > came.addingTimeInterval(margin) {
+                    if let item = item(url, values, source: .saved) { found.append(item) }
+                } else if values.isDirectory == true, values.isPackage != true, level < depth {
+                    look(in: url, came: since, level: level + 1)
+                }
+            }
+        }
+        for url in entries {
+            guard let values = try? url.resourceValues(forKeys: keys), values.isDirectory == true, values.isPackage != true else { continue }
+            look(in: url, came: added(values), level: 1)
+        }
+        return found
     }
 
     /// macOS marks what it captures with an extended attribute; a screenshot renamed is still one.
@@ -508,4 +559,39 @@ final class ShelfDrag: NSObject, NSDraggingSource {
         isDragging = false
         ended(screenPoint)
     }
+}
+
+/// Changes anywhere under some folders, as FSEvents tells of them (a file saved into a folder in
+/// one, which watching the folder itself doesn't hear), a moment's worth at a time, on the main
+/// queue.
+final class FolderEvents {
+    private var stream: FSEventStreamRef?
+    private let changed: () -> Void
+
+    init?(_ folders: [URL], changed: @escaping () -> Void) {
+        self.changed = changed
+        guard !folders.isEmpty else { return nil }
+        var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(), retain: nil, release: nil,
+                                           copyDescription: nil)
+        let told: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info else { return }
+            Unmanaged<FolderEvents>.fromOpaque(info).takeUnretainedValue().changed()
+        }
+        guard let stream = FSEventStreamCreate(nil, told, &context, folders.map(\.path) as CFArray,
+                                               FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.3,
+                                               FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)) else { return nil }
+        FSEventStreamSetDispatchQueue(stream, .main)
+        FSEventStreamStart(stream)
+        self.stream = stream
+    }
+
+    func cancel() {
+        guard let stream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        self.stream = nil
+    }
+
+    deinit { cancel() }
 }
