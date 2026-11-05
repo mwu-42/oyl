@@ -148,6 +148,47 @@ struct Earshot {
     }
 }
 
+/// What Spotify says of its playing in the notification it posts as that changes (a song starting,
+/// a pause, a skip, a seek): the song, whether it's playing, and where it was, as it was told. It
+/// says so of a song playing on another device too (the phone, over Spotify Connect), which its
+/// scripting doesn't always.
+struct SpotifyNotice: Sendable {
+    static let name = "com.spotify.client.PlaybackStateChanged"
+
+    var track: Track
+    var playing: Bool
+    var position: Double
+    var at: Date
+
+    init(track: Track, playing: Bool, position: Double, at: Date) {
+        self.track = track
+        self.playing = playing
+        self.position = position
+        self.at = at
+    }
+
+    /// From the notification's `info`, told at `at`; nil without a song in it.
+    init?(_ info: [AnyHashable: Any]?, at: Date = Date()) {
+        guard let info, let title = info["Name"] as? String, !title.isEmpty else { return nil }
+        let artist = info["Artist"] as? String ?? "", album = info["Album"] as? String ?? ""
+        let id = info["Track ID"] as? String ?? ""
+        let duration = ((info["Duration"] as? NSNumber)?.doubleValue ?? 0) / 1000
+        track = Track(id: id.isEmpty ? "\(title)|\(artist)|\(album)" : id, title: title, artist: artist, album: album, duration: duration)
+        playing = (info["Player State"] as? String) == "Playing"
+        position = (info["Playback Position"] as? NSNumber)?.doubleValue ?? 0
+        self.at = at
+    }
+
+    /// The song as it is at `now`: playing on from where it was told, or still paused there. Nil
+    /// once it would be well past its end with no word since (it's stopped somewhere, unsaid).
+    func status(at now: Date) -> PlayerStatus? {
+        let position = playing ? self.position + now.timeIntervalSince(at) : self.position
+        guard track.duration <= 0 || position <= track.duration + 3 else { return nil }
+        return PlayerStatus(isPlaying: playing, track: track, position: track.duration > 0 ? min(position, track.duration) : position,
+                            artworkURL: nil)
+    }
+}
+
 struct PlayerStatus: Sendable {
     var isPlaying: Bool
     var track: Track?
@@ -220,6 +261,9 @@ final class NowPlaying: ObservableObject {
     @Published private(set) var player: Player?
     @Published private(set) var track: Track?
     @Published private(set) var isPlaying = false
+    /// The song's playing (or paused) on another device, as Spotify tells: the phone, say, over
+    /// Spotify Connect. Nothing's heard of it here, so there's no sound to analyze.
+    @Published private(set) var isElsewhere = false
     @Published private(set) var artwork: NSImage?
     @Published private(set) var accent: NSColor = .white
     /// A few of the artwork's colors, the most of it first (Midnight Oyl's galaxy under the wave).
@@ -253,6 +297,10 @@ final class NowPlaying: ObservableObject {
     private var analyzing: AnyCancellable?
     /// Whether Spotify's playing here, or only says so (playing on another device).
     private var spotify = Earshot()
+    /// What Spotify last told of its playing, and when its sound was last heard here: told since,
+    /// with nothing heard, it's playing elsewhere, as told.
+    private var spotifyNotice: SpotifyNotice?
+    private var spotifySounded = Date.distantPast
 
     init() {
         // The visualizer turned on or off: its sound's analyzed, or not, straight away.
@@ -266,8 +314,10 @@ final class NowPlaying: ObservableObject {
             }
         notificationObserver = DistributedObserver { [weak self] name, userInfo in
             let playing = (userInfo?["Player State"] as? String) == "Playing"
+            let notice = name == SpotifyNotice.name ? SpotifyNotice(userInfo) : nil
             MainActor.assumeIsolated {
                 guard let self else { return }
+                if let notice { self.spotifyNotice = notice }
                 if playing, let player = Player.allCases.first(where: { $0.notificationNames.contains(name) }) {
                     self.lastActive = player
                 }
@@ -375,11 +425,12 @@ final class NowPlaying: ObservableObject {
         // and only twice a minute with nothing to be seen at all.
         let every = resting ? 30 : isPlaying ? (onScreen ? 1 : 5) : 8
         if ticks % every == 0 { refresh() }
-        // Spotify saying it's playing, listened for between askings: gone quiet here (its playing
-        // moved to another device), or heard again (moved back).
-        if player == .spotify, spotify.saysPlaying, !resting,
-           spotify.hears(AudioProcess.isMakingSound(Player.spotify.bundleID)) != isPlaying {
-            refresh()
+        // Spotify saying it's playing, or playing elsewhere, listened for between askings: gone
+        // quiet here (its playing moved to another device), or heard (moved back).
+        if player == .spotify, spotify.saysPlaying || isElsewhere, !resting {
+            let sounding = AudioProcess.isMakingSound(Player.spotify.bundleID)
+            if sounding { spotifySounded = Date() }
+            if isElsewhere ? sounding : spotify.hears(sounding) != isPlaying { refresh() }
         }
     }
 
@@ -417,13 +468,22 @@ final class NowPlaying: ObservableObject {
 
     private func apply(_ statuses: [Player: PlayerStatus]) {
         var statuses = statuses
-        // Spotify's playing only if it's heard here.
+        // Spotify's playing here only if it's heard here; told since it last was, of a song
+        // playing (or paused) with nothing heard, that's on another device, as it told.
+        var elsewhere = false
         if var status = statuses[.spotify] {
-            status.isPlaying = spotify.says(status.isPlaying, track: status.track?.id,
-                                            sounding: status.isPlaying && AudioProcess.isMakingSound(Player.spotify.bundleID))
+            let now = Date(), sounding = AudioProcess.isMakingSound(Player.spotify.bundleID)
+            if sounding { spotifySounded = now }
+            if !sounding, let notice = spotifyNotice, notice.at > spotifySounded, let told = notice.status(at: now) {
+                status = told
+                elsewhere = true
+            } else {
+                status.isPlaying = spotify.says(status.isPlaying, track: status.track?.id, sounding: status.isPlaying && sounding)
+            }
             statuses[.spotify] = status
         } else if !Player.spotify.isRunning {
             spotify.forget()
+            spotifyNotice = nil
         }
         let order = [player, lastActive].compactMap { $0 } + Player.allCases
         let chosen = order.first { statuses[$0]?.track != nil && statuses[$0]?.isPlaying == true }
@@ -437,6 +497,8 @@ final class NowPlaying: ObservableObject {
         }
         emptyPolls = 0
         if status.isPlaying { lastActive = chosen }
+        let away = elsewhere && chosen == .spotify
+        if away != isElsewhere { isElsewhere = away }
 
         let predicted = position(at: Date())
         let trackChanged = chosen != player || newTrack.id != track?.id
@@ -459,6 +521,7 @@ final class NowPlaying: ObservableObject {
 
     private func clear() {
         spectrum.follow(nil)
+        if isElsewhere { isElsewhere = false }
         guard player != nil || track != nil else { return }
         artworkTask?.cancel()
         artworkKey = nil
