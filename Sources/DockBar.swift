@@ -131,13 +131,20 @@ final class DockController {
             if panel.ignoresMouseEvents == takes { panel.ignoresMouseEvents = !takes }
             return
         }
-        // Reaching the bottom edge under where it'd be, as the Dock comes up: mid-drag too, as the
-        // Dock does, to be dropped on.
+        // Reaching the bottom edge in the middle of the screen (see `calls`), as the Dock comes up:
+        // mid-drag too, as the Dock does, to be dropped on.
         guard let screen = NSScreen.screens.first(where: { NSMouseInRect(location, $0.frame, false) }),
-              location.y <= screen.frame.minY + 1 else { return }
-        let layout = DockLayout(apps: apps, screenWidth: screen.frame.width)
-        guard abs(location.x - screen.frame.midX) <= layout.size.width / 2 else { return }
+              Self.calls(location, on: screen.frame) else { return }
         open(on: screen)
+    }
+
+    /// How much of the screen's width, in the middle, the bottom edge brings the Dock up along.
+    nonisolated static let reach: CGFloat = 0.4
+
+    /// Whether the pointer at `location` calls the Dock up on the screen `frame`: at its bottom edge,
+    /// within the middle `reach` of it, so the corners (and the rest of the edge) are left alone.
+    nonisolated static func calls(_ location: NSPoint, on frame: NSRect) -> Bool {
+        location.y <= frame.minY + 1 && abs(location.x - frame.midX) <= frame.width * reach / 2
     }
 
     /// The icon under the pointer, if any: each one's own width and half the gap either side.
