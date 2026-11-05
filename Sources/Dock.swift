@@ -67,7 +67,8 @@ final class DockApps: ObservableObject {
                           name: "Finder", kind: .app)
         kept = [finder] + Self.tiles(CFPreferencesCopyAppValue("persistent-apps" as CFString, domain)).filter { $0.kind == .app }
         let folders = Self.tiles(CFPreferencesCopyAppValue("persistent-others" as CFString, domain)).filter { $0.kind == .folder }
-        if folders != others { others = folders }
+        let unique = Self.unique(folders)
+        if unique != others { others = unique }
         updateRunning()
     }
 
@@ -90,15 +91,14 @@ final class DockApps: ObservableObject {
     private func updateRunning() {
         let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
         let front = NSWorkspace.shared.frontmostApplication
-        func find(_ item: Item) -> NSRunningApplication? {
-            running.first { $0.bundleIdentifier == item.id || $0.bundleURL?.standardizedFileURL == item.url.standardizedFileURL }
-        }
+        // However many of an app are open (another instance of it, say), it's one icon: lit if any
+        // is in front, dimmed only if they're all hidden.
         var shown = kept.map { item -> Item in
             var item = item
-            let app = find(item)
-            item.isRunning = app != nil
-            item.isActive = app != nil && app == front
-            item.isHidden = app?.isHidden ?? false
+            let open = running.filter { Self.matches($0, item) }
+            item.isRunning = !open.isEmpty
+            item.isActive = front.map(open.contains) ?? false
+            item.isHidden = !open.isEmpty && open.allSatisfy(\.isHidden)
             return item
         }
         let keptIDs = Set(kept.map(\.id)), keptURLs = Set(kept.map { $0.url.standardizedFileURL })
@@ -111,11 +111,15 @@ final class DockApps: ObservableObject {
         for app in extra {
             guard let url = app.bundleURL else { continue }
             let id = app.bundleIdentifier ?? url.path
+            guard !shown.contains(where: { $0.id == id }) else { continue }
             if let icon = app.icon { icons[id] = icon }
+            let open = extra.filter { ($0.bundleIdentifier ?? $0.bundleURL?.path) == id }
             shown.append(Item(id: id, url: url, name: app.localizedName ?? url.deletingPathExtension().lastPathComponent,
-                              kind: .app, isRunning: true, isActive: app == front, isHidden: app.isHidden))
+                              kind: .app, isRunning: true, isActive: front.map(open.contains) ?? false,
+                              isHidden: open.allSatisfy(\.isHidden)))
         }
-        shown = Self.arranged(shown, by: order)
+        // Each icon's its own (SwiftUI lays them out by id): one kept in the Dock twice is shown once.
+        shown = Self.arranged(Self.unique(shown), by: order)
         if shown != apps { apps = shown }
         liftGlyphs()
         let up = Set(shown.filter(\.isRunning).map(\.id))
@@ -216,19 +220,34 @@ final class DockApps: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([item.url])
     }
 
-    private func running(_ item: Item) -> NSRunningApplication? {
-        NSWorkspace.shared.runningApplications.first {
-            $0.bundleIdentifier == item.id || $0.bundleURL?.standardizedFileURL == item.url.standardizedFileURL
-        }
+    /// The first of them, if there's more than one.
+    private func running(_ item: Item) -> NSRunningApplication? { instances(of: item).first }
+
+    /// Every one of it that's open.
+    private func instances(of item: Item) -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter { Self.matches($0, item) }
     }
 
+    private static func matches(_ app: NSRunningApplication, _ item: Item) -> Bool {
+        app.bundleIdentifier == item.id || app.bundleURL?.standardizedFileURL == item.url.standardizedFileURL
+    }
+
+    /// Each item once, the first of any with the same id.
+    nonisolated static func unique(_ items: [Item]) -> [Item] {
+        var seen = Set<String>()
+        return items.filter { seen.insert($0.id).inserted }
+    }
+
+    /// Hidden (all of it that's open) or shown again.
     func hide(_ item: Item) {
-        guard let app = running(item) else { return }
-        _ = app.isHidden ? app.unhide() : app.hide()
+        let open = instances(of: item)
+        let hidden = !open.isEmpty && open.allSatisfy(\.isHidden)
+        for app in open { _ = hidden ? app.unhide() : app.hide() }
     }
 
+    /// Every one of it that's open, quit.
     func quit(_ item: Item) {
-        _ = running(item)?.terminate()
+        for app in instances(of: item) { _ = app.terminate() }
     }
 
     /// Whether it can be quit from here: an app that's open, but not Finder, which macOS keeps open.
