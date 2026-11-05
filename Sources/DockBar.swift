@@ -66,10 +66,23 @@ final class DockController {
                 }
             }
             .store(in: &cancellables)
-        // An app opening or quitting changes its width.
+        // An app opening or quitting changes its width; one quit some other way isn't asked about.
         apps.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
-            MainActor.assumeIsolated { if self?.model.isOpen == true { self?.fit() } }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                if let quitting = self.model.quitting, !self.apps.apps.contains(where: { $0.id == quitting && $0.isRunning }),
+                   !self.apps.others.contains(where: { $0.id == quitting && $0.isRunning }) {
+                    self.model.quitting = nil
+                }
+                if self.model.isOpen { self.fit() }
+            }
         }.store(in: &cancellables)
+        // A click anywhere else is a no to quitting.
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.model.quitting = nil }
+        }) {
+            monitors.append(monitor)
+        }
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] _ in
             MainActor.assumeIsolated { self?.pointerMoved() }
@@ -105,14 +118,16 @@ final class DockController {
         if model.isOpen {
             let over = isOver(location)
             hover(at: location)
-            if isNear(location) || model.isHeld || isPressed {
+            // Asking about quitting an app is over once the pointer's gone right away from it.
+            if model.quitting != nil, !panel.frame.insetBy(dx: -8, dy: -8).contains(location) { model.quitting = nil }
+            if isNear(location) || model.isKept || isPressed {
                 closing?.cancel()
                 closing = nil
             } else {
                 scheduleClose()
             }
             // Off it, clicks go through to what's under it.
-            let takes = over || model.isHeld
+            let takes = over || model.isKept
             if panel.ignoresMouseEvents == takes { panel.ignoresMouseEvents = !takes }
             return
         }
@@ -159,7 +174,7 @@ final class DockController {
         let work = DispatchWorkItem { [weak self] in
             MainActor.assumeIsolated {
                 self?.closing = nil
-                guard let self, !self.model.isHeld, !self.isPressed, !self.isNear(NSEvent.mouseLocation) else { return }
+                guard let self, !self.model.isKept, !self.isPressed, !self.isNear(NSEvent.mouseLocation) else { return }
                 self.close()
             }
         }
@@ -178,6 +193,7 @@ final class DockController {
     private func close() {
         closing?.cancel()
         closing = nil
+        model.quitting = nil
         model.shelving = nil
         model.isOpen = false
         model.hovered = nil
@@ -187,6 +203,7 @@ final class DockController {
     /// A shelf, over the bar (in place of the other, if that's up), or put away again: the panel
     /// only shrinks back once it's gone back into its tile (or the sky's settled), so neither's cut off.
     private func toggleShelf(_ source: Shelf.Source) {
+        model.quitting = nil
         model.shelving = model.shelving == source ? nil : source
         guard !model.isShelving else {
             fit()
@@ -307,6 +324,12 @@ final class DockModel: ObservableObject {
     var isHeld = false {
         didSet { if oldValue, !isHeld { letGo = Date() } }
     }
+    /// The app whose quitting's being asked about over its icon (an ⌥-click): stay up meanwhile.
+    @Published var quitting: String? {
+        didSet { if oldValue != nil, quitting == nil { letGo = Date() } }
+    }
+    /// Staying up, wherever the pointer is: held, or asking.
+    var isKept: Bool { isHeld || quitting != nil }
     /// When it was last let go.
     private(set) var letGo: Date?
     var toggleShelf: (Shelf.Source) -> Void = { _ in }
@@ -516,7 +539,29 @@ private struct DockBar: View {
                         .position(x: frame.midX, y: frame.midY)
                 }
             }
+            // Asked over its icon (lifted meanwhile) before an app's quit, kept on the screen.
+            if let index = items.firstIndex(where: { $0.id == model.quitting && $0.isRunning }) {
+                let item = items[index], place = index < shelfIndex ? index : index + shelves.count
+                if place < layout.frames.count {
+                    let frame = layout.frames[place]
+                    let room = midnight ? (model.screenWidth - layout.size.width) / 2 - 12 : DockLayout.sideRoom(midnight: false) - 6
+                    let top = frame.minY - 3 - 0.1 * layout.tile - 6
+                    Slid(x: frame.midX + room) {
+                        DockQuitConfirm(name: item.name, quit: {
+                            apps.quit(item)
+                            model.quitting = nil
+                        }, cancel: { model.quitting = nil })
+                        .id(item.id)
+                        .transition(midnight ? .modifier(active: SkyReveal(shown: 0, from: .bottom), identity: SkyReveal(shown: 1, from: .bottom))
+                                    : .opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
+                    }
+                    .frame(width: layout.size.width + 2 * room, height: 60)
+                    .position(x: layout.size.width / 2, y: top - 30)
+                    .zIndex(2)
+                }
+            }
         }
+        .animation(.spring(response: 0.24, dampingFraction: 0.8), value: model.quitting)
         .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
         .background {
             // (Midnight Oyl's is the sky right across under it: see `MidnightDockSky`.)
@@ -652,7 +697,7 @@ private struct ButtonTile: View {
         .frame(width: tile, height: tile)
         .scaleEffect(hovered ? 1.1 : 1, anchor: .bottom)
         .offset(y: hovered ? -3 : 0)
-        .overlay(TileHandle(click: click, menu: menu, drop: drop))
+        .overlay(TileHandle(click: { _ in click() }, menu: menu, drop: drop))
         .overlay(alignment: .top) {
             if hovered && !lit {
                 DockLabel(text: name).fixedSize().offset(y: -32).transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
@@ -674,8 +719,10 @@ private struct DockTile: View {
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        // Picked up, it stays lifted; and no names come up meanwhile.
-        let hovered = model.reordering == nil ? model.hovered == item.id : model.reordering?.id == item.id
+        // Picked up, it stays lifted, as it does while its quitting's asked about; and no names
+        // come up meanwhile.
+        let asking = model.quitting == item.id
+        let hovered = model.reordering == nil ? model.hovered == item.id || asking : model.reordering?.id == item.id
         Hop(active: apps.launching.contains(item.id), height: tile * 0.28) {
             Group {
                 if let glyph = apps.glyphs[item.id] {
@@ -693,13 +740,13 @@ private struct DockTile: View {
         .scaleEffect(hovered ? 1.1 : 1, anchor: .bottom)
         .offset(y: hovered ? -3 : 0)
         .frame(width: tile, height: tile)
-        .overlay(TileHandle(click: { apps.open(item) }, menu: showMenu,
+        .overlay(TileHandle(click: clicked, menu: showMenu,
                             drop: item.kind == .folder ? nil : { apps.drop($0, on: item) }, drag: drag))
         .overlay(alignment: .bottom) {
             if item.isRunning { light.offset(y: DockLayout.below / 2 + 2) }
         }
         .overlay(alignment: .top) {
-            if hovered && model.reordering == nil {
+            if hovered && model.reordering == nil && !asking {
                 DockLabel(text: item.name).fixedSize().offset(y: -32).transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))
             }
         }
@@ -720,7 +767,19 @@ private struct DockTile: View {
         }
     }
 
+    /// Clicked: opened; with ⌘, another window of it; with ⌥, quit, once you've said so over it.
+    private func clicked(_ modifiers: NSEvent.ModifierFlags) {
+        let command = modifiers.contains(.command), option = modifiers.contains(.option)
+        if option, !command, apps.canQuit(item) {
+            model.quitting = model.quitting == item.id ? nil : item.id
+            return
+        }
+        model.quitting = nil
+        if command, !option { apps.openAnother(item) } else { apps.open(item) }
+    }
+
     private func showMenu() {
+        model.quitting = nil
         let menu = NSMenu()
         switch item.kind {
         case .app where item.isRunning:
@@ -766,6 +825,81 @@ private struct DockLabel: View {
     }
 }
 
+/// Asked over an app's icon before it's quit (an ⌥-click): Quit it?, Cancel and Quit. On a black
+/// pill in Oyl's look, as its name is; in Midnight's, engraved capitals on a patch of night with
+/// no edge to it, coming in out of a blur. (Its buttons only say which was clicked.)
+struct DockQuitConfirm: View {
+    let name: String
+    let quit: () -> Void
+    let cancel: () -> Void
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        let midnight = theme == .midnight
+        HStack(spacing: 8) {
+            Group {
+                if midnight {
+                    Text("QUIT \(name.uppercased())?")
+                        .notchFont(size: 10, role: .label)
+                        .tracking(Midnight.tracking(.label, size: 10))
+                        .foregroundStyle(Midnight.white)
+                } else {
+                    Text("Quit \(name)?")
+                        .notchFont(size: 12, weight: .medium)
+                        .foregroundStyle(.white)
+                }
+            }
+            .lineLimit(1)
+            .padding(.leading, midnight ? 8 : 6)
+            // In Midnight's, Cancel's just its word, in silver, with nothing round it.
+            pill("Cancel", foreground: midnight ? Midnight.silver : .white, background: midnight ? .clear : .white.opacity(0.14),
+                 bright: false, action: cancel)
+            pill("Quit", foreground: .black, background: .white, action: quit)
+        }
+        .padding(4)
+        .background {
+            if midnight {
+                RoundedRectangle(cornerRadius: 18).fill(Midnight.ink.opacity(0.92)).blur(radius: 5).padding(-4)
+            } else {
+                Capsule().fill(.black.opacity(0.9))
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.12), lineWidth: 1))
+                    .shadow(color: .black.opacity(0.4), radius: 8, y: 2)
+            }
+        }
+        .fixedSize()
+    }
+
+    private func pill(_ title: String, foreground: Color, background: Color, bright: Bool = true,
+                      action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .notchFont(size: 12, weight: .semibold)
+                .padding(.horizontal, 12)
+                .frame(height: 24)
+                .notchPill(background, text: foreground, bright: bright)
+                .contentShape(Capsule())
+        }
+        .buttonStyle(PressableStyle())
+    }
+}
+
+/// Its one view at the foot of it, centered on `x`, slid along as far as it has to be to keep
+/// inside it.
+private struct Slid: SwiftUI.Layout {
+    let x: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        proposal.replacingUnspecifiedDimensions()
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let view = subviews.first else { return }
+        let size = view.sizeThatFits(.unspecified)
+        let left = max(bounds.minX, min(bounds.minX + x - size.width / 2, bounds.maxX - size.width))
+        view.place(at: CGPoint(x: left, y: bounds.maxY - size.height), proposal: ProposedViewSize(size))
+    }
+}
+
 /// Up and down, like an app opening in the Dock, for as long as it's `active`.
 private struct Hop<Content: View>: View {
     let active: Bool
@@ -784,10 +918,11 @@ private struct Hop<Content: View>: View {
     }
 }
 
-/// Over an icon: a click, a right-click, and files dropped on it. (AppKit's, so the first click
-/// lands even though the panel's never key, and the menu can hold the bar up.)
+/// Over an icon: a click (told the keys held with it), a right-click, and files dropped on it.
+/// (AppKit's, so the first click lands even though the panel's never key, and the menu can hold
+/// the bar up.)
 private struct TileHandle: NSViewRepresentable {
-    let click: () -> Void
+    let click: (NSEvent.ModifierFlags) -> Void
     let menu: () -> Void
     /// Takes files dropped on it, if it takes any.
     let drop: (([URL]) -> Bool)?
@@ -805,7 +940,7 @@ private struct TileHandle: NSViewRepresentable {
     }
 
     final class HandleView: NSView {
-        var click: () -> Void = {}
+        var click: (NSEvent.ModifierFlags) -> Void = { _ in }
         var showMenu: () -> Void = {}
         var drop: (([URL]) -> Bool)? {
             didSet {
@@ -853,7 +988,7 @@ private struct TileHandle: NSViewRepresentable {
             if dragging {
                 drag?(nil)
             } else if pressed, bounds.contains(convert(event.locationInWindow, from: nil)) {
-                click()
+                click(event.modifierFlags)
             }
             pressed = false
             dragging = false

@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 
 /// What Oyl's Dock shows: what the macOS Dock does (Finder, the apps kept in it, any other apps
 /// that are open, its folders) but the Trash, read from the Dock's own settings so the two match,
@@ -228,5 +229,70 @@ final class DockApps: ObservableObject {
 
     func quit(_ item: Item) {
         _ = running(item)?.terminate()
+    }
+
+    /// Whether it can be quit from here: an app that's open, but not Finder, which macOS keeps open.
+    func canQuit(_ item: Item) -> Bool { item.kind == .app && item.isRunning && item.id != Self.finder }
+
+    /// Another window of an open app (a ⌘-click), as its own New Window makes one (see
+    /// `NewWindow`), brought forward with it; for an app without, a new instance of it. One that
+    /// isn't open, or a folder, is just opened.
+    func openAnother(_ item: Item) {
+        guard item.kind == .app, item.isRunning, let app = running(item) else { return open(item) }
+        let pid = app.processIdentifier, url = item.url
+        // Asking its menus can take a moment.
+        DispatchQueue.global(qos: .userInitiated).async {
+            let made = NewWindow.make(in: pid)
+            DispatchQueue.main.async {
+                let configuration = NSWorkspace.OpenConfiguration()
+                configuration.activates = true
+                configuration.createsNewApplicationInstance = !made
+                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
+            }
+        }
+    }
+}
+
+/// A new window of an app, as its own menus make one: the first New Window in them (New Finder
+/// Window, say, but never a private or incognito one, or a tab), along the menu bar past the
+/// Apple menu, pressed through Accessibility.
+enum NewWindow {
+    /// What a menu item that makes one says.
+    static func makes(_ title: String) -> Bool {
+        let title = title.lowercased()
+        return title.hasPrefix("new ") && title.split(separator: " ").contains("window")
+            && !["private", "incognito", "tab"].contains(where: title.contains)
+    }
+
+    /// Makes one in app `pid`: false if it has no such item (or Oyl isn't allowed in Accessibility).
+    static func make(in pid: pid_t) -> Bool {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 1)
+        var bar: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXMenuBarAttribute as CFString, &bar) == .success, let bar,
+              CFGetTypeID(bar) == AXUIElementGetTypeID() else { return false }
+        for title in ButtonReader.elements(bar as! AXUIElement, kAXChildrenAttribute).dropFirst() {
+            guard let menu = ButtonReader.elements(title, kAXChildrenAttribute).first, let item = item(in: menu) else { continue }
+            return AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+        }
+        return false
+    }
+
+    /// The menu's item that makes one, if it has one; one that opens a menu of its own (Terminal's
+    /// New Window, of its profiles), that menu's first.
+    private static func item(in menu: AXUIElement) -> AXUIElement? {
+        guard let item = ButtonReader.elements(menu, kAXChildrenAttribute).first(where: {
+            makes(ButtonReader.text($0, kAXTitleAttribute) ?? "") && isEnabled($0)
+        }) else { return nil }
+        guard let submenu = ButtonReader.elements(item, kAXChildrenAttribute).first else { return item }
+        return ButtonReader.elements(submenu, kAXChildrenAttribute).first {
+            !(ButtonReader.text($0, kAXTitleAttribute) ?? "").isEmpty && isEnabled($0)
+        }
+    }
+
+    private static func isEnabled(_ element: AXUIElement) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXEnabledAttribute as CFString, &value) == .success else { return true }
+        return (value as? Bool) ?? true
     }
 }
