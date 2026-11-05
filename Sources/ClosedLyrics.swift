@@ -42,7 +42,9 @@ final class ClosedLyrics {
     static let linger: TimeInterval = 1.5
 
     init(nowPlaying: NowPlaying) {
-        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        // Made now, not as it's first shown: made then, it never joined every Space, only the
+        // desktop and the fullscreen app it was first shown over.
+        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         // Over the menu bar and its icons, under the notch's own window.
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.mainMenu.rawValue + 2)
         panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]

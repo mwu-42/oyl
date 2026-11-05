@@ -1746,7 +1746,8 @@ final class PointerOverlay {
     static let lostAfter: TimeInterval = 1.2
 
     init() {
-        window = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        // Made now, so it joins every Space (see `ClosedLyrics`).
+        window = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary, .ignoresCycle]
         window.backgroundColor = .clear
