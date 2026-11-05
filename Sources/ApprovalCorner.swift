@@ -4,7 +4,8 @@ import SwiftUI
 
 /// A request for your OK (Claude Code wanting to run something, the Claude app to use a tool) as a
 /// small card in the screen's bottom right corner, rather than the notch opening for it: who's
-/// asking and what, Deny and Allow (a thumbs up allows too, while the camera's looking for one),
+/// asking and what, Deny and Allow (a tap of the right Command key allows too, and a thumbs up
+/// while the camera's looking for one),
 /// and a click on the rest to answer it in the app instead. The first asked is shown, with how many
 /// more are waiting. In Oyl's look a black card like the notch, the asking Oyl on it; in
 /// Midnight's a patch of night with no edge, a star glinting for the agent among a few twinkling
@@ -125,7 +126,9 @@ struct ApprovalCornerView: View {
             let midnight = model.theme == .midnight
             // The asking agent's own pastel.
             let skin = agents.sessions.first { $0.id == approval.session }.map { Oyl.pastel($0.skin) } ?? Oyl.white
-            ApprovalCard(approval: approval, more: max(agents.approvals.count - 1, 0), skin: skin, watching: gestures.isWatching,
+            let ways = [Feature.approveTap.isOn ? "right ⌘" : nil, gestures.isWatching ? "a thumbs up" : nil].compactMap { $0 }
+            ApprovalCard(approval: approval, more: max(agents.approvals.count - 1, 0), skin: skin,
+                         hint: ways.isEmpty ? nil : "or " + ways.joined(separator: " or "),
                          answer: { [agents] in agents.answer(approval, allow: $0) }, answerInApp: { [agents] in agents.answerInApp(approval) })
                 .padding(ApprovalCorner.room)
                 .modifier(CornerReveal(shown: model.shown ? 1 : 0, midnight: midnight))
@@ -157,8 +160,8 @@ struct ApprovalCard: View {
     let more: Int
     /// The asking agent's color.
     let skin: Color
-    /// The camera's looking for a thumbs up.
-    let watching: Bool
+    /// What else allows it, if anything: "or right ⌘ or a thumbs up".
+    let hint: String?
     /// Allowed (true) or denied.
     let answer: (Bool) -> Void
     /// To be answered in the app itself, which is brought up.
@@ -224,10 +227,11 @@ struct ApprovalCard: View {
             .buttonStyle(.plain)
             .help("Answer in \(approval.host ?? "the app")")
             HStack(spacing: 8) {
-                if watching {
-                    Label("or a thumbs up", systemImage: "hand.thumbsup.fill")
+                if let hint {
+                    Text(hint)
                         .notchFont(size: 9.5, weight: .medium)
                         .foregroundStyle((midnight ? Midnight.silver : .white).opacity(0.45))
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 0)
                 // In Midnight's, Deny's just its word, in silver, with nothing round it.

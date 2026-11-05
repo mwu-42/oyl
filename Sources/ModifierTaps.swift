@@ -12,6 +12,9 @@ struct ModifierTaps {
     static let gap: TimeInterval = 0.5
 
     let key: NSEvent.ModifierFlags
+    /// For one side's key alone (the right Command): its own bit in the flags, and the other
+    /// side's, which mustn't be down with it.
+    let side: (this: UInt, other: UInt)?
     let most: Int
     /// The longest a tap's held: `press`, or a little longer for keys pressed together.
     let longest: TimeInterval
@@ -21,8 +24,12 @@ struct ModifierTaps {
     private var releasedAt = -TimeInterval.infinity
     private var held = false
 
-    init(_ key: NSEvent.ModifierFlags, most: Int, longest: TimeInterval = Self.press) {
+    /// The right Command key's bit in an event's flags, and the left's.
+    static let rightCommand = (this: UInt(0x10), other: UInt(0x08))
+
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, most: Int, longest: TimeInterval = Self.press) {
         self.key = key
+        self.side = side
         self.most = most
         self.longest = longest
     }
@@ -31,8 +38,15 @@ struct ModifierTaps {
     /// have it): `most`, if that let go of the last of that many taps.
     mutating func changed(_ flags: NSEvent.ModifierFlags, at time: TimeInterval) -> Int? {
         let keys = flags.intersection([.shift, .control, .option, .command, .function])
-        let down = keys.contains(key)
+        var down = keys.contains(key)
         defer { held = down }
+        if let side {
+            down = down && flags.rawValue & side.this != 0
+            if flags.rawValue & side.other != 0 {
+                interrupted()
+                return nil
+            }
+        }
         guard keys.subtracting(key).isEmpty else {
             interrupted()
             return nil
@@ -81,9 +95,9 @@ final class TapWatcher {
     private var monitors: [Any] = []
     private var settling: Timer?
 
-    init(_ key: NSEvent.ModifierFlags, longest: TimeInterval = ModifierTaps.press, each: (@MainActor (Int) -> Void)? = nil,
-         actions: [Int: @MainActor () -> Void]) {
-        taps = ModifierTaps(key, most: actions.keys.max() ?? 1, longest: longest)
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, longest: TimeInterval = ModifierTaps.press,
+         each: (@MainActor (Int) -> Void)? = nil, actions: [Int: @MainActor () -> Void]) {
+        taps = ModifierTaps(key, side: side, most: actions.keys.max() ?? 1, longest: longest)
         self.actions = actions
         self.each = each
         let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]

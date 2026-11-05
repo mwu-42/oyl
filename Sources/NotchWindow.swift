@@ -586,6 +586,7 @@ final class NotchController {
     private var dock: DockController?
     private var approvalCorner: ApprovalCorner?
     private var controlTaps: TapWatcher?
+    private var approveTaps: TapWatcher?
     private var songKeys: SongKeys?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
@@ -814,6 +815,15 @@ final class NotchController {
                 // Turned off, the taps can still switch Oyl back on.
                 guard let self, self.state.isOff || Feature.offTaps.isOn else { return }
                 self.switchOff(!self.state.isOff)
+            },
+        ])
+        // The right Command key tapped on its own, while a request's waiting for your OK (its card's
+        // in the corner): allowed, as its Allow would. (With a key, it's a shortcut, not a tap.)
+        approveTaps = TapWatcher(.command, side: ModifierTaps.rightCommand, actions: [
+            1: { [weak self] in
+                guard let self, !self.state.isOff, Feature.approveTap.isOn, let approval = self.state.agents.approvals.first else { return }
+                self.state.agents.answer(approval, allow: true)
+                Haptics.perform(.levelChange, performanceTime: .now)
             },
         ])
         missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }

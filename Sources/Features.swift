@@ -38,6 +38,7 @@ enum Feature: String, CaseIterable, Sendable {
     /// Control and option together: the camera on for the gestures for a moment, or (twice) till
     /// they're tapped twice again.
     case cameraKeys
+    case approveTap
 
     // The Dock's shelves.
     case screenshotsShelf, savedShelf, labelScreenshots
