@@ -130,12 +130,13 @@ final class DockApps: ObservableObject {
         for item in apps + others where !lifted.contains(item.id) {
             lifted.insert(item.id)
             let bundle = item.kind == .app ? Bundle(url: item.url)?.bundleIdentifier : nil
-            // Some drawn rather than lifted: Finder's a magnifying glass, a folder a folder, and
-            // Chrome Google's G.
+            // Some drawn rather than lifted: Finder's a magnifying glass, a folder a folder, Chrome
+            // Google's G, and an app with no icon of its own a star with its first letter in it.
             let drawn: DockGlyph?? = switch (item.kind, bundle) {
             case (.folder, _): DockGlyphs.symbol("folder")
             case (_, Self.finder): DockGlyphs.symbol("magnifyingglass")
             case (_, "com.google.Chrome"): DockGlyphs.googleG()
+            case (.app, _) where !Self.hasOwnIcon(item.url): DockGlyphs.starLetter(item.name)
             default: nil
             }
             if let drawn {
@@ -156,6 +157,20 @@ final class DockApps: ObservableObject {
                 if let glyph { self?.glyphs[id] = glyph }
             }
         }
+    }
+
+    /// Whether the app at `url` has an icon of its own (else macOS shows the plain one apps get):
+    /// the icon file its bundle names, or the asset catalog it names one in.
+    nonisolated static func hasOwnIcon(_ url: URL) -> Bool {
+        guard let bundle = Bundle(url: url), let resources = bundle.resourceURL else { return true }
+        let files = FileManager.default
+        if let file = bundle.object(forInfoDictionaryKey: "CFBundleIconFile") as? String, !file.isEmpty {
+            let named = resources.appendingPathComponent(file)
+            if files.fileExists(atPath: named.path) || files.fileExists(atPath: named.appendingPathExtension("icns").path) { return true }
+        }
+        if bundle.object(forInfoDictionaryKey: "CFBundleIconName") != nil,
+           files.fileExists(atPath: resources.appendingPathComponent("Assets.car").path) { return true }
+        return false
     }
 
     /// In the order they've been dragged into: those that have been, in the places they take up

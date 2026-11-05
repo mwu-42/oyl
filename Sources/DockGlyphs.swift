@@ -144,6 +144,47 @@ enum DockGlyphs {
         return out
     }
 
+    /// For an app with no icon of its own: a four-pointed star's outline, full in the middle, with
+    /// the first letter (or figure) of its name in there.
+    @MainActor
+    static func starLetter(_ name: String) -> DockGlyph? {
+        let side = DockGlyph.side
+        guard let context = Pixels.context(side: side) else { return nil }
+        let middle = CGPoint(x: CGFloat(side) / 2, y: CGFloat(side) / 2)
+        // Its points out at `reach` up and down, a little less across; its sides drawn in toward
+        // `waist`, round enough to leave room for the letter.
+        let reach = CGFloat(side) * 0.46, across = reach * 0.86, waist = reach * 0.2
+        let star = CGMutablePath()
+        star.move(to: CGPoint(x: middle.x, y: middle.y + reach))
+        star.addQuadCurve(to: CGPoint(x: middle.x + across, y: middle.y), control: CGPoint(x: middle.x + waist, y: middle.y + waist))
+        star.addQuadCurve(to: CGPoint(x: middle.x, y: middle.y - reach), control: CGPoint(x: middle.x + waist, y: middle.y - waist))
+        star.addQuadCurve(to: CGPoint(x: middle.x - across, y: middle.y), control: CGPoint(x: middle.x - waist, y: middle.y - waist))
+        star.addQuadCurve(to: CGPoint(x: middle.x, y: middle.y + reach), control: CGPoint(x: middle.x - waist, y: middle.y + waist))
+        star.closeSubpath()
+        context.setStrokeColor(CGColor(gray: 1, alpha: 1))
+        context.setLineWidth(CGFloat(side) * 0.034)
+        context.setLineJoin(.round)
+        context.addPath(star)
+        context.strokePath()
+        if let initial = initial(of: name) {
+            // As tall as the star leaves room for in its middle, by the letter's own outline.
+            let font = CTFontCreateWithName(NSFont.systemFont(ofSize: 1, weight: .semibold).fontName as CFString, CGFloat(side) * 0.3, nil)
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: initial, attributes: [
+                .font: font, .foregroundColor: CGColor(gray: 1, alpha: 1),
+            ]))
+            let bounds = CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
+            context.textPosition = CGPoint(x: middle.x - bounds.midX, y: middle.y - bounds.midY)
+            CTLineDraw(line, context)
+        }
+        guard let image = context.makeImage(), let pixels = Pixels(image, side: side) else { return nil }
+        return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
+    }
+
+    /// The first letter or figure of `name`, as a capital: "Tone_Matrix" is T.
+    nonisolated static func initial(of name: String) -> String? {
+        name.first { $0.isLetter || $0.isNumber }.map { String($0).uppercased() }
+    }
+
     /// An SF Symbol, as a glyph: Finder's (a magnifying glass), or a folder's.
     @MainActor
     static func symbol(_ name: String) -> DockGlyph? {
