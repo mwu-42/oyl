@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: NotchController?
     private var awake: AwakeManager?
     private var terminationSignal: DispatchSourceSignal?
+    /// Quitting only for a moment: killed to be started again, or at logout or shut down.
+    private var backSoon = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
@@ -40,12 +42,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // session never outlives the app (lid sleep especially). It carries on if Oyl's back soon.
         signal(SIGTERM, SIG_IGN)
         let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        source.setEventHandler { NSApp.terminate(nil) }
+        source.setEventHandler { [weak self] in
+            self?.backSoon = true
+            NSApp.terminate(nil)
+        }
         source.resume()
         terminationSignal = source
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.willPowerOffNotification, object: nil, queue: .main) {
+            [weak self] _ in MainActor.assumeIsolated { self?.backSoon = true }
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         awake?.pause()
+        MacDock.quitting(forGood: !backSoon)
     }
 }

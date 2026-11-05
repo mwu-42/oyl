@@ -165,6 +165,7 @@ struct SettingsPage: View {
                 SettingItem(id: "dock", title: "Oyl's Dock", hint: "Along the bottom, over the macOS Dock", isOn: state.showsDock) {
                     state.showsDock.toggle()
                 },
+                feature(.hidesMacDock, "Keep the macOS Dock down", "While Oyl's Dock is on, the macOS Dock never comes up at the bottom edge (your own setting's back once Oyl's is off, or Oyl's quit)"),
                 feature(.screenshotsShelf, "Screenshots shelf", "Your latest screenshots, to drag anywhere"),
                 feature(.savedShelf, "Recently Saved shelf", "What's just been downloaded, AirDropped or saved from a text"),
                 feature(.labelScreenshots, "Label screenshots", "Named for what's in them, read on the Mac"),

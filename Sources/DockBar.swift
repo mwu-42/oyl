@@ -50,6 +50,14 @@ final class DockController {
         state.$showsDock.sink { [weak self] shown in
             if !shown { self?.close() }
         }.store(in: &cancellables)
+        // The macOS Dock kept down while this one's up for it (see `MacDock`).
+        state.$showsDock.combineLatest(state.$isOff, Features.shared.changed.filter { $0.0 == .hidesMacDock }.map { _ in () }
+            .prepend(()))
+            .receive(on: RunLoop.main)
+            .sink { shown, off, _ in
+                MainActor.assumeIsolated { MacDock.keep(down: shown && !off && Feature.hidesMacDock.isOn) }
+            }
+            .store(in: &cancellables)
         // A shelf turned off goes from the bar (and stops watching), its card with it.
         Features.shared.changed
             .filter { $0.0 == .screenshotsShelf || $0.0 == .savedShelf }
