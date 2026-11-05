@@ -153,7 +153,7 @@ enum DockGlyphs {
         let middle = CGPoint(x: CGFloat(side) / 2, y: CGFloat(side) / 2)
         // Its points out at `reach` up and down, a little less across; its sides drawn in toward
         // `waist`, round enough to leave room for the letter.
-        let reach = CGFloat(side) * 0.34, across = reach * 0.86, waist = reach * 0.2
+        let reach = CGFloat(side) * 0.29, across = reach * 0.86, waist = reach * 0.2
         let star = CGMutablePath()
         star.move(to: CGPoint(x: middle.x, y: middle.y + reach))
         star.addQuadCurve(to: CGPoint(x: middle.x + across, y: middle.y), control: CGPoint(x: middle.x + waist, y: middle.y + waist))
