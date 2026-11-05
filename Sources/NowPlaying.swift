@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import os
 
 // MARK: - Players
 
@@ -577,6 +578,18 @@ final class NowPlaying: ObservableObject {
             switch player {
             case .spotify:
                 if let url { data = try? await URLSession.shared.data(from: url).0 }
+                // A song switched to its music video is shown with a still from the video: its own
+                // cover's put in the notch instead (the video plays on in Spotify).
+                let shown = SpotifyCover.Look(url: url, data: data, of: track.id)
+                if !shown.isCover {
+                    let cover = await SpotifyCover.cover(of: track.id)
+                    guard !Task.isCancelled, artworkKey == key else { return }
+                    data = cover ?? (shown.isSquare ? data : nil)
+                    SpotifyCover.log.notice("""
+                        \(SpotifyCover.kind(of: track.id), privacy: .public) shown with \(shown, privacy: .public): \
+                        \(cover == nil ? "no cover found" : "its cover instead", privacy: .public)
+                        """)
+                }
             case .music:
                 data = await runner.run(Player.musicArtworkScript) { $0.data.count > 64 ? $0.data : nil }
             }
@@ -616,6 +629,77 @@ private final class DistributedObserver: NSObject {
 
     @objc private func receive(_ notification: Notification) {
         handler(notification.name.rawValue, notification.userInfo)
+    }
+}
+
+// MARK: - Spotify's covers
+
+/// A song's own cover on Spotify. Its scripting gives the artwork it's showing, which for a song
+/// switched to its music video is a still from the video, not the cover; so then the cover's
+/// asked of Spotify by the song's ID (its oEmbed, which needs no signing in). What it was shown
+/// with, and what's put in its place, is logged (`log show --predicate 'subsystem == "local.nott"'`),
+/// though never which song.
+enum SpotifyCover {
+    static let log = Logger(subsystem: "local.nott", category: "covers")
+
+    /// An album's cover on Spotify's image CDN is named starting with this, then its size.
+    static let named = "ab67616d"
+    /// The sizes in a cover's name: 300 points square (oEmbed's), and 640.
+    static let small = "00001e02", large = "0000b273"
+
+    /// What it's showing: a picture by its name and size, if any.
+    struct Look: CustomStringConvertible {
+        var name: String?
+        var size: CGSize?
+        /// Of a song (not an episode, say).
+        var isTrack: Bool
+
+        init(url: URL?, data: Data?, of id: String) {
+            name = url?.lastPathComponent
+            if let data, let image = NSBitmapImageRep(data: data) {
+                size = CGSize(width: image.pixelsWide, height: image.pixelsHigh)
+            }
+            isTrack = id.hasPrefix("spotify:track:")
+        }
+
+        var isSquare: Bool {
+            guard let size, size.width > 0, size.height > 0 else { return false }
+            return abs(size.width / size.height - 1) < 0.02
+        }
+
+        /// The cover, as it should be: square, and a song's named as an album's (an episode's,
+        /// say, is its show's).
+        var isCover: Bool { isSquare && (!isTrack || name?.hasPrefix(SpotifyCover.named) == true) }
+
+        /// Just enough to tell a cover from a video's still: the start of its name, and its size.
+        var description: String {
+            guard let size else { return "nothing" }
+            return "\(name.map { String($0.prefix(16)) } ?? "?") \(Int(size.width))×\(Int(size.height))"
+        }
+    }
+
+    /// The ID's kind ("spotify:track"), without the song.
+    static func kind(of id: String) -> String { id.split(separator: ":").prefix(2).joined(separator: ":") }
+
+    /// The cover's address in Spotify's `oEmbed` answer, at 640 points.
+    static func address(in oEmbed: Data) -> URL? {
+        guard let answer = try? JSONSerialization.jsonObject(with: oEmbed) as? [String: Any],
+              var address = answer["thumbnail_url"] as? String else { return nil }
+        if let name = address.split(separator: "/").last, name.hasPrefix(named + small) {
+            address = address.replacingOccurrences(of: named + small, with: named + large)
+        }
+        return URL(string: address)
+    }
+
+    /// The cover of the song (or whatever it is) with Spotify ID `id`, or nil.
+    static func cover(of id: String) async -> Data? {
+        guard id.hasPrefix("spotify:"), !id.hasPrefix("spotify:local:"),
+              var lookup = URLComponents(string: "https://open.spotify.com/oembed") else { return nil }
+        lookup.queryItems = [URLQueryItem(name: "url", value: id)]
+        guard let url = lookup.url, let (answer, _) = try? await URLSession.shared.data(from: url),
+              let address = address(in: answer), let (cover, _) = try? await URLSession.shared.data(from: address),
+              Look(url: address, data: cover, of: "").isSquare else { return nil }
+        return cover
     }
 }
 
