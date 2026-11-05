@@ -236,7 +236,7 @@ struct ExpandedNotch: View {
             // The strip beside the hardware notch: page tabs left; right, the next timer and the
             // awake indicator (unless their own page is showing), then the hand gestures toggle.
             HStack(spacing: 0) {
-                if !state.isAlerting, agents.approvals.isEmpty {
+                if !state.isAlerting {
                     PageTabs(page: $state.page, agent: agents.lead?.activity,
                              skin: agents.lead.map { Oyl.pastel($0.skin) } ?? Oyl.white, tabs: state.tabs)
                 }
@@ -273,11 +273,7 @@ struct ExpandedNotch: View {
             .frame(width: width, height: state.inFullscreen ? Layout.fullscreenStripHeight : notch.height)
 
             ZStack(alignment: .top) {
-                if let approval = agents.approvals.first {
-                    ApprovalPage(approval: approval, agents: agents, gestures: gestures)
-                        .id(approval.id)
-                        .transition(NotchView.swap)
-                } else if let ringing = timers.ringing {
+                if let ringing = timers.ringing {
                     AlertPage(timer: ringing, timers: timers)
                         .transition(NotchView.swap)
                 } else if bedtime.reminding {

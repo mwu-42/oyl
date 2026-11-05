@@ -112,7 +112,7 @@ struct SettingsPage: View {
         case .agents:
             var items = [
                 feature(.claudeCode, "Claude Code", "In a terminal, an editor or the Claude app's Code tab"),
-                feature(.approvals, "Answer Claude Code here", "Allow or deny its requests from the notch, or with a thumbs up"),
+                feature(.approvals, "Answer Claude Code here", "Allow or deny its requests from a card in the corner, or with a thumbs up"),
                 feature(.claudeChats, "Claude app chats", "The chat showing in the Claude app"),
                 feature(.cowork, "Cowork tasks", "Each of the Claude app's Cowork tasks"),
             ]

@@ -1165,7 +1165,7 @@ struct DockGlyphTile: View {
 }
 
 /// A four-pointed glint, long up and down, its sides drawn in.
-private struct Sparkle: Shape {
+struct Sparkle: Shape {
     var size: CGFloat
 
     func path(in rect: CGRect) -> Path {

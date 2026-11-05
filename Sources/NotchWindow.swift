@@ -12,7 +12,6 @@ enum Layout {
     static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
     static let awakeHeight: CGFloat = 124
     static let alertHeight: CGFloat = 72
-    static let approvalHeight: CGFloat = 84
     static let timerRowHeight: CGFloat = 30
     static let maxVisibleTimers = 3                      // at least; as many as fit (see `timerRowsFit`)
     static let oylRowHeight: CGFloat = 34
@@ -305,7 +304,8 @@ final class NotchState: ObservableObject {
     var isAlerting: Bool { timers.ringing != nil || bedtime.reminding }
 
     var mode: NotchMode {
-        if !agents.approvals.isEmpty || isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
+        // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
+        if isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
         // Midnight Oyl pinned open, on display (but not over Mission Control's desktops).
         if isPinned && theme == .midnight && !isViewingDesktops { return .expanded }
         return closedMode
@@ -333,7 +333,7 @@ final class NotchState: ObservableObject {
     }
 
     /// Open for a timer that's done (or bedtime), rather than for the pointer.
-    var isAnnouncing: Bool { isAlerting && !isHovering && agents.approvals.isEmpty }
+    var isAnnouncing: Bool { isAlerting && !isHovering }
 
     var compact: CompactLayout {
         CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
@@ -389,13 +389,12 @@ final class NotchState: ObservableObject {
     /// than the notch would be with every tab standard width (Oyl's is wider).
     var openWidth: CGFloat {
         // (Bedtime's has more to say, so it keeps the full width.)
-        guard timers.ringing != nil && agents.approvals.isEmpty else { return expandedWidth }
+        guard timers.ringing != nil else { return expandedWidth }
         return ((expandedWidth - 2 * (Layout.oylsTabWidth - Layout.tabWidth)) * 0.85).rounded()
     }
 
     /// Height of the open notch below the strip beside the hardware notch.
     var contentHeight: CGFloat {
-        if !agents.approvals.isEmpty { return Layout.approvalHeight }
         if isAlerting { return Layout.alertHeight }
         switch page {
         case .music:
@@ -585,6 +584,7 @@ final class NotchController {
     private let walkers = WalkerOverlay()
     private let closedLyrics: ClosedLyrics
     private var dock: DockController?
+    private var approvalCorner: ApprovalCorner?
     private var controlTaps: TapWatcher?
     private var songKeys: SongKeys?
     private var cameraTaps: TapWatcher?
@@ -627,6 +627,7 @@ final class NotchController {
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
         state.gestures = gestures
         dock = DockController(state: state)
+        approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
 
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
