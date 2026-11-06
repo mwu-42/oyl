@@ -19,6 +19,8 @@ final class DockController {
     private var screen: NSScreen?
     private var monitors: [Any] = []
     private var closing: DispatchWorkItem?
+    /// The pointer's at the bottom edge: it comes up if it's still there in a moment (see `dwell`).
+    private var opening: DispatchWorkItem?
     /// Faded away while something's dragged off the shelf to elsewhere.
     private var fadedForDrag = false
     private var cancellables = Set<AnyCancellable>()
@@ -120,8 +122,10 @@ final class DockController {
         return pressedOn
     }
 
+    private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops }
+
     private func pointerMoved() {
-        guard state.showsDock, !state.isOff, !state.isResting, !state.isViewingDesktops else { return }
+        guard canOpen else { return }
         let location = NSEvent.mouseLocation
         if model.isOpen {
             let over = isOver(location)
@@ -139,15 +143,36 @@ final class DockController {
             if panel.ignoresMouseEvents == takes { panel.ignoresMouseEvents = !takes }
             return
         }
-        // Reaching the bottom edge in the middle of the screen (see `calls`), as the Dock comes up:
-        // mid-drag too, as the Dock does, to be dropped on.
-        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(location, $0.frame, false) }),
-              Self.calls(location, on: screen.frame) else { return }
-        open(on: screen)
+        // Reaching the bottom edge in the middle of the screen (see `calls`) and staying a moment,
+        // as the Dock comes up: mid-drag too, as the Dock does, to be dropped on.
+        guard Self.callingScreen(at: location) != nil else {
+            opening?.cancel()
+            opening = nil
+            return
+        }
+        guard opening == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.opening = nil
+                guard self.canOpen, !self.model.isOpen, let screen = Self.callingScreen(at: NSEvent.mouseLocation) else { return }
+                self.open(on: screen)
+            }
+        }
+        opening = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.dwell, execute: work)
     }
 
     /// How much of the screen's width, in the middle, the bottom edge brings the Dock up along.
     nonisolated static let reach: CGFloat = 0.4
+    /// How long the pointer stays there first: only just, so passing over it on the way to a
+    /// corner, or to something low down, doesn't bring it up.
+    nonisolated static let dwell: TimeInterval = 0.15
+
+    /// The screen whose bottom edge the pointer's calling the Dock up at, if it is.
+    private static func callingScreen(at location: NSPoint) -> NSScreen? {
+        NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) }.flatMap { calls(location, on: $0.frame) ? $0 : nil }
+    }
 
     /// Whether the pointer at `location` calls the Dock up on the screen `frame`: at its bottom edge,
     /// within the middle `reach` of it, so the corners (and the rest of the edge) are left alone.
