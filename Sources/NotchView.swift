@@ -271,6 +271,14 @@ struct ExpandedNotch: View {
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
+                } else if state.workLog.reminding {
+                    CheckInAlert(log: state.workLog) {
+                        // Asked again in an hour, if it's left unsaid.
+                        state.workLog.putOff()
+                        state.page = .log
+                        state.focusCheckIn = true
+                    }
+                    .transition(NotchView.swap)
                 } else {
                     switch state.page {
                     case .music:
@@ -281,6 +289,9 @@ struct ExpandedNotch: View {
                             .transition(NotchView.swap)
                     case .ideas:
                         IdeasPage(tod: state.tod, state: state)
+                            .transition(NotchView.swap)
+                    case .log:
+                        LogPage(log: state.workLog, state: state, tod: state.tod)
                             .transition(NotchView.swap)
                     case .awake:
                         AwakePage(awake: awake, state: state)
@@ -329,6 +340,7 @@ struct PageTabs: View {
             if tabs.contains(.music) { tab(.music, symbol: "music.note") }
             if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
             if tabs.contains(.ideas) { tab(.ideas, symbol: "lightbulb") }
+            if tabs.contains(.log) { tab(.log, symbol: "book.closed") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
             if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }

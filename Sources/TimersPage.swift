@@ -402,6 +402,12 @@ struct ReminderField: NSViewRepresentable {
     var selecting: NSRange?
     /// The keyboard's gone to another field, or back to another app.
     var onEnd: () -> Void = {}
+    /// More than one: it wraps onto as many lines as it's tall for, and ⌥↩ starts a new one.
+    var lines = 1
+    /// Takes the keyboard each time this changes, the caret at the end.
+    var focus = 0
+    /// Tab finishes what's typed up to the caret with what this gives, if anything.
+    var complete: ((String) -> String?)?
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -414,9 +420,18 @@ struct ReminderField: NSViewRepresentable {
         field.focusRingType = .none
         field.textColor = .white
         setFont(of: field, for: context.environment.notchTheme)
-        field.cell?.usesSingleLineMode = true
-        field.cell?.lineBreakMode = .byTruncatingTail
+        if lines > 1 {
+            field.cell?.usesSingleLineMode = false
+            field.cell?.wraps = true
+            field.cell?.isScrollable = false
+            field.cell?.lineBreakMode = .byWordWrapping
+            field.maximumNumberOfLines = 0
+        } else {
+            field.cell?.usesSingleLineMode = true
+            field.cell?.lineBreakMode = .byTruncatingTail
+        }
         field.delegate = context.coordinator
+        context.coordinator.focused = focus
         if let selecting {
             // Once it's in the window, with its text.
             DispatchQueue.main.async {
@@ -436,6 +451,17 @@ struct ReminderField: NSViewRepresentable {
         context.coordinator.parent = self
         if field.stringValue != text { field.stringValue = text }
         setFont(of: field, for: context.environment.notchTheme)
+        if context.coordinator.focused != focus {
+            context.coordinator.focused = focus
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let window = field.window else { return }
+                    window.makeKey()
+                    if field.currentEditor() == nil, !window.makeFirstResponder(field) { return }
+                    field.currentEditor()?.selectedRange = NSRange(location: (field.stringValue as NSString).length, length: 0)
+                }
+            }
+        }
     }
 
     /// The system's in Oyl's own look; Midnight Oyl's reading face (Georgia) in its.
@@ -452,6 +478,8 @@ struct ReminderField: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: ReminderField
+        /// The last `focus` acted on.
+        var focused = 0
 
         init(_ parent: ReminderField) {
             self.parent = parent
@@ -459,8 +487,8 @@ struct ReminderField: NSViewRepresentable {
 
         func controlTextDidChange(_ notification: Notification) {
             guard let field = notification.object as? NSTextField else { return }
-            // Pasted lines run on, one after another.
-            if field.stringValue.rangeOfCharacter(from: .newlines) != nil {
+            // Pasted lines run on, one after another (where it's one line).
+            if parent.lines == 1, field.stringValue.rangeOfCharacter(from: .newlines) != nil {
                 field.stringValue = field.stringValue.components(separatedBy: .newlines).joined(separator: " ")
             }
             parent.text = field.stringValue
@@ -477,6 +505,13 @@ struct ReminderField: NSViewRepresentable {
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 parent.onCancel()
+                return true
+            case #selector(NSResponder.insertTab(_:)):
+                guard let complete = parent.complete else { return false }
+                let caret = textView.selectedRange()
+                let before = (textView.string as NSString).substring(to: min(caret.location, (textView.string as NSString).length))
+                guard let rest = complete(before) else { return true }
+                textView.insertText(rest, replacementRange: caret)
                 return true
             default:
                 return false

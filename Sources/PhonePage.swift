@@ -81,6 +81,11 @@ enum PhonePage {
     footer { text-align: center; color: var(--faint); font-size: 11px; letter-spacing: .12em; margin-top: 22px; }
     footer em { font-style: normal; letter-spacing: 0; }
     .gone .quiet { color: var(--accent); }
+    textarea { font: inherit; color: var(--fg); background: var(--fill); border: 0; border-radius: 12px; padding: 10px 12px; width: 100%;
+      min-height: 84px; resize: vertical; outline: none; display: block; }
+    textarea::placeholder { color: var(--faint); }
+    .ask { color: var(--soft); margin: 0 0 10px; }
+    .ask.due { color: var(--fg); font-weight: 600; }
     .jot { display: flex; gap: 8px; margin-bottom: 6px; }
     .jot input { flex: 1; }
     .kind { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin: 12px 0 2px; }
@@ -139,6 +144,14 @@ enum PhonePage {
     body[data-look=midnight] input { background: none; border-radius: 0; padding: 9px 2px;
       background-image: linear-gradient(90deg, rgba(214,222,237,.42), rgba(214,222,237,.08)); background-size: 100% 1px;
       background-position: 0 100%; background-repeat: no-repeat; }
+    body[data-look=midnight] textarea { background: none; border-radius: 0; padding: 9px 2px;
+      background-image: linear-gradient(90deg, rgba(214,222,237,.42), rgba(214,222,237,.08)); background-size: 100% 1px;
+      background-position: 0 100%; background-repeat: no-repeat; }
+    body[data-look=midnight] .ask { font-family: Superclarendon, Georgia, serif; font-style: italic; }
+    body[data-look=midnight] .ask.due { font-weight: 400; color: var(--accent); }
+    body[data-look=midnight] .ask.due::before { content: "\2726\00a0"; display: inline-block; animation: twinkle 1.6s ease-in-out infinite; }
+    body[data-look=midnight] #log .chips { gap: 6px 16px; }
+    body[data-look=midnight] #logToday { margin-left: 7%; }
     body[data-look=midnight] { --late: #ffb3c0; }
     body[data-look=midnight] .kind { font-family: Copperplate, serif; font-weight: 400; letter-spacing: .16em; }
     body[data-look=midnight] .idea .when { font-family: Superclarendon, Georgia, serif; font-style: italic; }
@@ -193,6 +206,14 @@ enum PhonePage {
           <button class="primary" id="jotIdea">Jot</button>
         </div>
         <div id="ideaList"></div>
+      </section>
+      <section id="log" hidden>
+        <h2>Check in</h2>
+        <p class="ask" id="logPrompt"></p>
+        <textarea id="checkIn" maxlength="4000" placeholder="#oyl shipped the dock delay. #cs229 finished pset 3" aria-label="Check-in"></textarea>
+        <div class="chips" id="logTags"></div>
+        <div class="buttons"><button class="primary" id="fileCheckIn">File it</button></div>
+        <div id="logToday"></div>
       </section>
       <section id="music" hidden>
         <h2>Playing</h2>
@@ -288,7 +309,7 @@ enum PhonePage {
     // MARK: Pairing
     function unpaired() {
       state = null;
-      for (const part of ["requests", "agents", "ideas", "music", "timers", "awake"]) $(part).hidden = true;
+      for (const part of ["requests", "agents", "ideas", "log", "music", "timers", "awake"]) $(part).hidden = true;
       $("pair").hidden = false;
       $("link").textContent = "Not paired yet";
       if (location.search.includes("unpaired")) $("pairError").textContent = "That code didn't work: ask the Mac for a new one.";
@@ -336,6 +357,7 @@ enum PhonePage {
       showRequests(next.requests);
       showAgents(next.agents);
       showIdeas(next);
+      showLog(next);
       showMusic(next);
       showTimers(next);
       showAwake(next);
@@ -413,6 +435,36 @@ enum PhonePage {
     }
     $("jotIdea").addEventListener("click", jot);
     $("idea").addEventListener("keydown", (event) => { if (event.key === "Enter") jot(); });
+
+    // The work log: what's asked today, your projects' tags (a tap starts one's part), and what's
+    // been filed today, each to take back out.
+    function showLog(next) {
+      const log = next.log;
+      $("log").hidden = !next.pages.includes("log") || !log;
+      if (!log) return;
+      $("logPrompt").textContent = log.prompt;
+      $("logPrompt").className = "ask" + (log.asking ? " due" : "");
+      $("logTags").replaceChildren(...log.projects.map((project) => button("#" + project.name, "", () => startPart(project.name))));
+      const today = log.today || [];
+      $("logToday").replaceChildren(...(today.length ? [el("div", "kind", "Filed today")] : []), ...today.map((entry) => {
+        const row = el("div", "row");
+        const text = el("div", "grow");
+        text.append(el("div", "sub", "#" + entry.name), el("div", "name", entry.text));
+        row.append(text, button("✕", "x", () => act({ do: "unlog", id: entry.id })));
+        return row;
+      }));
+    }
+    function startPart(name) {
+      const area = $("checkIn"), typed = area.value.trimEnd();
+      area.value = (typed ? typed + "\n" : "") + "#" + name + " ";
+      area.focus();
+    }
+    $("fileCheckIn").addEventListener("click", () => {
+      const text = $("checkIn").value.trim();
+      if (!text) { $("checkIn").focus(); return; }
+      act({ do: "checkIn", text });
+      $("checkIn").value = "";
+    });
 
     function showMusic(next) {
       const music = next.music;

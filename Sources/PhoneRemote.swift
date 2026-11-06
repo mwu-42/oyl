@@ -344,6 +344,9 @@ enum PhoneAction: Equatable {
     /// a month, or kept another month.
     case addIdea(String)
     case ideaDone(String), putOff(String, days: Int), keepIdea(String)
+    /// A check-in for the work log (read as the notch's log field reads it), or something filed
+    /// today taken back out.
+    case checkIn(String), unlog(UUID)
 
     /// From the remote's JSON: `{"do": "allow", "id": "…"}` and so on.
     init?(_ body: Data) {
@@ -375,6 +378,10 @@ enum PhoneAction: Equatable {
             guard let id, let days = fields["days"] as? Int, days == 7 || days == 28 else { return nil }
             self = .putOff(id, days: days)
         case "keepIdea": guard let id else { return nil }; self = .keepIdea(id)
+        case "checkIn":
+            guard let text = (fields["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+            self = .checkIn(String(text.prefix(4000)))
+        case "unlog": guard let uuid = id.flatMap(UUID.init) else { return nil }; self = .unlog(uuid)
         default: return nil
         }
     }
@@ -449,10 +456,32 @@ struct PhoneSnapshot: Codable, Equatable {
         var stale: Bool
     }
 
+    /// The work log: its projects (the latest worked on first), what's been filed today, and
+    /// whether the notch is asking for today's check-in.
+    struct Log: Codable, Equatable {
+        struct Project: Codable, Equatable {
+            var tag: String
+            var name: String
+            var days: Int
+        }
+
+        struct Entry: Codable, Equatable {
+            var id: String
+            var name: String
+            var text: String
+        }
+
+        var prompt: String
+        var asking: Bool
+        var projects: [Project]
+        var today: [Entry]
+    }
+
     var mac: String
     var look: String
     var now: Double
-    /// The notch's pages that are on, of "music", "timers", "awake" and "ideas" (with tod there).
+    /// The notch's pages that are on, of "music", "timers", "awake", "ideas" (with tod there)
+    /// and "log".
     var pages: [String]
     var requests: [Request]
     var agents: [Agent]
@@ -461,6 +490,7 @@ struct PhoneSnapshot: Codable, Equatable {
     var ringing: String?
     var awake: Awake
     var ideas: [Idea] = []
+    var log: Log? = nil
 }
 
 /// What the remote works: the notch's own state, in the app (made up, to try it out).
@@ -489,6 +519,13 @@ final class NotchPhoneControls: PhoneControls {
         var pages = [(Feature.musicPage, "music"), (Feature.timersPage, "timers"), (Feature.awakePage, "awake")]
             .filter { $0.0.isOn }.map(\.1)
         if Feature.ideasPage.isOn, state.tod.isAvailable { pages.append("ideas") }
+        if Feature.logPage.isOn { pages.append("log") }
+        let log = state.workLog
+        let logged = PhoneSnapshot.Log(prompt: log.prompt(at: now), asking: log.reminding,
+                                       projects: log.projects.map { .init(tag: $0.tag, name: $0.name, days: log.days(of: $0.tag)) },
+                                       today: log.entries(on: now).map { entry in
+                                           .init(id: entry.id.uuidString, name: log.project(entry.tag)?.name ?? entry.tag, text: entry.text)
+                                       })
         let music = playing.track.flatMap { track in
             playing.player.map { player in
                 PhoneSnapshot.Music(player: player.name, title: track.title, artist: track.artist, playing: playing.isPlaying,
@@ -520,7 +557,8 @@ final class NotchPhoneControls: PhoneControls {
             ringing: timers.ringing?.title, awake: awake,
             ideas: IdeaBoard.rows(state.tod.ideas, now: now).map { row in
                 .init(id: row.id, title: row.title, kind: row.kind.rawValue, label: row.label, overdue: row.overdue, stale: row.stale)
-            })
+            },
+            log: Feature.logPage.isOn ? logged : nil)
     }
 
     private static func state(of activity: AgentActivity) -> String {
@@ -566,6 +604,10 @@ final class NotchPhoneControls: PhoneControls {
             case .keepIdea: state.tod.keep(id)
             default: state.tod.toggle(id)
             }
+        case let .checkIn(text): return !state.workLog.checkIn(text).isEmpty
+        case let .unlog(id):
+            guard state.workLog.saved.entries.contains(where: { $0.id == id }) else { return false }
+            state.workLog.remove(id)
         }
         return true
     }

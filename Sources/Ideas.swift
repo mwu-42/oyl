@@ -568,7 +568,7 @@ private struct IdeaRow: View {
 }
 
 /// In Midnight Oyl, each row drifts in after the one before, out of a blur.
-private struct IdeaDrift: ViewModifier {
+struct IdeaDrift: ViewModifier {
     let order: Int
     let on: Bool
     @StateObject private var shown = LocalState(false)

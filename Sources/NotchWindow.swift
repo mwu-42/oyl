@@ -71,7 +71,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, ideas, awake, agents, activity, mirror
+    case music, timers, ideas, log, awake, agents, activity, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -154,6 +154,9 @@ final class NotchState: ObservableObject {
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
     @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
+    /// The log page's field is to take the keyboard as it comes up (the notch asked, and you
+    /// said you'd check in).
+    @Published var focusCheckIn = false
     /// How tall the timers' rows stand, and for how many: a long name wraps, so they're measured
     /// as they're laid out (see `TimersPage`).
     @Published var timerRowsMeasure: (count: Int, height: CGFloat)?
@@ -191,6 +194,7 @@ final class NotchState: ObservableObject {
     @Published var theme = NotchTheme(rawValue: UserDefaults.standard.string(forKey: "notch.theme") ?? "") ?? .standard {
         didSet {
             UserDefaults.standard.set(theme.rawValue, forKey: "notch.theme")
+            workLog.look = theme
             if theme != .midnight { isPinned = false }
             // Midnight Oyl has no camera page: it shows the hands, always, and no picture.
             if theme == .midnight, page == .mirror { page = .music }
@@ -235,7 +239,10 @@ final class NotchState: ObservableObject {
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
     let tod = TodStore()
+    /// Your daily check-ins, filed by #tag (see `WorkLog`).
+    let workLog = WorkLog()
     private var todForwarding: AnyCancellable?
+    private var logForwarding: AnyCancellable?
     private var forwarding: AnyCancellable?
     private var phoneForwarding: AnyCancellable?
 
@@ -269,8 +276,10 @@ final class NotchState: ObservableObject {
     /// Starts the phone remote, if it's on, and redraws the settings as it changes.
     func startPhone() {
         phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        // The ideas page's height goes by its ideas.
+        // The ideas page's height goes by its ideas, and the log's by what's been filed today.
         todForwarding = tod.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        logForwarding = workLog.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        workLog.look = theme
     }
 
     /// The ideas' rows as tall as they stand (each kind under its heading), and as much of that as
@@ -284,7 +293,7 @@ final class NotchState: ObservableObject {
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .ideas, .awake, .activity, .mirror, .settings].filter(shows)
+        [.agents, .music, .timers, .ideas, .log, .awake, .activity, .mirror, .settings].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
@@ -294,14 +303,16 @@ final class NotchState: ObservableObject {
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
         case .ideas: return Feature.ideasPage.isOn
+        case .log: return Feature.logPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
         case .mirror: return showsMirrorTab
         }
     }
 
-    /// A timer's gone off or it's two in the morning: the notch pops open to say so.
-    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding }
+    /// A timer's gone off, it's two in the morning, or it's time to check in: the notch pops open
+    /// to say so.
+    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding || workLog.reminding }
 
     var mode: NotchMode {
         // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
@@ -401,6 +412,7 @@ final class NotchState: ObservableObject {
             return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil && theme != .midnight ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
         case .ideas: return Layout.ideasHeight(list: ideaListHeight)
+        case .log: return Layout.logHeight(today: workLog.entries().count, suggestions: !workLog.fromTod(tod).isEmpty)
         case .awake: return Layout.awakeHeight
         case .agents:
             // The settings go under them all.

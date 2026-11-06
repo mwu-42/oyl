@@ -37,7 +37,8 @@ struct PhoneRequest: Equatable {
         case complete(PhoneRequest)
     }
 
-    static let headLimit = 8192, bodyLimit = 4096
+    // (Room in the body for a long check-in.)
+    static let headLimit = 8192, bodyLimit = 16384
 
     /// What's come in so far, read as a request if it's all there.
     static func parse(_ data: Data) -> Parsed {
