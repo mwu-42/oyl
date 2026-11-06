@@ -426,7 +426,6 @@ struct PhoneSnapshot: Codable, Equatable {
         /// When it goes off, if it's running; how long it has left, if it's paused.
         var ends: Double?
         var left: Double?
-        var endless: Bool
         var duration: Double
         /// Held on the notch.
         var focused = false
@@ -516,7 +515,7 @@ final class NotchPhoneControls: PhoneControls {
             music: music,
             timers: timers.soonestFirst(at: now).map { timer in
                 .init(id: timer.id.uuidString, title: timer.title, ends: timer.endDate?.timeIntervalSince1970,
-                      left: timer.pausedRemaining, endless: timer.isEndless, duration: timer.duration, focused: timer.id == timers.focused)
+                      left: timer.pausedRemaining, duration: timer.duration, focused: timer.id == timers.focused)
             },
             ringing: timers.ringing?.title, awake: awake,
             ideas: IdeaBoard.rows(state.tod.ideas, now: now).map { row in
@@ -541,7 +540,9 @@ final class NotchPhoneControls: PhoneControls {
         case .playPause: state.nowPlaying.togglePlayPause()
         case .next: state.nowPlaying.next()
         case .previous: state.nowPlaying.previous()
-        case let .startTimer(minutes, label): state.timers.start(duration: (minutes * 60).rounded(), label: label)
+        case let .startTimer(minutes, label):
+            let (label, pin) = ReminderParser.unpinned(label)
+            state.timers.start(duration: (minutes * 60).rounded(), label: label, pin: pin)
         case let .pauseTimer(id), let .cancelTimer(id), let .focusTimer(id):
             guard state.timers.timers.contains(where: { $0.id == id }) else { return false }
             switch action {

@@ -167,8 +167,8 @@ struct CompactNotch: View {
     }
 }
 
-/// The timer held on the closed notch: its ring and name on the left, its time on the right (a
-/// reminder with no time, its name there instead), ticking each second.
+/// The timer held on the closed notch: its ring and name on the left, its time on the right,
+/// ticking each second.
 struct HeldTimer: View {
     let timer: ReminderTimer
     let size: CGSize
@@ -177,28 +177,20 @@ struct HeldTimer: View {
 
     var body: some View {
         Countdown(timer: timer) { remaining, left in
-            let tint = timer.isEndless ? theme.tint(Oyl.noteYellow) : timer.tint(fractionLeft: left, theme: theme)
+            let tint = timer.tint(fractionLeft: left, theme: theme)
             HStack(spacing: 0) {
                 HStack(spacing: 5) {
-                    if timer.isEndless {
-                        Image(systemName: "infinity")
-                            .notchSymbol(size: 10, weight: .bold)
-                            .foregroundStyle(tint)
-                            .frame(width: 14, height: 14)
-                    } else {
-                        TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2, color: tint)
-                            .frame(width: 14, height: 14)
-                        Text(timer.title)
-                            .notchFont(size: 11, weight: .medium)
-                            .foregroundStyle(.white.opacity(0.75))
-                            .lineLimit(1)
-                    }
+                    TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2, color: tint)
+                        .frame(width: 14, height: 14)
+                    Text(timer.title)
+                        .notchFont(size: 11, weight: .medium)
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
                 }
                 .frame(width: CompactLayout.timerWing - 12, alignment: .leading)
                 Spacer(minLength: notchWidth)
-                Text(timer.isEndless ? timer.title : ReminderTimer.format(remaining))
-                    .notchFont(size: timer.isEndless ? 11 : 13, weight: timer.isEndless ? .medium : .semibold,
-                               design: timer.isEndless ? .default : .rounded, digits: !timer.isEndless)
+                Text(ReminderTimer.format(remaining))
+                    .notchFont(size: 13, weight: .semibold, design: .rounded, digits: true)
                     .foregroundStyle(tint)
                     .lineLimit(1)
                     .frame(width: CompactLayout.timerWing - 12, alignment: .trailing)

@@ -1315,8 +1315,8 @@ struct Walker: Identifiable, Equatable {
         return CGRect(x: middle(at: date) - 20 * scale, y: 3 * scale, width: 40 * scale, height: 44 * scale)
     }
 
-    /// What can be clicked: Oyl, and a timer's clock and countdown (or a reminder's note) beside
-    /// it; a moyl, and its label.
+    /// What can be clicked: Oyl, and a timer's clock and countdown beside it; a moyl, and its
+    /// label.
     func hitBox(at date: Date, height: CGFloat, allCountdowns: Bool = true) -> CGRect {
         var box = body(at: date, height: height)
         if floats {
@@ -1324,9 +1324,9 @@ struct Walker: Identifiable, Equatable {
             let middle = place(at: date, height: height).center.y
             return box.union(CGRect(x: labelX(at: date, height: height), y: middle - 8.5, width: width, height: 17))
         }
-        guard case .timer(let timer) = job, !isWalking(at: date), !isCheering(at: date) else { return box }
+        guard case .timer = job, !isWalking(at: date), !isCheering(at: date) else { return box }
         let scale = height / 50, frame = frame(at: date, height: height)
-        if !timer.isEndless { box = box.union(CGRect(x: frame.minX + 57 * scale, y: 15 * scale, width: 26 * scale, height: 26 * scale)) }
+        box = box.union(CGRect(x: frame.minX + 57 * scale, y: 15 * scale, width: 26 * scale, height: 26 * scale))
         guard let width = labelWidth(at: date, allCountdowns: allCountdowns) else { return box }
         return box.union(CGRect(x: labelX(at: date, height: height), y: (height - 17) / 2, width: width, height: 17))
     }
@@ -1343,8 +1343,7 @@ struct Walker: Identifiable, Equatable {
     func labelOffset(height: CGFloat) -> CGFloat {
         let scale = height / 50
         switch job {
-        case .timer(let timer) where !timer.isEndless: return 84 * scale
-        case .battery: return 84 * scale
+        case .timer, .battery: return 84 * scale
         default: return 50 * scale
         }
     }
@@ -1401,12 +1400,10 @@ struct Walker: Identifiable, Equatable {
 
     /// Its countdown (or what it's for), shown beside it, and in what color.
     /// Without `allCountdowns`, a countdown shows only in its last three minutes (what isn't a
-    /// time, a reminder's note or the battery, always does).
+    /// time, like the battery's, always does).
     func label(at date: Date, allCountdowns: Bool = true) -> (text: String, color: Color)? {
         guard !leaving else { return nil }
         switch job {
-        case .timer(let timer) where timer.isEndless:
-            return (timer.label.isEmpty ? "∞" : timer.label, Oyl.noteYellow)
         case .timer(let timer):
             let left = timer.remaining(at: date)
             guard allCountdowns || left < Self.lastMinutes else { return nil }

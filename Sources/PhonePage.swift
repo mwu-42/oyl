@@ -476,12 +476,12 @@ enum PhonePage {
         text.append(el("div", "name", timer.title));
         const left = el("span", "left");
         if (timer.ends) left.dataset.ends = String(timer.ends);
-        else left.textContent = timer.endless ? "" : length(timer.left || 0);
+        else left.textContent = length(timer.left || 0);
         row.append(text, left);
         const hold = button(timer.focused ? "\u25C9" : "\u25CB", "x" + (timer.focused ? " held" : ""), () => act({ do: "focusTimer", id: timer.id }));
         hold.setAttribute("aria-label", timer.focused ? "Let go of the notch" : "Hold on the notch");
         row.append(hold);
-        if (!timer.endless) row.append(button(timer.ends ? "❙❙" : "▶︎", "x", () => act({ do: "pauseTimer", id: timer.id })));
+        row.append(button(timer.ends ? "❙❙" : "▶︎", "x", () => act({ do: "pauseTimer", id: timer.id })));
         row.append(button("✕", "x", () => act({ do: "cancelTimer", id: timer.id })));
         return row;
       }));

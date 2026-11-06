@@ -360,11 +360,10 @@ final class NotchState: ObservableObject {
     }
 
     /// Oyls whose work is done, as opposed to called off: agents that have finished, timers that
-    /// have gone off, reminders ticked off. They cheer before they go.
+    /// have gone off. They cheer before they go.
     var finishedOyls: Set<String> {
         var finished = Set(agents.sessions.filter { $0.activity == .done }.map { "agent \($0.id)" })
         if let ringing = timers.ringing { finished.insert("timer \(ringing.id)") }
-        for id in timers.resolved { finished.insert("timer \(id)") }
         if power.recharged { finished.insert("battery") }
         return finished
     }
@@ -980,8 +979,6 @@ final class NotchController {
             return state.nowPlaying.track.map { "Reading \($0.title)" + ($0.artist.isEmpty ? "" : ", by \($0.artist)") } ?? "Reading"
         case .music:
             return state.nowPlaying.track.map { "♪ \($0.title), by \($0.artist)" } ?? "♪"
-        case .timer(let timer) where timer.isEndless:
-            return timer.label.isEmpty ? "A reminder, until it's done" : "Reminder: \(timer.label)"
         case .timer(let timer):
             return "\(timer.title): \(ReminderTimer.format(timer.remaining(at: now))) left" + (timer.isRunning ? "" : ", paused")
         case .awake(.until(let end)):

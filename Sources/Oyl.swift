@@ -753,8 +753,7 @@ enum OylDuty: Equatable {
     enum Listening: Equatable {
         case dj, singing, reading
     }
-    /// By a clock filling in as time goes, deepening to blue. An endless reminder holds up a
-    /// sticky note instead.
+    /// By a clock filling in as time goes, deepening to blue.
     case timer(ReminderTimer)
     /// Sea green and jittery, on energy drinks; with a stopwatch for a set time, or binoculars when
     /// it's watching for an app to quit.
@@ -775,7 +774,6 @@ enum OylDuty: Equatable {
         case .music:
             return nil
         case .timer(let timer):
-            guard !timer.isEndless else { return nil }
             let gone = 1 - timer.fractionLeft(at: date)
             return Oyl.timer(gone)
         case .awake:
@@ -826,9 +824,6 @@ extension OylDrawing {
         case .music(_, let listening):
             pose = self.pose(for: .dance, at: 0)
             if listening == .singing { pose.hands.1 = CGPoint(x: 23, y: 26) }  // the mic at its mouth
-        case .timer(let timer) where timer.isEndless:
-            pose.hands.1 = noteHand
-            pose.look = CGPoint(x: 0, y: 0.3)  // at you, holding it up
         case .timer(let timer):
             pose.look = CGPoint(x: 0.9, y: 0.2)  // at the clock
             if !timer.isRunning {
@@ -904,8 +899,6 @@ extension OylDrawing {
             if listening == .singing { microphone(in: body, hand: pose.hands.1) }
             cover(image, in: space, at: CGRect(x: 50, y: 10, width: 34, height: 34))
             visualizer(in: space, at: CGRect(x: 87, y: 20, width: 12, height: 24))
-        case .timer(let timer) where timer.isEndless:
-            note(in: body, hand: pose.hands.1)
         case .timer(let timer):
             clock(in: space, at: CGPoint(x: 70, y: 28), radius: 11, timer: timer, date: date)
         case .awake(let mode):
@@ -940,8 +933,6 @@ extension OylDrawing {
         case .music(_, let listening)?:
             pose.hands.0 = CGPoint(x: 5, y: 31)  // reaching back for the string
             if listening == .singing { pose.hands.1 = CGPoint(x: 23, y: 26) }  // and the mic at its mouth
-        case .timer(let timer)? where timer.isEndless:
-            pose.hands.1 = noteHand
         case .awake(let mode)?:
             pose.lid = 0.08
             if case .whileRunning = mode { pose.hands = (CGPoint(x: 13, y: 21), CGPoint(x: 27, y: 21)) }
@@ -977,8 +968,6 @@ extension OylDrawing {
             string.move(to: hand)
             string.addQuadCurve(to: corner, control: CGPoint(x: (hand.x + corner.x) / 2, y: max(hand.y, corner.y) + 3))
             space.stroke(string, with: .color(Color(white: 0.3)), style: StrokeStyle(lineWidth: 0.9, lineCap: .round))
-        case .timer(let timer)? where timer.isEndless:
-            note(in: body, hand: pose.hands.1)
         case .timer(let timer)?:
             clock(in: body, at: CGPoint(x: pose.hands.1.x + 2, y: pose.hands.1.y - 3.5), radius: 4.5, timer: timer,
                   date: Date(timeIntervalSinceReferenceDate: time))
@@ -1186,37 +1175,6 @@ extension OylDrawing {
         }
         context.fill(Path(ellipseIn: CGRect(x: center.x - 1.6, y: center.y - 1.6, width: 3.2, height: 3.2)),
                      with: .color(.white.opacity(0.5)))
-    }
-
-    // Sticky note
-
-    /// Where its hand is holding the note up, swaying a little.
-    private var noteHand: CGPoint {
-        CGPoint(x: 33 + 1.2 * sin(time * 1.7), y: 14)
-    }
-
-    /// The endless reminder's mark: a sticky note held up over its head.
-    private func note(in context: GraphicsContext, hand: CGPoint) {
-        var stick = Path()
-        stick.move(to: CGPoint(x: hand.x, y: hand.y + 1))
-        stick.addLine(to: CGPoint(x: hand.x, y: hand.y - 5))
-        context.stroke(stick, with: .color(Color(white: 0.55)), style: StrokeStyle(lineWidth: 1.1, lineCap: .round))
-        let note = CGRect(x: hand.x - 5.5, y: hand.y - 15, width: 11, height: 10)
-        var paper = Path()
-        paper.move(to: note.origin)
-        paper.addLine(to: CGPoint(x: note.maxX, y: note.minY))
-        paper.addLine(to: CGPoint(x: note.maxX, y: note.maxY - 3))
-        paper.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY))
-        paper.addLine(to: CGPoint(x: note.minX, y: note.maxY))
-        paper.closeSubpath()
-        context.fill(paper, with: .color(Oyl.noteYellow))
-        context.fill(Path { $0.move(to: CGPoint(x: note.maxX, y: note.maxY - 3)); $0.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY - 3))
-                            $0.addLine(to: CGPoint(x: note.maxX - 3, y: note.maxY)) },
-                     with: .color(Color(red: 0.85, green: 0.68, blue: 0.2)))
-        for row in 0..<2 {
-            context.fill(Path(CGRect(x: note.minX + 2, y: note.minY + 3 + CGFloat(row) * 2.6, width: row == 0 ? 7 : 4.5, height: 0.9)),
-                         with: .color(Color(white: 0.35)))
-        }
     }
 
     // Energy drink

@@ -225,8 +225,6 @@ struct OylsPage: View {
                    subtitle: by) {
                 Oyl(duty: .music(cover: cover, listening: listening))
             }
-        case .timer(let timer) where timer.isEndless:
-            OylRow(title: timer.title, subtitle: "Out until it's done") { Oyl(duty: .timer(timer)) }
         case .timer(let timer):
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 OylRow(title: timer.title, subtitle: (timer.isRunning ? "" : "Paused · ")

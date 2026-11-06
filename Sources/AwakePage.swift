@@ -141,13 +141,12 @@ struct AwakePage: View {
     }
 
     private func submit() {
-        let parsed = ReminderParser.parse(draft.value)
-        if parsed.endless {
+        if ReminderParser.isEndless(draft.value) {
             awake.start(.indefinitely)
             finish()
             return
         }
-        guard let duration = parsed.duration else {
+        guard let duration = ReminderParser.parse(draft.value).duration else {
             NSSound.beep()
             return
         }

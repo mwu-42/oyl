@@ -6,10 +6,8 @@ struct ReminderTimer: Identifiable, Codable, Equatable {
     var duration: TimeInterval
     var endDate: Date?                    // set while running
     var pausedRemaining: TimeInterval?    // set while paused
-    var endless: Bool?                    // no time on it: there until it's marked done
 
     var isRunning: Bool { endDate != nil }
-    var isEndless: Bool { endless == true }
     var title: String { label.isEmpty ? "Timer" : label }
 
     func remaining(at date: Date) -> TimeInterval {
@@ -57,8 +55,6 @@ final class TimerStore: ObservableObject {
     @Published private(set) var timers: [ReminderTimer] = []
     /// The finished timer currently being announced in the notch.
     @Published private(set) var ringing: ReminderTimer?
-    /// Endless reminders marked done (their Oyls cheer before they go).
-    @Published private(set) var resolved: Set<UUID> = []
     /// Timers that have gone off, latest first: the last ten, from the past day.
     @Published private(set) var history: [ExpiredTimer] = []
 
@@ -76,7 +72,9 @@ final class TimerStore: ObservableObject {
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.storageKey),
            let saved = try? JSONDecoder().decode([ReminderTimer].self, from: data) {
-            timers = saved
+            // Reminders with no time on them are no more: any kept from before go.
+            timers = saved.filter { $0.duration > 0 }
+            if timers.count < saved.count { UserDefaults.standard.set(try? JSONEncoder().encode(timers), forKey: Self.storageKey) }
         }
         if let data = UserDefaults.standard.data(forKey: Self.historyKey),
            let saved = try? JSONDecoder().decode([ExpiredTimer].self, from: data) {
@@ -90,7 +88,12 @@ final class TimerStore: ObservableObject {
 
     /// Holds `id` on the notch, in place of any other; or, if it's held already, lets it go.
     func focus(_ id: UUID) {
-        focused = focused == id ? nil : id
+        hold(focused == id ? nil : id)
+    }
+
+    /// Holds `id` on the notch (letting go of any other), or with nil, none.
+    private func hold(_ id: UUID?) {
+        focused = id
         UserDefaults.standard.set(focused?.uuidString, forKey: "timers.focused")
     }
 
@@ -98,40 +101,31 @@ final class TimerStore: ObservableObject {
     /// finish, else a paused one.
     var next: ReminderTimer? {
         if let focusedTimer { return focusedTimer }
-        return timers.filter(\.isRunning).min { $0.endDate! < $1.endDate! } ?? timers.first { !$0.isEndless }
+        return timers.filter(\.isRunning).min { $0.endDate! < $1.endDate! } ?? timers.first
     }
 
-    /// The least time left first (a paused timer by what it has left), then reminders with no
-    /// time on them; oldest first where they're level.
+    /// The least time left first (a paused timer by what it has left); oldest first where they're
+    /// level.
     func soonestFirst(at date: Date) -> [ReminderTimer] {
-        func left(_ timer: ReminderTimer) -> TimeInterval { timer.isEndless ? .infinity : timer.remaining(at: date) }
-        return timers.enumerated().sorted { a, b in
-            left(a.element) != left(b.element) ? left(a.element) < left(b.element) : a.offset < b.offset
+        timers.enumerated().sorted { a, b in
+            let left = (a.element.remaining(at: date), b.element.remaining(at: date))
+            return left.0 != left.1 ? left.0 < left.1 : a.offset < b.offset
         }
         .map(\.element)
     }
 
-    func start(duration: TimeInterval, label: String) {
+    /// Started, and with `pin`, held on the notch (in place of any other).
+    func start(duration: TimeInterval, label: String, pin: Bool = false) {
         guard duration > 0 else { return }
-        timers.append(ReminderTimer(id: UUID(), label: label, duration: duration,
-                                    endDate: Date().addingTimeInterval(duration), pausedRemaining: nil))
+        let timer = ReminderTimer(id: UUID(), label: label, duration: duration,
+                                  endDate: Date().addingTimeInterval(duration), pausedRemaining: nil)
+        timers.append(timer)
+        if pin { hold(timer.id) }
         changed()
-    }
-
-    /// A reminder with no time on it: its Oyl stays out on the menu bar until it's done.
-    func startEndless(label: String) {
-        timers.append(ReminderTimer(id: UUID(), label: label, duration: 0, endDate: nil, pausedRemaining: nil, endless: true))
-        changed()
-    }
-
-    /// Marks an endless reminder done.
-    func resolve(_ id: UUID) {
-        resolved.insert(id)
-        cancel(id)
     }
 
     func togglePause(_ id: UUID) {
-        guard let index = timers.firstIndex(where: { $0.id == id }), !timers[index].isEndless else { return }
+        guard let index = timers.firstIndex(where: { $0.id == id }) else { return }
         let now = Date()
         if timers[index].isRunning {
             timers[index].pausedRemaining = timers[index].remaining(at: now)
@@ -145,27 +139,21 @@ final class TimerStore: ObservableObject {
 
     /// Changes a timer to what's been typed for it: its label, and its time unless that's still
     /// the `shown` one it was put up for editing with (then it keeps the time it really has left).
-    /// "inf" makes it a reminder with no time on it, and a time on a reminder starts it counting
-    /// down. A paused timer stays paused.
+    /// A paused timer stays paused. "/pin" holds it on the notch.
     func edit(_ id: UUID, to text: String, shown: TimeInterval?) {
         guard let index = timers.firstIndex(where: { $0.id == id }),
               !text.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         let parsed = ReminderParser.parse(text)
         var timer = timers[index]
         timer.label = parsed.label
-        if parsed.endless {
-            timer.endless = true
-            timer.duration = 0
-            timer.endDate = nil
-            timer.pausedRemaining = nil
-        } else if let duration = parsed.duration, duration != shown {
-            let paused = !timer.isRunning && !timer.isEndless
-            timer.endless = nil
+        if let duration = parsed.duration, duration != shown {
+            let paused = !timer.isRunning
             timer.duration = duration
             timer.endDate = paused ? nil : Date().addingTimeInterval(duration)
             timer.pausedRemaining = paused ? duration : nil
         }
         timers[index] = timer
+        if parsed.pin { hold(id) }
         changed()
     }
 
@@ -173,7 +161,7 @@ final class TimerStore: ObservableObject {
     /// was set for grows by as much, so its ring fills back up to match. Never past the longest a
     /// timer can run.
     func extend(_ id: UUID, by seconds: TimeInterval) {
-        guard let index = timers.firstIndex(where: { $0.id == id }), !timers[index].isEndless else { return }
+        guard let index = timers.firstIndex(where: { $0.id == id }) else { return }
         let left = timers[index].remaining(at: Date())
         let added = min(seconds, ReminderParser.longest - left)
         guard added > 0 else { return }
@@ -284,15 +272,12 @@ enum ReminderParser {
         pattern: #"(\d+(?:[.,]\d+)?)\s*(days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b"#,
         options: [.caseInsensitive])
     private static let numberPattern = try! NSRegularExpression(pattern: #"\b(\d+(?:[.,]\d+)?)\b"#)
+    private static let pinPattern = try! NSRegularExpression(pattern: #"(?<!\S)/pin(?!\S)"#, options: [.caseInsensitive])
     private static let endlessPattern = try! NSRegularExpression(pattern: #"(?:\binf(?:inite)?\b|∞)"#, options: [.caseInsensitive])
 
-    /// "inf" (or "∞") instead of a time makes it endless.
-    static func parse(_ text: String) -> (duration: TimeInterval?, label: String, endless: Bool) {
-        let whole = NSRange(location: 0, length: (text as NSString).length)
-        if endlessPattern.firstMatch(in: text, range: whole) != nil {
-            let label = endlessPattern.stringByReplacingMatches(in: text, range: whole, withTemplate: " ")
-            return (nil, label.split(whereSeparator: \.isWhitespace).joined(separator: " "), true)
-        }
+    /// The time, the name, and whether "/pin" (anywhere in it) asks for it to be held on the notch.
+    static func parse(_ text: String) -> (duration: TimeInterval?, label: String, pin: Bool) {
+        let (text, pin) = unpinned(text)
         var label = text
         var total: TimeInterval = 0
         let source = text as NSString
@@ -315,7 +300,20 @@ enum ReminderParser {
             while let last = words.last, connectors.contains(last.lowercased()) { words.removeLast() }
             while let first = words.first, connectors.contains(first.lowercased()) { words.removeFirst() }
         }
-        return (total > 0 ? min(total, longest) : nil, words.joined(separator: " "), false)
+        return (total > 0 ? min(total, longest) : nil, words.joined(separator: " "), pin)
+    }
+
+    /// `text` without any "/pin" in it, and whether there was one.
+    static func unpinned(_ text: String) -> (text: String, pin: Bool) {
+        let whole = NSRange(location: 0, length: (text as NSString).length)
+        guard pinPattern.firstMatch(in: text, range: whole) != nil else { return (text, false) }
+        let rest = pinPattern.stringByReplacingMatches(in: text, range: whole, withTemplate: " ")
+        return (rest.split(whereSeparator: \.isWhitespace).joined(separator: " "), true)
+    }
+
+    /// "inf" (or "∞") instead of a time: for as long as it takes (staying awake till it's stopped).
+    static func isEndless(_ text: String) -> Bool {
+        endlessPattern.firstMatch(in: text, range: NSRange(location: 0, length: (text as NSString).length)) != nil
     }
 
     /// A time as it'd be typed: "12m 34s", or past an hour "1h 5m" (rounded up, as the countdown

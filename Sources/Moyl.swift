@@ -510,11 +510,6 @@ fileprivate struct MoylLook {
                 swell = 0.05 * bop
                 singing = listening == .singing
                 spin = 9
-            case .timer(let timer) where timer.isEndless:
-                // A reminder: a little yellow moon going round, as long as it's out.
-                surface = .icy
-                moon = .circling(period: 22, tone: .pale(Oyl.noteYellow, keep: 0.7), orbit: 0.24)
-                spin = 16
             case .timer(let timer):
                 let left = timer.fractionLeft(at: date)
                 // Deepening in 5% steps (each is drawn anew).

@@ -15,7 +15,7 @@ struct TimersPage: View {
                 Image(systemName: "bell.fill")
                     .notchSymbol(size: 11, weight: .semibold)
                     .foregroundStyle(.white)
-                ReminderField(text: $draft.value, placeholder: "Remind me to…   e.g. “10m stretch” or “inf email prof”",
+                ReminderField(text: $draft.value, placeholder: "Remind me to…   e.g. “10m stretch” or “25m essay /pin”",
                               onSubmit: submit, onCancel: cancel)
                 if !draft.value.isEmpty {
                     Image(systemName: "return")
@@ -28,7 +28,7 @@ struct TimersPage: View {
             .background(Capsule().fill(.white.opacity(state.isEditing && editing.value == nil ? 0.14 : 0.08)))
 
             if timers.timers.isEmpty {
-                Text("Type a time and a reminder, like “25m laundry” (or “inf” to keep it till done), then Return.")
+                Text("Type a time and a reminder, like “25m laundry” (“/pin” holds it on the notch), then Return.")
                     .notchFont(size: 11)
                     .foregroundStyle(.white.opacity(0.4))
                     .frame(height: 20)
@@ -121,14 +121,11 @@ struct TimersPage: View {
 
     private func submit() {
         let parsed = ReminderParser.parse(draft.value)
-        if parsed.endless {
-            timers.startEndless(label: parsed.label)
-        } else if let duration = parsed.duration {
-            timers.start(duration: duration, label: parsed.label)
-        } else {
+        guard let duration = parsed.duration else {
             NSSound.beep()
             return
         }
+        timers.start(duration: duration, label: parsed.label, pin: parsed.pin)
         finish()
     }
 
@@ -152,8 +149,8 @@ struct TimerEdit {
     let time: NSRange
 }
 
-/// A timer or reminder. Click its name or its time to change either: it turns into a field with
-/// its time left and its name, typed as you would to set it.
+/// A timer. Click its name or its time to change either: it turns into a field with its time left
+/// and its name, typed as you would to set it.
 struct TimerRow: View {
     let timer: ReminderTimer
     @ObservedObject var timers: TimerStore
@@ -166,29 +163,7 @@ struct TimerRow: View {
     let finish: () -> Void
 
     var body: some View {
-        if timer.isEndless {
-            // No time on it: there until it's ticked off.
-            HStack(spacing: 10) {
-                Image(systemName: "infinity")
-                    .notchSymbol(size: 12, weight: .bold)
-                    .foregroundStyle(theme.tint(Oyl.noteYellow))
-                    .frame(width: 20, height: 20)
-                editable {
-                    name
-                    Spacer(minLength: 8)
-                }
-                hold
-                RoundButton(symbol: "checkmark", tint: theme.tint(Oyl.noteYellow)) {
-                    timers.resolve(timer.id)
-                }
-                RoundButton(symbol: "xmark", tint: .white) {
-                    timers.cancel(timer.id)
-                }
-            }
-            .frame(minHeight: Layout.timerRowHeight)
-        } else {
-            countdown
-        }
+        countdown
     }
 
     /// Holds it on the closed notch (letting go of any other), or lets it go.
@@ -263,12 +238,11 @@ struct TimerRow: View {
         }
     }
 
-    /// Up for changing as it'd be typed: its time left (or "inf") then its name, with the time
-    /// picked out.
+    /// Up for changing as it'd be typed: its time left then its name, with the time picked out.
     private func startEditing() {
-        let spelled = timer.isEndless ? nil : ReminderParser.spell(timer.remaining(at: Date()))
-        let time = spelled?.text ?? "inf"
-        editing = TimerEdit(id: timer.id, text: timer.label.isEmpty ? time : "\(time) \(timer.label)", shown: spelled?.duration,
+        let spelled = ReminderParser.spell(timer.remaining(at: Date()))
+        let time = spelled.text
+        editing = TimerEdit(id: timer.id, text: timer.label.isEmpty ? time : "\(time) \(timer.label)", shown: spelled.duration,
                             time: NSRange(location: 0, length: (time as NSString).length))
     }
 
