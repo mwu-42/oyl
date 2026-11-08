@@ -24,6 +24,8 @@ final class DockController {
     /// Faded away while something's dragged off the shelf to elsewhere.
     private var fadedForDrag = false
     private var cancellables = Set<AnyCancellable>()
+    /// When it last went.
+    private var closedAt: Date?
 
     init(state: NotchState) {
         self.state = state
@@ -203,12 +205,25 @@ final class DockController {
     private func open(on screen: NSScreen) {
         self.screen = screen
         model.screenWidth = screen.frame.width
-        model.calledFrom = NSEvent.mouseLocation.x - screen.frame.midX
+        // (Midnight Oyl's sky, still wilting, blooms again from where it was, rather than jumping.)
+        let wilting = model.theme == .midnight && closedAt.map { Date().timeIntervalSince($0) < 0.5 } == true
+        if !wilting { model.calledFrom = NSEvent.mouseLocation.x - screen.frame.midX }
         apps.reload()
         fit()
         panel.orderFrontRegardless()
         panel.ignoresMouseEvents = false
+        // The icons down at once, then (once that's drawn) up each in its turn: every time, even
+        // when it's come straight back before it had gone.
+        var still = Transaction()
+        still.disablesAnimations = true
+        withTransaction(still) { model.raised = false }
         model.isOpen = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.model.isOpen else { return }
+                self.model.raised = true
+            }
+        }
         hover(at: NSEvent.mouseLocation)
         Haptics.perform(.levelChange, performanceTime: .now)
     }
@@ -236,6 +251,7 @@ final class DockController {
     }
 
     private func close() {
+        if model.isOpen { closedAt = Date() }
         closing?.cancel()
         closing = nil
         model.quitting = nil
@@ -361,6 +377,8 @@ final class DockModel: ObservableObject {
     /// Where the pointer brought it up, across from the screen's middle: the icons come up from
     /// there out, and Midnight Oyl's sky blooms out of it.
     @Published var calledFrom: CGFloat = 0
+    /// Its icons have come up (see `Arriving`): put down as it opens, and up just after.
+    @Published var raised = false
     /// The icon the pointer's on, which says its name.
     @Published var hovered: String?
     /// The shelf's up over the bar.
@@ -563,15 +581,13 @@ private struct DockBar: View {
     @ObservedObject var apps: DockApps
     let shelf: Shelf
     @Environment(\.notchTheme) private var theme
-    /// Come up: just after it's appeared, each icon then coming up in its turn.
-    @StateObject private var up = LocalState(false)
 
     var body: some View {
         let layout = DockLayout(apps: apps, screenWidth: model.screenWidth)
         let midnight = theme == .midnight
         let items = shownApps(in: layout) + apps.others
         let arriving = { (x: CGFloat, y: CGFloat) in
-            Arriving(up: up.value, midnight: midnight, delay: DockView.arrival(at: CGPoint(x: x, y: y), bar: layout.size, from: model.calledFrom,
+            Arriving(up: model.raised, midnight: midnight, delay: DockView.arrival(at: CGPoint(x: x, y: y), bar: layout.size, from: model.calledFrom,
                                                                          screenWidth: model.screenWidth, midnight: midnight))
         }
         ZStack(alignment: .topLeading) {
@@ -634,7 +650,6 @@ private struct DockBar: View {
             // (Midnight Oyl's is the sky right across under it: see `MidnightDockSky`.)
             if !midnight { DockPlate() }
         }
-        .onAppear { up.value = true }
     }
 }
 
