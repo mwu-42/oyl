@@ -149,9 +149,9 @@ final class DockController {
             if panel.ignoresMouseEvents == takes { panel.ignoresMouseEvents = !takes }
             return
         }
-        // Reaching the bottom edge in the middle of the screen (see `calls`) and staying a moment,
+        // Reaching the bottom edge under where its icons would be (see `calls`) and staying a moment,
         // as the Dock comes up: mid-drag too, as the Dock does, to be dropped on.
-        guard Self.callingScreen(at: location) != nil else {
+        guard callingScreen(at: location) != nil else {
             opening?.cancel()
             opening = nil
             return
@@ -161,7 +161,7 @@ final class DockController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.opening = nil
-                guard self.canOpen, !self.model.isOpen, let screen = Self.callingScreen(at: NSEvent.mouseLocation) else { return }
+                guard self.canOpen, !self.model.isOpen, let screen = self.callingScreen(at: NSEvent.mouseLocation) else { return }
                 self.open(on: screen)
             }
         }
@@ -169,21 +169,25 @@ final class DockController {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.dwell, execute: work)
     }
 
-    /// How much of the screen's width, in the middle, the bottom edge brings the Dock up along.
-    nonisolated static let reach: CGFloat = 0.4
     /// How long the pointer stays there first: only just, so passing over it on the way to a
     /// corner, or to something low down, doesn't bring it up.
     nonisolated static let dwell: TimeInterval = 0.15
 
-    /// The screen whose bottom edge the pointer's calling the Dock up at, if it is.
-    private static func callingScreen(at location: NSPoint) -> NSScreen? {
-        NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) }.flatMap { calls(location, on: $0.frame) ? $0 : nil }
+    /// The screen whose bottom edge the pointer's calling the Dock up at, if it is: under where its
+    /// icons would be on that screen, as many as there are now.
+    private func callingScreen(at location: NSPoint) -> NSScreen? {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(location, $0.frame, false) }) else { return nil }
+        return Self.calls(location, on: screen.frame, layout: DockLayout(apps: apps, screenWidth: screen.frame.width)) ? screen : nil
     }
 
     /// Whether the pointer at `location` calls the Dock up on the screen `frame`: at its bottom edge,
-    /// within the middle `reach` of it, so the corners (and the rest of the edge) are left alone.
-    nonisolated static func calls(_ location: NSPoint, on frame: NSRect) -> Bool {
-        location.y <= frame.minY + 1 && abs(location.x - frame.midX) <= frame.width * reach / 2
+    /// under where any of the bar's icons (as `layout` has them) would be, from the first to the
+    /// last and half the gap past them, as the icon under the pointer's worked out; so the corners,
+    /// and the edge either side of the bar, are left alone.
+    nonisolated static func calls(_ location: NSPoint, on frame: NSRect, layout: DockLayout) -> Bool {
+        guard location.y <= frame.minY + 1, let first = layout.frames.first, let last = layout.frames.last else { return false }
+        let left = frame.midX - layout.size.width / 2, gap = DockLayout.spacing / 2
+        return location.x >= left + first.minX - gap && location.x <= left + last.maxX + gap
     }
 
     /// The icon under the pointer, if any: each one's own width and half the gap either side.
