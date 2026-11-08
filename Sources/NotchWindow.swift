@@ -597,6 +597,7 @@ final class NotchController {
     private var dock: DockController?
     private var approvalCorner: ApprovalCorner?
     private var controlTaps: TapWatcher?
+    private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
     private var songKeys: SongKeys?
     private var cameraTaps: TapWatcher?
@@ -815,27 +816,33 @@ final class NotchController {
                 }
             }
             .store(in: &cancellables)
-        // Control on its own: twice, a screenshot of part of the screen (as ⇧⌘4), but not while
-        // Oyl's off; three times, Oyl off, or back on.
+        // Control on its own three times: Oyl off, or back on.
         controlTaps = TapWatcher(.control, actions: [
-            2: { [weak self] in
-                guard self?.state.isOff == false, Feature.screenshotTaps.isOn else { return }
-                AreaScreenshot.take()
-            },
             3: { [weak self] in
                 // Turned off, the taps can still switch Oyl back on.
                 guard let self, self.state.isOff || Feature.offTaps.isOn else { return }
                 self.switchOff(!self.state.isOff)
             },
         ])
+        // Command on its own twice, either one: a screenshot of part of the screen (as ⇧⌘4), but
+        // not while Oyl's off. Never an OK on the way, if the second was the right one.
+        commandTaps = TapWatcher(.command, actions: [
+            2: { [weak self] in
+                self?.approveTaps?.interrupt()
+                guard self?.state.isOff == false, Feature.screenshotTaps.isOn else { return }
+                AreaScreenshot.take()
+            },
+        ])
         // The right Command key tapped on its own, while a request's waiting for your OK (its card's
-        // in the corner): allowed, as its Allow would. (With a key, it's a shortcut, not a tap.)
+        // in the corner): allowed, as its Allow would, once it's plain no second tap is coming (two
+        // are a screenshot). (With a key, it's a shortcut, not a tap.)
         approveTaps = TapWatcher(.command, side: ModifierTaps.rightCommand, actions: [
             1: { [weak self] in
                 guard let self, !self.state.isOff, Feature.approveTap.isOn, let approval = self.state.agents.approvals.first else { return }
                 self.state.agents.answer(approval, allow: true)
                 Haptics.perform(.levelChange, performanceTime: .now)
             },
+            2: {},
         ])
         missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the

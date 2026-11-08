@@ -159,8 +159,8 @@ struct SettingsPage: View {
             return items
         case .keys:
             return [
-                feature(.approveTap, "Right ⌘ Allow", "The right Command key tapped on its own, while something's waiting for your OK: it's allowed (just that once; the first, if there are a few)"),
-                feature(.screenshotTaps, "⌃⌃ Screenshot", "Control twice: a screenshot of part of the screen"),
+                feature(.approveTap, "Right ⌘ Allow", "The right Command key tapped once on its own, while something's waiting for your OK: it's allowed (just that once; the first, if there are a few)"),
+                feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),

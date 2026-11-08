@@ -1,7 +1,7 @@
 import AppKit
 
-/// Quick taps of one modifier key on its own (control twice takes a screenshot, three times
-/// switches Oyl off), or of a few pressed together (control and option, for the camera): a tap is
+/// Quick taps of one modifier key on its own (command twice takes a screenshot, control three
+/// times switches Oyl off), or of a few pressed together (control and option, for the camera): a tap is
 /// the key (all of them) pressed and let go within `longest`, with no other modifier with it, and
 /// each comes within `gap` of the last. A key or a click in between starts the count
 /// again, so typing, shortcuts and Oyl's own Mission Control keys (control and an arrow, posted by
