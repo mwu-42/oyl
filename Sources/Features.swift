@@ -42,8 +42,9 @@ enum Feature: String, CaseIterable, Sendable {
     case cameraKeys
     case approveTap
 
-    // The Dock's shelves.
-    case screenshotsShelf, savedShelf, labelScreenshots, hidesMacDock
+    // The Dock's shelf, and what's on it: screenshots, what's been saved, and what Claude Code's
+    // written or edited.
+    case shelf, screenshotsShelf, savedShelf, claudeShelf, labelScreenshots, hidesMacDock
 
     case openAtLogin
 

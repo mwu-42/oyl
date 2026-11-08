@@ -2,31 +2,33 @@ import AppKit
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
 
-/// A shelf, in Oyl's Dock: the latest screenshots and screen recordings as they're taken, or
-/// (the other one) whatever's just been saved, and files dropped on it or made by converting, each
-/// there to be dragged out into another app (or turned into another format first; see `Converter`).
+/// The shelf, in Oyl's Dock: the latest screenshots and screen recordings as they're taken,
+/// whatever's just been saved or downloaded, what Claude Code's just written or edited, and files
+/// dropped on it or made by converting, all in one row, newest first, each there to be dragged out
+/// into another app (or turned into another format first; see `Converter`). Each of the three can
+/// be turned off.
 ///
 /// Screenshots are the files in the folder screenshots go to (the Desktop, unless it's been
-/// changed) that macOS has marked as screen captures, so nothing else there shows up. What's been
-/// saved is what's newest in Downloads, where what comes by AirDrop goes, and downloads from a
+/// changed) that macOS has marked as screen captures, so nothing else there shows up as one. What's
+/// been saved is what's newest in Downloads, where what comes by AirDrop goes, and downloads from a
 /// browser, and attachments saved out of Messages (and what's been saved since into the folders in
 /// it, two deep, as an app exports into a folder of its own there); what's come from elsewhere onto
-/// the Desktop (an
-/// attachment dragged out of Messages, say); and what's been saved into Photos from Messages and
-/// the like (see `SavedPhotos`). Not what's still downloading, or screenshots (they're on theirs).
-/// Watching starts the first time a shelf's opened, since reading these asks permission, and from
-/// launch after that.
+/// the Desktop (an attachment dragged out of Messages, say); and what's been saved into Photos from
+/// Messages and the like (see `SavedPhotos`). Not what's still downloading. Claude's are what its
+/// hooks say it's written or edited (see `ClaudeFiles`). Watching starts the first time the shelf's
+/// opened, since reading these asks permission, and from launch after that.
 @MainActor
 final class Shelf: ObservableObject {
-    /// What a shelf watches for.
-    enum Source: String {
-        case screenshots, saved
-    }
-
     struct Item: Identifiable, Equatable {
-        enum Kind: String {
-            /// Saved into a folder it watches, or (`photo`) into Photos, and copied out of there.
-            case screenshot, recording, saved, photo, dropped, converted
+        enum Kind: String, CaseIterable {
+            /// Saved into a folder it watches, or (`photo`) into Photos, and copied out of there;
+            /// or (`claude`) written or edited by Claude Code.
+            case screenshot, recording, saved, photo, claude, dropped, converted
+        }
+
+        /// Where one came from, as its color on the shelf says.
+        enum Origin: CaseIterable {
+            case download, claude, screenshot
         }
 
         let url: URL
@@ -35,11 +37,19 @@ final class Shelf: ObservableObject {
         var id: URL { url }
 
         var isCapture: Bool { kind == .screenshot || kind == .recording }
-        /// Found in the folder it watches, rather than put there.
-        var isWatched: Bool { isCapture || kind == .saved || kind == .photo }
-    }
+        /// Found where it watches, rather than put there.
+        var isWatched: Bool { isCapture || kind == .saved || kind == .photo || kind == .claude }
 
-    let source: Source
+        /// Nothing, for what was dropped on it or made there.
+        var origin: Origin? {
+            switch kind {
+            case .screenshot, .recording: return .screenshot
+            case .saved, .photo: return .download
+            case .claude: return .claude
+            case .dropped, .converted: return nil
+            }
+        }
+    }
 
     @Published private(set) var items: [Item] = []
     @Published private(set) var thumbnails: [URL: NSImage] = [:]
@@ -49,21 +59,27 @@ final class Shelf: ObservableObject {
     @Published private(set) var failures: [URL: String] = [:]
     /// The file just made, picked out for a moment.
     @Published private(set) var fresh: URL?
-    /// The folder it watches couldn't be read: permission to it was turned down.
-    @Published private(set) var isBlocked = false
+    /// The folders it watches that it couldn't read: permission to them was turned down.
+    @Published private(set) var blocked: [URL] = []
     /// What each screenshot and recording shows, in a few words (see `ScreenshotLabeler`), by
     /// path: empty for one there was nothing to go by in. Kept across launches, so each is only
     /// looked at once.
     @Published private(set) var labels: [String: String]
 
-    static let shownWatched = 12
-    static let keptMost = 12
+    /// The most of each of screenshots and what's been saved, and of Claude's.
+    nonisolated static let shownWatched = 12
+    nonisolated static let shownClaude = 8
+    nonisolated static let keptMost = 12
     /// Still downloading, under these: Safari's, Chrome's (and the like), Firefox's, Opera's.
     nonisolated private static let unfinished: Set<String> = ["download", "crdownload", "part", "partial", "opdownload"]
 
-    /// A folder it watches, and whether only what came from elsewhere counts there.
+    /// A folder it watches, and what counts there.
     struct Watched: Equatable {
         let folder: URL
+        /// Screenshots and recordings.
+        var captures = false
+        /// What's been saved there (and, `onlyReceived`, only what came from elsewhere).
+        var saved = false
         var onlyReceived = false
         /// How far into the folders in it what's saved there is looked for.
         var depth = 0
@@ -79,7 +95,7 @@ final class Shelf: ObservableObject {
     private var scanning: DispatchWorkItem?
     /// And again a little after.
     private var rescanning: DispatchWorkItem?
-    /// What's in the folder it watches.
+    /// What's in the folders it watches.
     private var watched: [Item] = []
     private var kept: [Item]
     /// What's been taken off the shelf from there (it stays where it is).
@@ -93,30 +109,50 @@ final class Shelf: ObservableObject {
     /// have them, if they've still the names macOS gave them (older ones only when asked).
     private let renamingSince: Date
 
-    init(_ source: Source) {
-        self.source = source
-        let saved = UserDefaults.standard.array(forKey: Self.key("kept", source)) as? [[String: Any]] ?? []
+    init() {
+        let defaults = UserDefaults.standard
+        Self.merge(defaults)
+        let saved = defaults.array(forKey: Self.key("kept")) as? [[String: Any]] ?? []
         kept = saved.compactMap { entry in
             guard let path = entry["path"] as? String, let kind = (entry["kind"] as? String).flatMap(Item.Kind.init) else { return nil }
             return Item(url: URL(fileURLWithPath: path), kind: kind, date: entry["date"] as? Date ?? .distantPast)
         }
-        hidden = UserDefaults.standard.stringArray(forKey: Self.key("hidden", source)) ?? []
-        labels = UserDefaults.standard.dictionary(forKey: Self.key("labels", source)) as? [String: String] ?? [:]
-        if UserDefaults.standard.object(forKey: "shelf.renamingSince") == nil { UserDefaults.standard.set(Date(), forKey: "shelf.renamingSince") }
-        renamingSince = UserDefaults.standard.object(forKey: "shelf.renamingSince") as? Date ?? Date()
-        if UserDefaults.standard.bool(forKey: Self.key("watching", source)), isOn { watch(asking: false) }
+        hidden = defaults.stringArray(forKey: Self.key("hidden")) ?? []
+        labels = defaults.dictionary(forKey: Self.key("labels")) as? [String: String] ?? [:]
+        if defaults.object(forKey: "shelf.renamingSince") == nil { defaults.set(Date(), forKey: "shelf.renamingSince") }
+        renamingSince = defaults.object(forKey: "shelf.renamingSince") as? Date ?? Date()
+        ClaudeFiles.shared.changed = { [weak self] in self?.refresh() }
+        if defaults.bool(forKey: Self.key("watching")), isOn { watch(asking: false) }
         refresh()
     }
 
-    /// Where its settings are kept: the screenshots' shelf's as they always were.
-    static func key(_ name: String, _ source: Source) -> String {
-        source == .screenshots ? "shelf.\(name)" : "shelf.\(source.rawValue).\(name)"
+    /// Where its settings are kept: the screenshots' shelf's, as they always were.
+    nonisolated static func key(_ name: String) -> String { "shelf.\(name)" }
+
+    /// There were two shelves once, the screenshots' and what's been saved's: the second's kept
+    /// files, what was taken off it, its labels and whether it was watching are put in with the
+    /// first's, once.
+    nonisolated static func merge(_ defaults: UserDefaults) {
+        let old = { (name: String) in "shelf.saved.\(name)" }
+        guard ["kept", "hidden", "labels", "watching"].contains(where: { defaults.object(forKey: old($0)) != nil }) else { return }
+        let entries = (defaults.array(forKey: key("kept")) as? [[String: Any]] ?? []) + (defaults.array(forKey: old("kept")) as? [[String: Any]] ?? [])
+        var paths = Set<String>()
+        let kept = entries.filter { ($0["path"] as? String).map { paths.insert($0).inserted } ?? false }
+            .sorted { ($0["date"] as? Date ?? .distantPast) > ($1["date"] as? Date ?? .distantPast) }
+        defaults.set(Array(kept.prefix(keptMost)), forKey: key("kept"))
+        let hidden = (defaults.stringArray(forKey: key("hidden")) ?? []) + (defaults.stringArray(forKey: old("hidden")) ?? [])
+        defaults.set(Array(hidden.suffix(200)), forKey: key("hidden"))
+        var labels = defaults.dictionary(forKey: key("labels")) as? [String: String] ?? [:]
+        labels.merge(defaults.dictionary(forKey: old("labels")) as? [String: String] ?? [:]) { first, _ in first }
+        defaults.set(labels, forKey: key("labels"))
+        if defaults.bool(forKey: old("watching")) { defaults.set(true, forKey: key("watching")) }
+        ["kept", "hidden", "labels", "watching"].forEach { defaults.removeObject(forKey: old($0)) }
     }
 
-    private func key(_ name: String) -> String { Self.key(name, source) }
+    private func key(_ name: String) -> String { Self.key(name) }
 
     /// The shelf is in the Dock (it can be turned off).
-    var isOn: Bool { (source == .saved ? Feature.savedShelf : Feature.screenshotsShelf).isOn }
+    var isOn: Bool { Feature.shelf.isOn }
 
     /// Turned off: its folders (and Photos) aren't watched, till it's back and opened again.
     func stopWatching() {
@@ -127,8 +163,23 @@ final class Shelf: ObservableObject {
         folders = []
         photos?.stop()
         photos = nil
+        fromPhotos = []
         scanning?.cancel()
         rescanning?.cancel()
+    }
+
+    /// One of what's on it turned on or off: what it watches changes to suit.
+    func sourcesChanged() {
+        if UserDefaults.standard.bool(forKey: key("watching")), isOn {
+            if !Feature.savedShelf.isOn {
+                photos?.stop()
+                photos = nil
+                fromPhotos = []
+            }
+            watch(asking: false)
+        }
+        if watchedFolders.isEmpty { watched = [] }
+        refresh()
     }
 
     /// Watches its folders (again, if where screenshots go has changed), and for what's been saved,
@@ -136,7 +187,7 @@ final class Shelf: ObservableObject {
     func watch(asking: Bool = true) {
         guard isOn else { return }
         UserDefaults.standard.set(true, forKey: key("watching"))
-        if source == .saved {
+        if Feature.savedShelf.isOn {
             if photos == nil {
                 let photos = SavedPhotos()
                 photos.changed = { [weak self] items in
@@ -175,19 +226,33 @@ final class Shelf: ObservableObject {
         scan()
     }
 
-    /// The folders it watches: the first is the one it's for.
+    /// The folders it watches, for what's on: Downloads and the Desktop for what's been saved, and
+    /// where screenshots go (the Desktop too, unless that's been changed: then it's looked at once,
+    /// for both).
     var watchedFolders: [Watched] {
-        switch source {
-        case .screenshots:
-            return [Watched(folder: Self.screenshotFolder())]
-        case .saved:
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            return [Watched(folder: home.appendingPathComponent("Downloads", isDirectory: true), depth: 2),
-                    Watched(folder: home.appendingPathComponent("Desktop", isDirectory: true), onlyReceived: true)]
-        }
+        Self.folders(screenshots: Feature.screenshotsShelf.isOn ? Self.screenshotFolder() : nil, saved: Feature.savedShelf.isOn,
+                     home: FileManager.default.homeDirectoryForCurrentUser)
     }
 
-    var watchedFolder: URL { watchedFolders[0].folder }
+    nonisolated static func folders(screenshots: URL?, saved: Bool, home: URL) -> [Watched] {
+        var folders: [Watched] = []
+        if saved {
+            folders = [Watched(folder: home.appendingPathComponent("Downloads", isDirectory: true), saved: true, depth: 2),
+                       Watched(folder: home.appendingPathComponent("Desktop", isDirectory: true), saved: true, onlyReceived: true)]
+        }
+        if let screenshots {
+            let same = { (url: URL) in url.standardizedFileURL.path == screenshots.standardizedFileURL.path }
+            if let index = folders.firstIndex(where: { same($0.folder) }) {
+                folders[index].captures = true
+            } else {
+                folders.append(Watched(folder: screenshots, captures: true))
+            }
+        }
+        return folders
+    }
+
+    /// Downloads, for showing in Finder.
+    static var downloads: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true) }
 
     /// Where screenshots are saved: as set in the Screenshot app's options, or the Desktop.
     static func screenshotFolder() -> URL {
@@ -222,50 +287,49 @@ final class Shelf: ObservableObject {
     private func scan() {
         let folders = folders
         guard !folders.isEmpty else { return }
-        let source = source
         DispatchQueue.global(qos: .utility).async {
             let keys: Set<URLResourceKey> = [.creationDateKey, .addedToDirectoryDateKey, .isRegularFileKey, .isDirectoryKey]
             var found: [Item] = []
-            var blocked = false
-            for (index, watched) in folders.enumerated() {
+            var blocked: [URL] = []
+            for watched in folders {
                 do {
                     let urls = try FileManager.default.contentsOfDirectory(at: watched.folder, includingPropertiesForKeys: Array(keys),
                                                                            options: [.skipsHiddenFiles])
                     found += urls.compactMap { url -> Item? in
                         guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
-                        return Self.item(url, values, source: source, onlyReceived: watched.onlyReceived)
+                        return Self.item(url, values, in: watched)
                     }
-                    if watched.depth > 0 { found += Self.savedInside(urls, depth: watched.depth) }
+                    if watched.saved, watched.depth > 0 { found += Self.savedInside(urls, depth: watched.depth) }
                 } catch {
-                    // The rest it can do without.
-                    if index == 0 { blocked = true }
+                    // Only what came onto the Desktop from elsewhere it can do without.
+                    if watched.captures || !watched.onlyReceived { blocked.append(watched.folder) }
                 }
             }
             found.sort { $0.date > $1.date }
+            let captures = found.filter(\.isCapture).prefix(Self.shownWatched * 2)
+            let saved = found.filter { !$0.isCapture }.prefix(Self.shownWatched * 2)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    self.isBlocked = blocked
-                    self.watched = Array(found.prefix(Self.shownWatched * 2))
+                    if self.blocked != blocked { self.blocked = blocked }
+                    self.watched = Array(captures + saved)
                     self.refresh()
                 }
             }
         }
     }
 
-    /// One of the folder's files, if it's one this shelf has: a screenshot or recording, or a file
-    /// or folder that's done downloading (and, `onlyReceived`, came from elsewhere), as of when it
-    /// got there.
-    nonisolated static func item(_ url: URL, _ values: URLResourceValues, source: Source, onlyReceived: Bool = false) -> Item? {
-        switch source {
-        case .screenshots:
-            guard isScreenCapture(url), values.isRegularFile == true else { return nil }
+    /// One of a watched folder's files, if it's one the shelf has there: a screenshot or recording,
+    /// or a file or folder that's done downloading (and, `onlyReceived`, came from elsewhere), as
+    /// of when it got there.
+    nonisolated static func item(_ url: URL, _ values: URLResourceValues, in watched: Watched) -> Item? {
+        if isScreenCapture(url) {
+            guard watched.captures, values.isRegularFile == true else { return nil }
             let movie = UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true
             return Item(url: url, kind: movie ? .recording : .screenshot, date: values.creationDate ?? .distantPast)
-        case .saved:
-            guard values.isRegularFile == true || values.isDirectory == true, !unfinished.contains(url.pathExtension.lowercased()),
-                  !isScreenCapture(url), !onlyReceived || isReceived(url) else { return nil }
-            return Item(url: url, kind: .saved, date: values.addedToDirectoryDate ?? values.creationDate ?? .distantPast)
         }
+        guard watched.saved, values.isRegularFile == true || values.isDirectory == true, !unfinished.contains(url.pathExtension.lowercased()),
+              !watched.onlyReceived || isReceived(url) else { return nil }
+        return Item(url: url, kind: .saved, date: values.addedToDirectoryDate ?? values.creationDate ?? .distantPast)
     }
 
     /// What's been saved into the folders among `entries` (a watched folder's), up to `depth` down:
@@ -286,7 +350,7 @@ final class Shelf: ObservableObject {
                 guard let values = try? url.resourceValues(forKeys: keys) else { continue }
                 let since = added(values)
                 if since > came.addingTimeInterval(margin) {
-                    if let item = item(url, values, source: .saved) { found.append(item) }
+                    if let item = item(url, values, in: Watched(folder: folder, saved: true)) { found.append(item) }
                 } else if values.isDirectory == true, values.isPackage != true, level < depth {
                     look(in: url, came: since, level: level + 1)
                 }
@@ -317,10 +381,12 @@ final class Shelf: ObservableObject {
 
     private func refresh() {
         let files = FileManager.default
-        let shots = (watched + fromPhotos).sorted { $0.date > $1.date }.filter { !hidden.contains($0.url.path) }.prefix(Self.shownWatched)
-        let shown = Set(shots.map(\.url))
-        let others = kept.filter { !shown.contains($0.url) && files.fileExists(atPath: $0.url.path) }
-        let all = (Array(shots) + others).sorted { $0.date > $1.date }
+        let claude = Feature.claudeShelf.isOn
+            ? ClaudeFiles.shared.recent.map { Item(url: URL(fileURLWithPath: $0.path), kind: .claude, date: $0.date) }
+                .filter { !hidden.contains($0.url.path) && files.fileExists(atPath: $0.url.path) }
+            : []
+        let all = Self.shown(claude: claude, watched: watched + fromPhotos, kept: kept.filter { files.fileExists(atPath: $0.url.path) },
+                             hidden: Set(hidden))
         if all != items { items = all }
         let urls = Set(all.map(\.url))
         let current = thumbnails.filter { urls.contains($0.key) }
@@ -328,6 +394,19 @@ final class Shelf: ObservableObject {
         for item in all where thumbnails[item.url] == nil { makeThumbnail(for: item.url) }
         unlabeled = all.filter { $0.isCapture && labels[$0.url.path] == nil && $0.url != labeling }
         labelNext()
+    }
+
+    /// What's on it, newest first: the latest few of each of screenshots, what's been saved and
+    /// Claude's (not those taken off it), and what's kept there; each once, as Claude's if it made
+    /// it (in Downloads, say).
+    nonisolated static func shown(claude: [Item], watched: [Item], kept: [Item], hidden: Set<String>) -> [Item] {
+        func latest(_ items: [Item], _ most: Int) -> [Item] {
+            Array(items.filter { !hidden.contains($0.url.path) }.sorted { $0.date > $1.date }.prefix(most))
+        }
+        var seen = Set<String>()
+        let all = latest(claude, shownClaude) + latest(watched.filter(\.isCapture), shownWatched)
+            + latest(watched.filter { !$0.isCapture }, shownWatched) + kept
+        return all.filter { seen.insert($0.url.standardizedFileURL.path).inserted }.sorted { $0.date > $1.date }
     }
 
     /// The label for an item, once there is one.
@@ -364,7 +443,7 @@ final class Shelf: ObservableObject {
     private func makeThumbnail(for url: URL) {
         guard !loading.contains(url) else { return }
         loading.insert(url)
-        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 140, height: 90), scale: 2,
+        let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 170, height: 112), scale: 2,
                                                    representationTypes: .all)
         QLThumbnailGenerator.shared.generateBestRepresentation(for: request) { [weak self] representation, _ in
             let image = representation?.nsImage
@@ -397,7 +476,7 @@ final class Shelf: ObservableObject {
     func remove(_ item: Item) {
         if item.isWatched {
             hidden.append(item.url.path)
-            hidden = Array(hidden.suffix(100))
+            hidden = Array(hidden.suffix(200))
             UserDefaults.standard.set(hidden, forKey: key("hidden"))
         }
         kept.removeAll { $0.url == item.url }

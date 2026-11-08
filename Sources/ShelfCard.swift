@@ -1,11 +1,12 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// A shelf, over Oyl's Dock (opened from its tile there; see `DockView`): the latest
-/// screenshots, or what's just been saved, and files kept here, in a row, newest first, each to be dragged out into any app
-/// (or onto one in the Dock). Hovered, one has a way to convert it and a way off the shelf;
-/// right-clicked, the rest (copy, show in Finder, the Trash). Files dropped on the card or the
-/// tile, or chosen with its +, are kept.
+/// The shelf, over Oyl's Dock (opened from its tile there; see `DockView`): the latest
+/// screenshots, what's just been saved and what Claude's just written or edited, and files kept
+/// here, in a row, newest first, each to be dragged out into any app (or onto one in the Dock),
+/// each marked with where it came from in a color the card's top says the meaning of. Hovered, one
+/// has a way to convert it and a way off the shelf; right-clicked, the rest (copy, show in Finder,
+/// the Trash). Files dropped on the card or the tile, or chosen with its +, are kept.
 struct ShelfCard: View {
     @ObservedObject var shelf: Shelf
     let width: CGFloat
@@ -23,14 +24,19 @@ struct ShelfCard: View {
         let taking = targeted.value && !ShelfDrag.shared.isDragging
         VStack(alignment: .leading, spacing: 7) {
             HStack(spacing: 8) {
-                Text(shelf.source.title)
+                Text(Shelf.title)
                     .notchFont(size: 11, weight: .semibold, role: .label)
                     .foregroundStyle(.white.opacity(0.6))
+                    .help("Drag one out, or drop a file to convert")
                 Spacer(minLength: 8)
-                Text(taking ? "Let go to keep it here" : "Drag one out, or drop a file to convert")
-                    .notchFont(size: 10, role: .body)
-                    .foregroundStyle(.white.opacity(taking ? 0.8 : 0.4))
-                    .lineLimit(1)
+                if taking {
+                    Text("Let go to keep it here")
+                        .notchFont(size: 10, role: .body)
+                        .foregroundStyle(.white.opacity(0.8))
+                        .lineLimit(1)
+                } else {
+                    legend
+                }
                 Button { Self.choose(for: shelf, hold: hold) } label: {
                     Image(systemName: "plus")
                         .notchSymbol(size: 9, weight: .bold)
@@ -87,10 +93,26 @@ struct ShelfCard: View {
         .animation(NotchView.open, value: shelf.items.map(\.id))
     }
 
+    /// What each color means, for what's on.
+    private var legend: some View {
+        HStack(spacing: 10) {
+            ForEach(Shelf.Item.Origin.allCases.filter(\.isOn), id: \.self) { origin in
+                HStack(spacing: 4) {
+                    OriginMark(origin: origin)
+                    Text(origin.name)
+                        .notchFont(size: 10, role: .body)
+                        .foregroundStyle(.white.opacity(0.5))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+            }
+        }
+    }
+
     @ViewBuilder private var empty: some View {
         VStack(spacing: 5) {
-            if shelf.isBlocked {
-                Text(shelf.source == .saved ? "Oyl can't see your Downloads folder" : "Oyl can't see where your screenshots go")
+            if !shelf.blocked.isEmpty {
+                Text("Oyl can't see " + ListFormatter.localizedString(byJoining: shelf.blocked.map(Self.called)))
                     .notchFont(size: 12, weight: .medium)
                     .foregroundStyle(.white.opacity(0.7))
                 Button("Allow it in Settings") {
@@ -102,17 +124,24 @@ struct ShelfCard: View {
                 .notchFont(size: 11, weight: .medium)
                 .foregroundStyle(theme.tint(.blue))
             } else {
-                Image(systemName: shelf.source == .saved ? "tray" : "photo.stack")
+                Image(systemName: "tray")
                     .notchSymbol(size: 18, weight: .regular)
                     .foregroundStyle(.white.opacity(0.3))
-                Text(shelf.source == .saved ? "What you save shows up here: from AirDrop, the web, or a text"
-                                            : "Screenshots show up here as you take them")
+                Text("Screenshots, what you download or save, and what Claude makes show up here")
                     .notchFont(size: 11)
                     .foregroundStyle(.white.opacity(0.5))
             }
         }
         .frame(maxWidth: .infinity)
         .frame(height: ShelfTile.height)
+    }
+
+    /// A folder as it's said: "your Downloads folder", "the Desktop".
+    private static func called(_ folder: URL) -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if folder.standardizedFileURL.path == home.appendingPathComponent("Desktop").path { return "the Desktop" }
+        if folder.standardizedFileURL.path == home.appendingPathComponent("Downloads").path { return "your Downloads folder" }
+        return "where your screenshots go"
     }
 
     private func drop(_ providers: [NSItemProvider]) -> Bool {
@@ -191,7 +220,7 @@ struct ShelfTile: View {
     @StateObject private var hover = LocalState(false)
     @Environment(\.notchTheme) private var theme
 
-    static let picture = CGSize(width: 88, height: 58)
+    static let picture = CGSize(width: 104, height: 68)
     static let height = picture.height + 4 + 12 + 11
 
     var body: some View {
@@ -240,12 +269,15 @@ struct ShelfTile: View {
             .animation(.easeOut(duration: 0.4), value: shelf.fresh == item.url)
 
             VStack(spacing: 0) {
-                Text(title)
-                    .notchFont(size: 9.5, role: .body)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .lineLimit(1)
-                    .truncationMode(item.isCapture ? .tail : .middle)
-                    .frame(height: 12)
+                HStack(spacing: 4) {
+                    if let origin = item.origin { OriginMark(origin: origin) }
+                    Text(title)
+                        .notchFont(size: 9.5, role: .body)
+                        .foregroundStyle(.white.opacity(0.75))
+                        .lineLimit(1)
+                        .truncationMode(item.isCapture ? .tail : .middle)
+                }
+                .frame(height: 12)
                 Text(when)
                     .notchFont(size: 8.5, digits: true, role: .data)
                     .foregroundStyle(.white.opacity(0.4))
@@ -416,27 +448,70 @@ private struct DragHandle: NSViewRepresentable {
     }
 }
 
-extension Shelf.Source {
+extension Shelf {
     /// What it's called on its card, and its button in the Dock.
-    var title: String {
+    static let title = "Recent"
+    static let symbol = "tray.full"
+}
+
+extension Shelf.Item.Origin {
+    var name: String {
         switch self {
-        case .screenshots: return "Screenshots"
-        case .saved: return "Recently Saved"
+        case .download: return "Downloads"
+        case .claude: return "Claude"
+        case .screenshot: return "Screenshots"
         }
     }
 
-    var symbol: String {
+    /// Blue for what's been downloaded or saved, orange for Claude's, light green for screenshots.
+    var color: Color {
         switch self {
-        case .screenshots: return "camera.viewfinder"
-        case .saved: return "tray.and.arrow.down"
+        case .download: return Color(red: 0.32, green: 0.6, blue: 1)
+        case .claude: return Color(red: 1, green: 0.56, blue: 0.2)
+        case .screenshot: return Color(red: 0.55, green: 0.9, blue: 0.5)
         }
     }
 
-    /// The folder it watches, by name.
-    var folder: String {
+    /// It's on the shelf (each can be turned off).
+    var isOn: Bool {
         switch self {
-        case .screenshots: return "Screenshots Folder"
-        case .saved: return "Downloads"
+        case .download: return Feature.savedShelf.isOn
+        case .claude: return Feature.claudeShelf.isOn
+        case .screenshot: return Feature.screenshotsShelf.isOn
+        }
+    }
+}
+
+/// Where a shelf item came from, in its color: a dot in Oyl's look; in Midnight's, a paler one
+/// with a soft halo, like a coloured star, slowly breathing.
+struct OriginMark: View {
+    let origin: Shelf.Item.Origin
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        if theme == .midnight {
+            let color = theme.tint(origin.color, urgent: true)
+            TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
+                let beat = 0.5 + 0.5 * sin(context.date.timeIntervalSinceReferenceDate * 1.3 + phase)
+                Circle()
+                    .fill(color)
+                    .frame(width: 5, height: 5)
+                    .shadow(color: color.opacity(0.5 + 0.35 * beat), radius: 2 + 1.5 * beat)
+            }
+            .frame(width: 6, height: 6)
+        } else {
+            Circle()
+                .fill(origin.color)
+                .frame(width: 6, height: 6)
+        }
+    }
+
+    /// Each breathes in its own time.
+    private var phase: Double {
+        switch origin {
+        case .download: return 0
+        case .claude: return 2.1
+        case .screenshot: return 4.2
         }
     }
 }

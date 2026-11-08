@@ -231,8 +231,7 @@ final class NotchState: ObservableObject {
     /// The hand gestures, for their settings. Set by the controller.
     weak var gestures: GestureWatcher?
     /// Recent screenshots, and what's just been saved, and files kept on either to convert or drag out.
-    let shelf = Shelf(.screenshots)
-    let saved = Shelf(.saved)
+    let shelf = Shelf()
     /// Gives the keyboard back to the app you were using. Set by the controller.
     var resignKeyboard: () -> Void = {}
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).

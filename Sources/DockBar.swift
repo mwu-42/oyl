@@ -7,8 +7,8 @@ import SwiftUI
 /// reaches it (the bottom edge, under where it'd be) and goes once the pointer's left it (with
 /// some room round it and a moment's grace, more with a shelf up; see `nearArea`). Click an
 /// app to open it or switch to it, right-click for the rest; the shelf (the latest screenshots,
-/// and files kept to convert or drag out) is a tile past the apps, opening over the bar, with
-/// another next to it for what's just been saved. Which icon the pointer's on is worked out from
+/// what's just been saved, what Claude's made, and files kept to convert or drag out) is a tile
+/// past the apps, opening over the bar. Which icon the pointer's on is worked out from
 /// where it is, every move, so none is ever left lifted.
 @MainActor
 final class DockController {
@@ -31,10 +31,10 @@ final class DockController {
         panel.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.dockWindow)) + 1)
         // Told of every move over it too, not only over other apps' windows.
         panel.acceptsMouseMovedEvents = true
-        let host = DockHostingView(rootView: DockView(model: model, apps: apps, shelf: state.shelf, saved: state.saved))
+        let host = DockHostingView(rootView: DockView(model: model, apps: apps, shelf: state.shelf))
         host.sizingOptions = []
         panel.contentView = host
-        model.toggleShelf = { [weak self] in self?.toggleShelf($0) }
+        model.toggleShelf = { [weak self] in self?.toggleShelf() }
         ShelfDrag.shared.moved = { [weak self] point in self?.shelfDragMoved(to: point) }
         ShelfDrag.shared.ended = { [weak self] point in self?.shelfDragEnded(at: point) }
 
@@ -60,16 +60,20 @@ final class DockController {
                 MainActor.assumeIsolated { MacDock.keep(down: shown && !off && Feature.hidesMacDock.isOn) }
             }
             .store(in: &cancellables)
-        // A shelf turned off goes from the bar (and stops watching), its card with it.
+        // The shelf turned off goes from the bar (and stops watching), its card with it; what's on
+        // it turned on or off, it watches to suit.
         Features.shared.changed
-            .filter { $0.0 == .screenshotsShelf || $0.0 == .savedShelf }
+            .filter { [.shelf, .screenshotsShelf, .savedShelf, .claudeShelf].contains($0.0) }
             .sink { [weak self] change in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    let shelf = change.0 == .savedShelf ? state.saved : state.shelf
+                    guard change.0 == .shelf else {
+                        state.shelf.sourcesChanged()
+                        return
+                    }
                     if !change.1 {
-                        shelf.stopWatching()
-                        if self.model.shelving == shelf.source { self.toggleShelf(shelf.source) }
+                        state.shelf.stopWatching()
+                        if self.model.shelving { self.toggleShelf() }
                     }
                     self.apps.objectWillChange.send()
                     if self.model.isOpen { self.fit() }
@@ -235,17 +239,17 @@ final class DockController {
         closing?.cancel()
         closing = nil
         model.quitting = nil
-        model.shelving = nil
+        model.shelving = false
         model.isOpen = false
         model.hovered = nil
         panel.ignoresMouseEvents = true
     }
 
-    /// A shelf, over the bar (in place of the other, if that's up), or put away again: the panel
-    /// only shrinks back once it's gone back into its tile (or the sky's settled), so neither's cut off.
-    private func toggleShelf(_ source: Shelf.Source) {
+    /// The shelf, over the bar, or put away again: the panel only shrinks back once it's gone back
+    /// into its tile (or the sky's settled), so it's not cut off.
+    private func toggleShelf() {
         model.quitting = nil
-        model.shelving = model.shelving == source ? nil : source
+        model.shelving.toggle()
         guard !model.isShelving else {
             fit()
             return
@@ -359,9 +363,9 @@ final class DockModel: ObservableObject {
     @Published var calledFrom: CGFloat = 0
     /// The icon the pointer's on, which says its name.
     @Published var hovered: String?
-    /// The shelf that's up over the bar, if one is.
-    @Published var shelving: Shelf.Source?
-    var isShelving: Bool { shelving != nil }
+    /// The shelf's up over the bar.
+    @Published var shelving = false
+    var isShelving: Bool { shelving }
     /// An app being dragged along the bar to a new place, and how far it's been dragged.
     @Published var reordering: (id: String, offset: CGFloat)?
     /// A menu's up, or an app's being dragged: stay up.
@@ -376,13 +380,13 @@ final class DockModel: ObservableObject {
     var isKept: Bool { isHeld || quitting != nil }
     /// When it was last let go.
     private(set) var letGo: Date?
-    var toggleShelf: (Shelf.Source) -> Void = { _ in }
+    var toggleShelf: () -> Void = {}
 
     var cardWidth: CGFloat { min(560, screenWidth - 80) }
 }
 
 /// Where everything goes in the bar: the Dock's own icon size (unless that won't fit the screen),
-/// the apps, a gap with a line in it, then the two shelves and the folders.
+/// the apps, a gap with a line in it, then the shelf and the folders.
 struct DockLayout: Equatable {
     static let spacing: CGFloat = 6
     static let padding: CGFloat = 14
@@ -429,7 +433,7 @@ struct DockLayout: Equatable {
 
     @MainActor
     init(apps: DockApps, screenWidth: CGFloat) {
-        self.init(tiles: DockView.shelves.count + apps.apps.count + apps.others.count, firstOther: apps.apps.count, tile: apps.tile,
+        self.init(tiles: DockView.shelves + apps.apps.count + apps.others.count, firstOther: apps.apps.count, tile: apps.tile,
                   screenWidth: screenWidth)
     }
 
@@ -444,24 +448,20 @@ struct DockView: View {
     @ObservedObject var model: DockModel
     @ObservedObject var apps: DockApps
     let shelf: Shelf
-    let saved: Shelf
 
     static let shelfID = "oyl.shelf"
-    static let savedID = "oyl.saved"
     /// Going, it slides down no faster than the macOS Dock behind it hides, so that one's never
     /// seen. (And without fading, which would show it through.)
     static let close = Animation.easeInOut(duration: 0.45)
 
-    /// The shelves turned on, in the bar past its line.
+    /// The shelf, if it's on, in the bar past its line: how many tiles that is.
     @MainActor
-    static var shelves: [Shelf.Source] {
-        [Shelf.Source.screenshots, .saved].filter { $0 == .saved ? Feature.savedShelf.isOn : Feature.screenshotsShelf.isOn }
-    }
+    static var shelves: Int { Feature.shelf.isOn ? 1 : 0 }
 
     /// What's in the bar, left to right, as `DockLayout.frames` places it.
     @MainActor
     static func ids(_ apps: DockApps) -> [String] {
-        apps.apps.map(\.id) + shelves.map { $0 == .saved ? savedID : shelfID } + apps.others.map(\.id)
+        apps.apps.map(\.id) + Array(repeating: shelfID, count: shelves) + apps.others.map(\.id)
     }
 
     var body: some View {
@@ -474,18 +474,16 @@ struct DockView: View {
             }
             VStack(spacing: DockLayout.cardGap) {
                 Spacer(minLength: 0)
-                if model.isOpen, let source = model.shelving {
-                    let shown = source == .saved ? saved : shelf
-                    ShelfCard(shelf: shown, width: model.cardWidth, hold: { [model] in model.isHeld = $0 })
-                        .id(source)
-                        .transition(Self.bloom(midnight: midnight, from: anchor(of: source, in: layout)))
-                        // Looking at its folder asks to the first time (see `Shelf`).
-                        .onAppear { shown.watch() }
+                if model.isOpen, model.shelving {
+                    ShelfCard(shelf: shelf, width: model.cardWidth, hold: { [model] in model.isHeld = $0 })
+                        .transition(Self.bloom(midnight: midnight, from: anchor(in: layout)))
+                        // Looking at its folders asks to the first time (see `Shelf`).
+                        .onAppear { shelf.watch() }
                 }
                 if model.isOpen {
                     // Each icon comes up in its turn, out from the pointer (see `Arriving`): in
                     // Midnight Oyl, into the sky as its bloom reaches it. They go as it wilts.
-                    DockBar(model: model, apps: apps, shelf: shelf, saved: saved)
+                    DockBar(model: model, apps: apps, shelf: shelf)
                         .transition(midnight ? .asymmetric(insertion: .identity, removal: .opacity.combined(with: .offset(y: 10)))
                                     : .move(edge: .bottom))
                 }
@@ -534,10 +532,10 @@ struct DockView: View {
         return Midnight.dockBloomTime(0.9 * fraction)
     }
 
-    /// Where a shelf's tile is, as a point on its card (off its foot, over the bar): the card's
+    /// Where the shelf's tile is, as a point on its card (off its foot, over the bar): the card's
     /// as wide as it likes, and both are in the middle.
-    private func anchor(of source: Shelf.Source, in layout: DockLayout) -> UnitPoint {
-        let index = apps.apps.count + (Self.shelves.firstIndex(of: source) ?? 0)
+    private func anchor(in layout: DockLayout) -> UnitPoint {
+        let index = apps.apps.count
         guard index < layout.frames.count, model.cardWidth > 0 else { return .bottom }
         let tile = layout.frames[index]
         return UnitPoint(x: 0.5 + (tile.midX - layout.size.width / 2) / model.cardWidth,
@@ -564,7 +562,6 @@ private struct DockBar: View {
     @ObservedObject var model: DockModel
     @ObservedObject var apps: DockApps
     let shelf: Shelf
-    let saved: Shelf
     @Environment(\.notchTheme) private var theme
     /// Come up: just after it's appeared, each icon then coming up in its turn.
     @StateObject private var up = LocalState(false)
@@ -585,11 +582,11 @@ private struct DockBar: View {
                     .modifier(arriving(x, first.midY))
                     .position(x: x, y: first.midY)
             }
-            // The apps; then past the line the shelves, and the rest after them.
+            // The apps; then past the line the shelf, and the rest after it.
             let shelfIndex = apps.apps.count
             let shelves = DockView.shelves
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                let place = index < shelfIndex ? index : index + shelves.count
+                let place = index < shelfIndex ? index : index + shelves
                 if place < layout.frames.count {
                     let frame = layout.frames[place]
                     let held = model.reordering?.id == item.id
@@ -603,17 +600,15 @@ private struct DockBar: View {
                         .animation(held ? nil : .spring(response: 0.28, dampingFraction: 0.82), value: place)
                 }
             }
-            ForEach(Array(shelves.enumerated()), id: \.element) { offset, source in
-                if shelfIndex + offset < layout.frames.count {
-                    let frame = layout.frames[shelfIndex + offset]
-                    ShelfDockTile(model: model, shelf: source == .saved ? saved : shelf, tile: layout.tile)
-                        .modifier(arriving(frame.midX, frame.midY))
-                        .position(x: frame.midX, y: frame.midY)
-                }
+            if shelves > 0, shelfIndex < layout.frames.count {
+                let frame = layout.frames[shelfIndex]
+                ShelfDockTile(model: model, shelf: shelf, tile: layout.tile)
+                    .modifier(arriving(frame.midX, frame.midY))
+                    .position(x: frame.midX, y: frame.midY)
             }
             // Asked over its icon (lifted meanwhile) before an app's quit, kept on the screen.
             if let index = items.firstIndex(where: { $0.id == model.quitting && $0.isRunning }) {
-                let item = items[index], place = index < shelfIndex ? index : index + shelves.count
+                let item = items[index], place = index < shelfIndex ? index : index + shelves
                 if place < layout.frames.count {
                     let frame = layout.frames[place]
                     let room = midnight ? (model.screenWidth - layout.size.width) / 2 - 12 : DockLayout.sideRoom(midnight: false) - 6
@@ -644,7 +639,7 @@ private struct DockBar: View {
 }
 
 /// An icon coming up as the Dock does, `delay` after the first (see `DockView.arrival`): in Oyl's
-/// look, popping up out of the plate, a little past its size and back, quickly; in Midnight Oyl's,
+/// look, rising into place out of the plate as it fades in, on a plain quick ease; in Midnight Oyl's,
 /// coming on out of a blur, rising a little, as the sky's bloom reaches it.
 private struct Arriving: ViewModifier {
     let up: Bool
@@ -660,11 +655,10 @@ private struct Arriving: ViewModifier {
                 .animation(.easeOut(duration: 0.3).delay(delay), value: up)
         } else {
             content
-                .scaleEffect(up ? 1 : 0.35, anchor: .bottom)
-                .offset(y: up ? 0 : 12)
-                .animation(.spring(response: 0.22, dampingFraction: 0.58).delay(delay), value: up)
+                .scaleEffect(up ? 1 : 0.85, anchor: .bottom)
+                .offset(y: up ? 0 : 10)
                 .opacity(up ? 1 : 0)
-                .animation(.easeOut(duration: 0.06).delay(delay), value: up)
+                .animation(.easeOut(duration: 0.2).delay(delay), value: up)
         }
     }
 }
@@ -725,38 +719,34 @@ private struct DockPlate: View {
     }
 }
 
-/// A shelf's button, past the line (what's on it is only on the shelf): the screenshots' first,
-/// then what's just been saved. Click it for its shelf over the bar; drop files on it to keep them
-/// there; right-click to choose some, or go to the folder it watches.
+/// The shelf's button, past the line (what's on it is only on the shelf). Click it for the shelf
+/// over the bar; drop files on it to keep them there; right-click to choose some, or go to the
+/// folders it watches.
 private struct ShelfDockTile: View {
     @ObservedObject var model: DockModel
     let shelf: Shelf
     let tile: CGFloat
 
     var body: some View {
-        let source = shelf.source
-        ButtonTile(symbol: source.symbol, name: source.title, tile: tile,
-                   hovered: model.hovered == (source == .saved ? DockView.savedID : DockView.shelfID),
-                   lit: model.shelving == source, click: { model.toggleShelf(source) }, menu: showMenu, drop: keep)
+        ButtonTile(symbol: Shelf.symbol, name: Shelf.title, tile: tile, hovered: model.hovered == DockView.shelfID,
+                   lit: model.shelving, click: { model.toggleShelf() }, menu: showMenu, drop: keep)
     }
 
     private func keep(_ urls: [URL]) -> Bool {
         shelf.keep(urls)
-        if model.shelving != shelf.source { model.toggleShelf(shelf.source) }
+        if !model.shelving { model.toggleShelf() }
         return true
     }
 
     private func showMenu() {
         let menu = NSMenu()
-        let open = model.shelving == shelf.source
-        menu.addItem(ClosureMenuItem(title: open ? "Close" : "Open") { model.toggleShelf(shelf.source) })
+        menu.addItem(ClosureMenuItem(title: model.shelving ? "Close" : "Open") { model.toggleShelf() })
         menu.addItem(ClosureMenuItem(title: "Choose Files to Keep…") {
             ShelfCard.choose(for: shelf) { model.isHeld = $0 }
         })
         menu.addItem(.separator())
-        menu.addItem(ClosureMenuItem(title: "Show \(shelf.source.folder)") {
-            NSWorkspace.shared.open(shelf.watchedFolder)
-        })
+        menu.addItem(ClosureMenuItem(title: "Show Downloads") { NSWorkspace.shared.open(Shelf.downloads) })
+        menu.addItem(ClosureMenuItem(title: "Show Screenshots Folder") { NSWorkspace.shared.open(Shelf.screenshotFolder()) })
         model.isHeld = true
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         model.isHeld = false

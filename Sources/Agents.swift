@@ -573,6 +573,9 @@ final class AgentMonitor: ObservableObject {
     }
 
     private func apply(_ events: [AgentEvent]) {
+        if Feature.claudeShelf.isOn {
+            for event in events { if let wrote = event.wrote { ClaudeFiles.shared.note(wrote) } }
+        }
         guard Feature.claudeCode.isOn else { return }
         var sessions = self.sessions
         let now = Date()
@@ -659,6 +662,8 @@ struct AgentEvent: Sendable {
     let activity: AgentActivity?  // nil when the event doesn't change it
     let detail: String?
     let transcript: String?
+    /// The file it's just written or edited, if that's what it's done.
+    var wrote: String? = nil
 }
 
 /// The folder Claude Code's hook drops events in, and reading them back.
@@ -751,8 +756,15 @@ enum AgentInbox {
                               cwd: hook["cwd"] as? String,
                               host: host(entry: wrapper["entry"] as? String, term: wrapper["term"] as? String),
                               pid: Int32(wrapper["pid"] as? Int ?? 0), activity: doing?.0, detail: doing?.1,
-                              transcript: hook["transcript_path"] as? String)
+                              transcript: hook["transcript_path"] as? String, wrote: wrote(after: name, hook))
         }
+    }
+
+    /// The file Claude Code's just written or edited, once it's done it (for the shelf).
+    static func wrote(after name: String, _ hook: [String: Any]) -> String? {
+        guard name == "PostToolUse", ["Write", "Edit", "MultiEdit", "NotebookEdit"].contains(hook["tool_name"] as? String ?? ""),
+              let input = hook["tool_input"] as? [String: Any] else { return nil }
+        return input["file_path"] as? String ?? input["notebook_path"] as? String
     }
 
     /// What the agent is doing after this event, and a line about it; nil if the event doesn't say.
