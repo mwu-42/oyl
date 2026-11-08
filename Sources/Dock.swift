@@ -41,6 +41,11 @@ final class DockApps: ObservableObject {
     /// `watchAttention` has it.
     @Published private(set) var asking: [String] = []
     private var attentionTimer: Timer?
+    /// The apps in the bar that are open, by process, and the one in front, as of the last launch,
+    /// quit or switch: so looking for who's asking reads only theirs, never asking macOS about
+    /// every process each time (in a running app, that's a round trip to LaunchServices for each).
+    private var openApps: [(pid: pid_t, id: String)] = []
+    private var frontID: String?
 
     private var kept: [Item] = []
     /// The apps as they've been dragged along Oyl's Dock (the macOS Dock keeps its own order):
@@ -125,6 +130,9 @@ final class DockApps: ObservableObject {
         // Each icon's its own (SwiftUI lays them out by id): one kept in the Dock twice is shown once.
         shown = Self.arranged(Self.unique(shown), by: order)
         if shown != apps { apps = shown }
+        let id = { (app: NSRunningApplication) in shown.first { Self.matches(app, $0) }?.id }
+        openApps = running.compactMap { app in id(app).map { (app.processIdentifier, $0) } }
+        frontID = front.flatMap(id)
         if !asking.isEmpty { checkAttention() }
         liftGlyphs()
         let up = Set(shown.filter(\.isRunning).map(\.id))
@@ -164,8 +172,8 @@ final class DockApps: ObservableObject {
         }
     }
 
-    /// Apps asking for you looked for (`on`) a few times a second, as quick as the Dock bounces one;
-    /// or not, and none are.
+    /// Apps asking for you looked for (`on`) twice a second, so none is missed (one asking for the
+    /// Dock's one bounce does for about a second); or not, and none are.
     func watchAttention(_ on: Bool) {
         guard on != (attentionTimer != nil) else { return }
         attentionTimer?.invalidate()
@@ -174,10 +182,10 @@ final class DockApps: ObservableObject {
             if !asking.isEmpty { asking = [] }
             return
         }
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.checkAttention() }
         }
-        timer.tolerance = 0.1
+        timer.tolerance = 0.15
         RunLoop.main.add(timer, forMode: .common)
         attentionTimer = timer
         checkAttention()
@@ -186,12 +194,8 @@ final class DockApps: ObservableObject {
     /// Who's asking, of the apps in the bar: one stays till it's gone to or quits.
     private func checkAttention() {
         guard attentionTimer != nil else { return }
-        let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        let shown = apps.filter(\.isRunning)
-        let id = { (app: NSRunningApplication) in shown.first { Self.matches(app, $0) }?.id }
-        let front = NSWorkspace.shared.frontmostApplication.flatMap(id)
-        let now = running.filter { $0 != NSRunningApplication.current && AppAttention.asks($0.processIdentifier) }.compactMap(id)
-        let asking = AppAttention.asking(before: asking, now: now, open: Set(shown.map(\.id)), front: front)
+        let now = openApps.filter { AppAttention.asks($0.pid) }.map(\.id)
+        let asking = AppAttention.asking(before: asking, now: now, open: Set(openApps.map(\.id)), front: frontID)
         if asking != self.asking { self.asking = asking }
     }
 

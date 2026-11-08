@@ -213,8 +213,51 @@ enum AudioProcess {
 
     /// Whether any of `bundleID`'s processes is playing sound on this Mac.
     static func isMakingSound(_ bundleID: String) -> Bool {
-        objects(matching: bundleID).contains { isRunning(kAudioProcessPropertyIsRunningOutput, $0) }
+        known(bundleID).contains { isRunning(kAudioProcessPropertyIsRunningOutput, $0) }
     }
+
+    /// `bundleID`'s process objects as last found, found again only once Core Audio's list of them
+    /// has changed (one starting to play, say, or quitting): it's asked every second while a song's
+    /// on, and finding them asks every process Core Audio has for its bundle ID, a round trip each.
+    /// (What listens for the list changing itself asks `objects(matching:)`, never this, so it's
+    /// never told the list as it was.)
+    private static func known(_ bundleID: String) -> [AudioObjectID] {
+        let known = knownObjects
+        known.lock.lock()
+        if !known.listening {
+            var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                                     mScope: kAudioObjectPropertyScopeGlobal,
+                                                     mElement: kAudioObjectPropertyElementMain)
+            known.listening = AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject), &address,
+                                                                  .global(qos: .utility)) { _, _ in
+                known.lock.lock()
+                known.objects = [:]
+                known.changes += 1
+                known.lock.unlock()
+            } == noErr
+        }
+        if known.listening, let objects = known.objects[bundleID] {
+            known.lock.unlock()
+            return objects
+        }
+        let changes = known.changes
+        known.lock.unlock()
+        let objects = objects(matching: bundleID)
+        known.lock.lock()
+        // (Unless the list changed meanwhile, which would make these the list as it was.)
+        if known.listening, known.changes == changes { known.objects[bundleID] = objects }
+        known.lock.unlock()
+        return objects
+    }
+
+    private final class Known: @unchecked Sendable {
+        let lock = NSLock()
+        var objects: [String: [AudioObjectID]] = [:]
+        var changes = 0
+        var listening = false
+    }
+
+    private static let knownObjects = Known()
 
     private static func isRunning(_ selector: AudioObjectPropertySelector, _ object: AudioObjectID) -> Bool {
         var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,

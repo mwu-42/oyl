@@ -36,6 +36,9 @@ final class CoworkTasks: @unchecked Sendable {
     private let report: @Sendable ([Task]) -> Void
     // Only touched on `queue`.
     private var timer: DispatchSourceTimer?
+    /// `roots`, looked for again once a minute: listing all of Application Support every couple of
+    /// seconds to find them cost more than the rest of a look put together.
+    private var roots: (found: Date, urls: [URL])?
     private var records: [URL: (changed: Date, record: Record?)] = [:]
     private var transcripts: [URL: (changed: Date, state: State)] = [:]
     private var last: [Task] = []
@@ -79,7 +82,8 @@ final class CoworkTasks: @unchecked Sendable {
     private func check() {
         let now = Date()
         var tasks: [Task] = []
-        for url in Self.recordFiles() {
+        if roots.map({ now.timeIntervalSince($0.found) > 60 }) ?? true { roots = (now, Self.roots) }
+        for url in Self.recordFiles(in: roots?.urls ?? []) {
             guard let changed = Self.modified(url) else { continue }
             if records[url]?.changed != changed { records[url] = (changed, Self.record(at: url)) }
             guard let record = records[url]?.record, let written = Self.modified(record.transcript),
@@ -104,8 +108,8 @@ final class CoworkTasks: @unchecked Sendable {
         report(tasks)
     }
 
-    /// Every task's record, in every account's and workspace's folder.
-    private static func recordFiles() -> [URL] {
+    /// Every task's record, in every account's (`roots`) and workspace's folder.
+    private static func recordFiles(in roots: [URL]) -> [URL] {
         let files = FileManager.default
         var found: [URL] = []
         for account in roots.flatMap({ (try? files.contentsOfDirectory(at: $0, includingPropertiesForKeys: nil)) ?? [] }) {
