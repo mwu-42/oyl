@@ -99,6 +99,9 @@ struct MidnightBackdrop: View, Animatable {
     /// The planisphere, the orrery, the moon's dial and Cygnus; without them (in the Dock, too
     /// shallow for them), only the pole's grid, the stars and what spills.
     var charts = true
+    /// Where along the frame it blooms out of, in points from its left: under the notch (nil), or
+    /// in the Dock, where the pointer brought it up.
+    var bloomFrom: CGFloat?
 
     var animatableData: AnimatablePair<Double, AnimatablePair<CGFloat, AnimatablePair<Double, Double>>> {
         get { AnimatablePair(bloom, AnimatablePair(reach, AnimatablePair(growth, lit))) }
@@ -112,7 +115,7 @@ struct MidnightBackdrop: View, Animatable {
 
     var body: some View {
         Surface(bloom: bloom, active: active, notch: notch, reach: reach, grownFrom: grownFrom, growth: growth, lit: lit,
-                overflow: overflow, page: page, flipped: flipped, charts: charts)
+                overflow: overflow, page: page, flipped: flipped, charts: charts, bloomFrom: bloomFrom)
             // Laid out in the frame, but spilling past it below (above, turned over; and either
             // side, given room).
             .padding(EdgeInsets(top: flipped ? -overflow.below : 0, leading: -overflow.side, bottom: flipped ? 0 : -overflow.below,
@@ -136,6 +139,14 @@ struct MidnightBackdrop: View, Animatable {
     /// it flows), in the frame's points.
     static func foot(atX x: CGFloat, in size: CGSize, reach: CGFloat) -> CGFloat {
         Design.foot(x, Plate(size: size, reach: reach))
+    }
+
+    /// How far open the bloom is (0 to 1) as its front reaches `point` (in points from the frame's
+    /// top left; turned over, from its bottom left), in a band of `size` reaching `reach` that
+    /// blooms out of `bloomFrom` (see `bloomFrom`): its petals aside, as the stars come on.
+    static func arrival(at point: CGPoint, in size: CGSize, reach: CGFloat, bloomFrom: CGFloat?) -> Double {
+        let plate = Plate(size: size, reach: reach, bloomX: bloomFrom)
+        return Double(hypot((point.x - plate.bloomX) / Flower.stretch(plate), point.y - Flower.top) / Flower.reach(plate))
     }
 
     /// The backdrop's clock: seconds since it started, which every bloom carries on from.
@@ -223,14 +234,17 @@ private enum Design {
     static let glassInset: CGFloat = 4, glassFeather: CGFloat = 60
 }
 
-/// The band in a frame of a given size: how wide it is, and how far down it reaches.
+/// The band in a frame of a given size: how wide it is, how far down it reaches, and where along
+/// it it blooms out of (under the notch, unless it's told otherwise).
 private struct Plate {
     let width: CGFloat
     let reach: CGFloat
+    let bloomX: CGFloat
 
-    init(size: CGSize, reach: CGFloat) {
+    init(size: CGSize, reach: CGFloat, bloomX: CGFloat? = nil) {
         width = max(size.width, 1)
         self.reach = max(min(reach, size.height), 1)
+        self.bloomX = min(max(bloomX ?? width / 2, 0), width)
     }
 
     var middle: CGFloat { width / 2 }
@@ -271,11 +285,15 @@ private struct Charts {
 /// touch past where it rests and settling. Fully open, it covers it all, so the band rests as it
 /// is. The shader works it out just as this does (see its `flowerOpen`).
 private enum Flower {
-    /// Where it opens from (points down from the top, under the notch's middle).
+    /// Where it opens from (points down from the top, under the notch's middle, or the plate's
+    /// `bloomX`).
     static let top: CGFloat = 16
 
-    /// How much wider than deep it opens.
-    static func stretch(_ plate: Plate) -> CGFloat { max(plate.middle / plate.reach, 1) * 0.92 }
+    /// How much wider than deep it opens: further, opening off the middle, so it reaches the far
+    /// edge as it would either edge from the middle.
+    static func stretch(_ plate: Plate) -> CGFloat {
+        max((plate.middle + abs(plate.bloomX - plate.middle)) / plate.reach, 1) * 0.92
+    }
 
     /// How far out (in its own measure, wider than deep) its front is when fully open: past every
     /// corner of the band, and what swells and spills from its foot.
@@ -296,7 +314,7 @@ private enum Flower {
     /// How much of it's open at `point`: 1 well inside, nothing past its edge.
     static func open(at point: CGPoint, _ plate: Plate, bloom: Double, time: Double) -> Double {
         guard bloom < 1 else { return 1 }
-        let v = CGPoint(x: (point.x - plate.middle) / stretch(plate), y: point.y - top)
+        let v = CGPoint(x: (point.x - plate.bloomX) / stretch(plate), y: point.y - top)
         let edge = edge(atan2(Double(v.y), Double(v.x)), plate, bloom: bloom, time: time)
         return 1 - Liquid.smooth((Double(hypot(v.x, v.y)) - edge.radius + edge.soft) / edge.soft)
     }
@@ -314,7 +332,7 @@ private enum Flower {
             let angle = 2 * Double.pi * Double(step) / Double(steps)
             let edge = edge(angle, plate, bloom: bloom, time: time)
             let radius = max(edge.radius - edge.soft * inset, 0)
-            let point = CGPoint(x: Double(plate.middle) + cos(angle) * radius * stretch, y: Double(top) + sin(angle) * radius)
+            let point = CGPoint(x: Double(plate.bloomX) + cos(angle) * radius * stretch, y: Double(top) + sin(angle) * radius)
             if step == 0 { path.move(to: point) } else { path.addLine(to: point) }
         }
         path.closeSubpath()
@@ -449,6 +467,7 @@ extension MidnightBackdrop {
         let page: CGRect
         let flipped: Bool
         let charts: Bool
+        let bloomFrom: CGFloat?
 
         func makeNSView(context: Context) -> BackdropView { BackdropView() }
 
@@ -456,7 +475,7 @@ extension MidnightBackdrop {
             view.renderer?.flipped = flipped
             view.renderer?.charts = charts
             view.update(bloom: bloom, notch: notch, reach: reach, grownFrom: grownFrom, growth: growth, lit: lit,
-                        overflow: overflow, page: page, active: active)
+                        overflow: overflow, page: page, bloomFrom: bloomFrom, active: active)
         }
     }
 
@@ -513,12 +532,13 @@ extension MidnightBackdrop {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
         func update(bloom: Double, notch: CGSize, reach: CGFloat, grownFrom: CGFloat, growth: Double, lit: Double,
-                    overflow: (side: CGFloat, below: CGFloat), page: CGRect, active: Bool) {
+                    overflow: (side: CGFloat, below: CGFloat), page: CGRect, bloomFrom: CGFloat?, active: Bool) {
             guard let renderer else { return }
             keepScale()
             let changed = bloom != renderer.bloom || notch != renderer.notch || reach != renderer.reach
                 || grownFrom != renderer.grownFrom || growth != renderer.growth || lit != renderer.lit
-                || overflow != renderer.overflow || page != renderer.page
+                || overflow != renderer.overflow || page != renderer.page || bloomFrom != renderer.bloomFrom
+            renderer.bloomFrom = bloomFrom
             renderer.bloom = bloom
             renderer.notch = notch
             renderer.reach = reach
@@ -635,9 +655,10 @@ extension MidnightBackdrop {
         var page: CGRect = .zero
         /// The moment to draw the moon (a clock) and the hour for: now, unless it's set.
         var date: Date?
-        /// Turned over, and without its charts (see `MidnightBackdrop`).
+        /// Turned over, and without its charts; and where it blooms out of (see `MidnightBackdrop`).
         var flipped = false
         var charts = true
+        var bloomFrom: CGFloat?
         private let queue: MTLCommandQueue
         /// The moon's phase as the clock has it (0 new, ½ full) and the hour (0–24), and when they
         /// were last worked out.
@@ -706,7 +727,7 @@ extension MidnightBackdrop {
             // The plate's laid out in the bloom's own frame, top center in the drawable.
             let points = CGSize(width: max(pixels.width / scale - 2 * overflow.side, 1),
                                 height: max(pixels.height / scale - overflow.below, 1))
-            let plate = Plate(size: points, reach: reach)
+            let plate = Plate(size: points, reach: reach, bloomX: bloomFrom)
             let from = Plate(size: points, reach: grownFrom)
             let reach = Double(plate.reach), grownFrom = Double(from.reach)
             let charts = self.charts ? Charts(plate) : .away
@@ -729,6 +750,7 @@ extension MidnightBackdrop {
             u.pole = Float(notch.height)
             u.middle = Float(plate.middle)
             u.flowerTop = Float(Flower.top)
+            u.bloomX = Float(plate.bloomX)
             u.stretch = Float(Flower.stretch(plate))
             u.front = Float(Flower.reach(plate))
             // As far as anything on the plate is from the pole, for the opening's front to reach.
@@ -861,6 +883,7 @@ extension MidnightBackdrop {
         var moonX: Float = 0, moonY: Float = 0, cygnusX: Float = 0, cygnusY: Float = 0
         var quietLeft: Float = 0, quietRight: Float = 0, quietFoot: Float = 0
         var flip: Float = 0
+        var bloomX: Float = 0
     }
 }
 
@@ -1089,6 +1112,7 @@ struct Uniforms {
     float planisphereX, planisphereY, orreryX, orreryY, moonX, moonY, cygnusX, cygnusY;
     float quietLeft, quietRight, quietFoot;   // the page's column
     float flip;                      // 1: turned over, rising from the drawable's foot
+    float bloomX;                    // where along the band the bloom opens from (the middle, but in the Dock)
 };
 
 struct Fragment { float4 position [[position]]; };
@@ -1304,11 +1328,12 @@ struct Sky {
     float extent;       // as far as anything on the plate is from the pole
     float2 planisphere;
     float flowerTop, stretch, front;   // the bloom's middle, how much wider than deep, its full reach
+    float flowerX;                     // and where along the band it opens from
 };
 
 // How far open the bloom has to be for its front to reach `at` (0 at its middle, 1 its full reach).
 float arrival(float2 at, Sky s) {
-    return length(float2((at.x - s.middle) / s.stretch, at.y - s.flowerTop)) / s.front;
+    return length(float2((at.x - s.flowerX) / s.stretch, at.y - s.flowerTop)) / s.front;
 }
 
 // How far a star at `at` has come on (0 dark, 1 lit), and how many magnitudes brighter it's
@@ -1325,7 +1350,7 @@ float2 ignite(float2 at, float salt, Sky s) {
 // sweeps on both ways once the opening's front reaches it, and in new room once the growing foot
 // has passed its lowest point.
 float swept(float radius, Sky s) {
-    float opening = saturate((s.bloom - (s.pole + radius - s.flowerTop) / s.front) / 0.15) * PI;
+    float opening = saturate((s.bloom - arrival(float2(s.middle, s.pole + radius), s)) / 0.15) * PI;
     if (!s.inRoom || s.pole + radius < s.grownFrom) return opening;
     float passed = saturate((s.pole + radius - s.grownFrom) / max(s.target - s.grownFrom, 1.0));
     return min(opening, saturate((s.growth - passed) / 0.35) * PI * 0.5);
@@ -1635,7 +1660,7 @@ float4 rimAt(float a, float span, constant float4 *rim) {
 // rippling (as Flower has it). 1 well inside, nothing past its edge.
 float flowerOpen(float2 q, float bloom, float time, Sky s) {
     if (bloom >= 1) return 1;
-    float2 v = float2((q.x - s.middle) / s.stretch, q.y - s.flowerTop);
+    float2 v = float2((q.x - s.flowerX) / s.stretch, q.y - s.flowerTop);
     float angle = atan2(v.y, v.x);
     float front = s.front * bloom;
     float depth = 0.4 * (1 - smoothstep(0.5, 1.0, bloom)), turn = 0.35 + 0.6 * (1 - bloom);
@@ -1804,6 +1829,7 @@ fragment float4 backdropFragment(Fragment in [[stage_in]], constant Uniforms &u 
     s.flowerTop = u.flowerTop;
     s.stretch = u.stretch;
     s.front = u.front;
+    s.flowerX = u.bloomX;
     // How far the bloom's come here.
     float open = flowerOpen(q, bloom, time, s);
     float perPoint = s.ppu / u.scale;   // points a design point, roughly, either way

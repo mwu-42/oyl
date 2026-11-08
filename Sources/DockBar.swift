@@ -199,6 +199,7 @@ final class DockController {
     private func open(on screen: NSScreen) {
         self.screen = screen
         model.screenWidth = screen.frame.width
+        model.calledFrom = NSEvent.mouseLocation.x - screen.frame.midX
         apps.reload()
         fit()
         panel.orderFrontRegardless()
@@ -353,6 +354,9 @@ final class DockModel: ObservableObject {
     @Published var theme = NotchTheme.standard
     /// The screen it's on's width, which it has to fit in.
     @Published var screenWidth: CGFloat = 1440
+    /// Where the pointer brought it up, across from the screen's middle: the icons come up from
+    /// there out, and Midnight Oyl's sky blooms out of it.
+    @Published var calledFrom: CGFloat = 0
     /// The icon the pointer's on, which says its name.
     @Published var hovered: String?
     /// The shelf that's up over the bar, if one is.
@@ -465,7 +469,7 @@ struct DockView: View {
         let layout = DockLayout(apps: apps, screenWidth: model.screenWidth)
         ZStack(alignment: .bottom) {
             if midnight {
-                MidnightDockSky(open: model.isOpen, bar: layout.size, width: model.screenWidth,
+                MidnightDockSky(open: model.isOpen, bar: layout.size, width: model.screenWidth, from: model.calledFrom,
                                 card: model.isOpen && model.isShelving ? CGSize(width: model.cardWidth, height: ShelfCard.height) : nil)
             }
             VStack(spacing: DockLayout.cardGap) {
@@ -479,9 +483,11 @@ struct DockView: View {
                         .onAppear { shown.watch() }
                 }
                 if model.isOpen {
-                    // In Midnight Oyl, the icons come up into the sky as it blooms, and go as it wilts.
+                    // Each icon comes up in its turn, out from the pointer (see `Arriving`): in
+                    // Midnight Oyl, into the sky as its bloom reaches it. They go as it wilts.
                     DockBar(model: model, apps: apps, shelf: shelf, saved: saved)
-                        .transition(midnight ? .opacity.combined(with: .offset(y: 10)) : .move(edge: .bottom))
+                        .transition(midnight ? .asymmetric(insertion: .identity, removal: .opacity.combined(with: .offset(y: 10)))
+                                    : .move(edge: .bottom))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -509,6 +515,23 @@ struct DockView: View {
         case (true, true): return .easeOut(duration: 0.5).delay(0.12)
         case (true, false): return Midnight.wilt
         }
+    }
+
+    /// How fast the icons come up one after another in Oyl's look, in points a second along the bar.
+    static let wave: CGFloat = 6000
+
+    /// How long after the Dock's called up the icon at `point` (in a bar of `bar`'s size, from its
+    /// top left) comes up: in Oyl's look, in a quick wave out from where the pointer brought it up
+    /// (`from`, across from the screen's middle), the nearest first; in Midnight Oyl's, as the
+    /// sky's bloom reaches it from there (just before its front).
+    static func arrival(at point: CGPoint, bar: CGSize, from: CGFloat, screenWidth: CGFloat, midnight: Bool) -> Double {
+        guard midnight else { return Double(abs(point.x - (bar.width / 2 + from)) / wave) }
+        let reach = MidnightDockSky.reach(bar: bar, card: nil)
+        // In the sky, measured up from the foot of the screen.
+        let sky = CGPoint(x: point.x + (screenWidth - bar.width) / 2, y: bar.height - point.y)
+        let fraction = MidnightBackdrop.arrival(at: sky, in: CGSize(width: screenWidth, height: reach), reach: reach,
+                                                bloomFrom: screenWidth / 2 + from)
+        return Midnight.dockBloomTime(0.9 * fraction)
     }
 
     /// Where a shelf's tile is, as a point on its card (off its foot, over the bar): the card's
@@ -543,16 +566,23 @@ private struct DockBar: View {
     let shelf: Shelf
     let saved: Shelf
     @Environment(\.notchTheme) private var theme
+    /// Come up: just after it's appeared, each icon then coming up in its turn.
+    @StateObject private var up = LocalState(false)
 
     var body: some View {
         let layout = DockLayout(apps: apps, screenWidth: model.screenWidth)
         let midnight = theme == .midnight
         let items = shownApps(in: layout) + apps.others
+        let arriving = { (x: CGFloat, y: CGFloat) in
+            Arriving(up: up.value, midnight: midnight, delay: DockView.arrival(at: CGPoint(x: x, y: y), bar: layout.size, from: model.calledFrom,
+                                                                         screenWidth: model.screenWidth, midnight: midnight))
+        }
         ZStack(alignment: .topLeading) {
             if let x = layout.separatorX, let first = layout.frames.first {
                 Rectangle()
                     .fill((midnight ? Midnight.silver : Color.white).opacity(midnight ? 0.4 : 0.2))
                     .frame(width: midnight ? 0.6 : 1, height: layout.tile * 0.7)
+                    .modifier(arriving(x, first.midY))
                     .position(x: x, y: first.midY)
             }
             // The apps; then past the line the shelves, and the rest after them.
@@ -567,6 +597,7 @@ private struct DockBar: View {
                     let movable = item.kind == .app && item.id != DockApps.finder && apps.apps.count > 2
                     DockTile(item: item, model: model, apps: apps, tile: layout.tile,
                              drag: movable ? { dragged(item, by: $0, in: layout) } : nil)
+                        .modifier(arriving(frame.midX, frame.midY))
                         .position(x: held ? draggedX(in: layout) ?? frame.midX : frame.midX, y: frame.midY)
                         .zIndex(held ? 1 : 0)
                         .animation(held ? nil : .spring(response: 0.28, dampingFraction: 0.82), value: place)
@@ -576,6 +607,7 @@ private struct DockBar: View {
                 if shelfIndex + offset < layout.frames.count {
                     let frame = layout.frames[shelfIndex + offset]
                     ShelfDockTile(model: model, shelf: source == .saved ? saved : shelf, tile: layout.tile)
+                        .modifier(arriving(frame.midX, frame.midY))
                         .position(x: frame.midX, y: frame.midY)
                 }
             }
@@ -606,6 +638,33 @@ private struct DockBar: View {
         .background {
             // (Midnight Oyl's is the sky right across under it: see `MidnightDockSky`.)
             if !midnight { DockPlate() }
+        }
+        .onAppear { up.value = true }
+    }
+}
+
+/// An icon coming up as the Dock does, `delay` after the first (see `DockView.arrival`): in Oyl's
+/// look, popping up out of the plate, a little past its size and back, quickly; in Midnight Oyl's,
+/// coming on out of a blur, rising a little, as the sky's bloom reaches it.
+private struct Arriving: ViewModifier {
+    let up: Bool
+    let midnight: Bool
+    let delay: Double
+
+    func body(content: Content) -> some View {
+        if midnight {
+            content
+                .blur(radius: up ? 0 : 6)
+                .offset(y: up ? 0 : 6)
+                .opacity(up ? 1 : 0)
+                .animation(.easeOut(duration: 0.3).delay(delay), value: up)
+        } else {
+            content
+                .scaleEffect(up ? 1 : 0.35, anchor: .bottom)
+                .offset(y: up ? 0 : 12)
+                .animation(.spring(response: 0.22, dampingFraction: 0.58).delay(delay), value: up)
+                .opacity(up ? 1 : 0)
+                .animation(.easeOut(duration: 0.06).delay(delay), value: up)
         }
     }
 }
@@ -1042,7 +1101,7 @@ private struct TileHandle: NSViewRepresentable {
 // MARK: - Midnight Oyl's
 
 /// Midnight Oyl's Dock's sky: the band turned over (see `MidnightBackdrop`), right across the foot
-/// of the screen. It blooms out of the middle of the screen's foot as the Dock comes up, as the
+/// of the screen. It blooms out of the screen's foot where the pointer brought the Dock up, as the
 /// band does out of the notch, and wilts back into it as the Dock goes. Its edge flows in slow
 /// swells and lobes and dissolves into the desktop, never pinching in over the icons; the pole's
 /// grid fans out from the middle; stars, star dust drifting, filaments and the drop of light spill
@@ -1055,6 +1114,8 @@ private struct MidnightDockSky: View {
     /// The bar's size, and the screen's width.
     let bar: CGSize
     let width: CGFloat
+    /// Where the pointer brought it up, across from the screen's middle.
+    let from: CGFloat
     /// The shelf's card up over the bar, if there is one.
     let card: CGSize?
     @StateObject private var growing = SkyGrowth()
@@ -1082,7 +1143,7 @@ private struct MidnightDockSky: View {
                 .fill(Midnight.ink.opacity(0.9))
                 .frame(width: bar.width, height: bar.height)
                 .blur(radius: 12)
-                .scaleEffect(open ? 1 : 0.3, anchor: .bottom)
+                .scaleEffect(open ? 1 : 0.3, anchor: UnitPoint(x: min(max(0.5 + from / max(bar.width, 1), 0), 1), y: 1))
                 .opacity(open ? 1 : 0)
                 .animation(open ? .easeOut(duration: 0.22) : DockView.close, value: open)
             // Spilling up into the room over it; the bar's place in it, measured up from the
@@ -1090,7 +1151,7 @@ private struct MidnightDockSky: View {
             MidnightBackdrop(bloom: open ? 1 : 0, active: open, notch: CGSize(width: 0, height: 10), reach: reach,
                              grownFrom: growing.grownFrom > 0 ? growing.grownFrom : reach, growth: growing.growth,
                              overflow: (side: 0, below: DockLayout.headroom(midnight: true) - Self.over),
-                             page: page, flipped: true, charts: false)
+                             page: page, flipped: true, charts: false, bloomFrom: width / 2 + from)
                 .frame(width: width, height: reach)
                 .animation(open ? Midnight.dockBloom : DockView.close, value: open)
         }

@@ -71,7 +71,21 @@ enum Midnight {
     /// dropping; easing in to rest, with no bounce past it.
     static let bloom = Animation.spring(response: 1.1, dampingFraction: 1)
     /// Oyl's Dock's sky coming up: quicker, being only a strip of it at the foot of the screen.
-    static let dockBloom = Animation.spring(response: 0.55, dampingFraction: 1)
+    static let dockBloom = Animation.spring(response: dockBloomResponse, dampingFraction: 1)
+    static let dockBloomResponse = 0.55
+
+    /// How long after it starts the Dock's sky has bloomed `fraction` of the way open: on its
+    /// spring, critically damped, 1 − (1 + ωt)e^(−ωt).
+    static func dockBloomTime(_ fraction: Double) -> Double {
+        guard fraction > 0 else { return 0 }
+        let fraction = min(fraction, 0.9999)
+        var low = 0.0, high = 30.0
+        for _ in 0..<40 {
+            let x = (low + high) / 2
+            if 1 - (1 + x) * exp(-x) < fraction { low = x } else { high = x }
+        }
+        return (low + high) / 2 * dockBloomResponse / (2 * .pi)
+    }
     /// Shrinking to a shorter page: quicker, folding up.
     static let fold = Animation.spring(response: 0.6, dampingFraction: 0.92)
     static let wilt = Animation.easeIn(duration: 0.35)
