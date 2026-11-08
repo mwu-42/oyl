@@ -172,6 +172,7 @@ struct SettingsPage: View {
                     state.showsDock.toggle()
                 },
                 feature(.hidesMacDock, "Keep the macOS Dock down", "While Oyl's Dock is on, the macOS Dock never comes up at the bottom edge (your own setting's back once Oyl's is off, or Oyl's quit)"),
+                feature(.attentionMarks, "Apps asking for you", "A small mark at the bottom edge, under its icon, till you go to it: no more bouncing"),
                 feature(.shelf, "The shelf", "In the Dock: what's recent, to drag anywhere or convert"),
                 feature(.screenshotsShelf, "Screenshots on it", "Your latest screenshots (light green)"),
                 feature(.savedShelf, "Downloads on it", "What's just been downloaded, AirDropped or saved from a text (blue)"),

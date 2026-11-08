@@ -50,6 +50,7 @@ final class DockController {
         // Mission Control's up: it has the screen.
         state.$isViewingDesktops.sink { [weak self] viewing in
             if viewing { self?.close() }
+            self?.model.isMarking = !viewing
         }.store(in: &cancellables)
         state.$showsDock.sink { [weak self] shown in
             if !shown { self?.close() }
@@ -60,6 +61,19 @@ final class DockController {
             .receive(on: RunLoop.main)
             .sink { shown, off, _ in
                 MainActor.assumeIsolated { MacDock.keep(down: shown && !off && Feature.hidesMacDock.isOn) }
+            }
+            .store(in: &cancellables)
+        // Apps asking for you marked along the bottom edge while this one's up (see
+        // `AttentionMark`), the macOS Dock's icons kept from bouncing there meanwhile.
+        state.$showsDock.combineLatest(state.$isOff, Features.shared.changed.filter { $0.0 == .attentionMarks }.map { _ in () }
+            .prepend(()))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] shown, off, _ in
+                MainActor.assumeIsolated {
+                    let on = shown && !off && Feature.attentionMarks.isOn && AppAttention.canTell
+                    MacDock.quiet(on)
+                    self?.apps.watchAttention(on)
+                }
             }
             .store(in: &cancellables)
         // The shelf turned off goes from the bar (and stops watching), its card with it; what's on
@@ -90,7 +104,11 @@ final class DockController {
                    !self.apps.others.contains(where: { $0.id == quitting && $0.isRunning }) {
                     self.model.quitting = nil
                 }
-                if self.model.isOpen { self.fit() }
+                if self.model.isOpen {
+                    self.fit()
+                } else if !self.apps.asking.isEmpty {
+                    self.showMarks()
+                }
             }
         }.store(in: &cancellables)
         // A click anywhere else is a no to quitting.
@@ -230,6 +248,20 @@ final class DockController {
         }
         hover(at: NSEvent.mouseLocation)
         Haptics.perform(.levelChange, performanceTime: .now)
+    }
+
+    /// Apps asking for you, marked along the bottom edge under their icons while it's down: on the
+    /// screen it was last up on (the main one till it's been up), in its panel, there anyway once
+    /// it's been up (clicks go through it while it's down).
+    private func showMarks() {
+        guard let screen = screen ?? NSScreen.screens.first else { return }
+        self.screen = screen
+        model.screenWidth = screen.frame.width
+        fit()
+        if !panel.isVisible {
+            panel.ignoresMouseEvents = true
+            panel.orderFrontRegardless()
+        }
     }
 
     /// Off it, it waits a moment (see `grace`) in case the pointer's coming back.
@@ -385,6 +417,9 @@ final class DockModel: ObservableObject {
     @Published var raised = false
     /// The icon the pointer's on, which says its name.
     @Published var hovered: String?
+    /// Apps asking for you are marked along the bottom edge while it's down (not while Mission
+    /// Control has the screen).
+    @Published var isMarking = true
     /// The shelf's up over the bar.
     @Published var shelving = false
     var isShelving: Bool { shelving }
@@ -513,6 +548,7 @@ struct DockView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .animation(model.isOpen ? NotchView.open : Self.close, value: model.isOpen)
             .animation(Self.shelfMotion(midnight: midnight, coming: model.isShelving), value: model.shelving)
+            AttentionMarks(model: model, apps: apps, layout: layout)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .environment(\.notchTheme, model.theme)
@@ -682,6 +718,55 @@ private struct Arriving: ViewModifier {
     }
 }
 
+/// Apps asking for you, each marked (see `AttentionMark`) under where its icon is in the bar, while
+/// the bar's down: each coming up out of the edge as it starts asking, on a plain quick ease, in
+/// Midnight Oyl's out of a blur, and going as the bar comes up over it, or once it's gone to.
+private struct AttentionMarks: View {
+    @ObservedObject var model: DockModel
+    @ObservedObject var apps: DockApps
+    let layout: DockLayout
+
+    var body: some View {
+        let ids = DockView.ids(apps)
+        let shown = !model.isOpen && model.isMarking
+        ZStack(alignment: .topLeading) {
+            ForEach(apps.asking, id: \.self) { id in
+                if let index = ids.firstIndex(of: id), index < layout.frames.count,
+                   let item = apps.apps.first(where: { $0.id == id }) {
+                    AttentionMark(glyph: apps.glyphs[id], icon: apps.icon(for: item))
+                        .modifier(Rising(up: shown))
+                        .position(x: layout.frames[index].midX, y: layout.size.height - AttentionMark.height / 2)
+                        .transition(.modifier(active: Rising(up: false), identity: Rising(up: true)))
+                }
+            }
+        }
+        .frame(width: layout.size.width, height: layout.size.height, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.25), value: apps.asking)
+        .animation(.easeOut(duration: shown ? 0.25 : 0.12), value: shown)
+        .allowsHitTesting(false)
+    }
+}
+
+/// A mark coming up out of the bottom edge, or going back down into it: in Oyl's look, sliding up
+/// as it fades in; in Midnight Oyl's, out of a blur, rising a little.
+private struct Rising: ViewModifier {
+    let up: Bool
+    @Environment(\.notchTheme) private var theme
+
+    func body(content: Content) -> some View {
+        if theme == .midnight {
+            content
+                .blur(radius: up ? 0 : 5)
+                .offset(y: up ? 0 : 6)
+                .opacity(up ? 1 : 0)
+        } else {
+            content
+                .offset(y: up ? 0 : AttentionMark.height)
+                .opacity(up ? 1 : 0)
+        }
+    }
+}
+
 extension DockBar {
     /// The apps, the one being dragged moved to where it would go.
     private func shownApps(in layout: DockLayout) -> [DockApps.Item] {
@@ -816,7 +901,8 @@ private struct ButtonTile: View {
 }
 
 /// One app or folder: its icon, lifting a little and saying its name when the pointer's
-/// on it, with a light under it while it's open, hopping while it opens.
+/// on it, with a light under it while it's open, hopping while it opens, marked while it's asking
+/// for you (see `AttentionBadge`).
 private struct DockTile: View {
     let item: DockApps.Item
     @ObservedObject var model: DockModel
@@ -853,6 +939,12 @@ private struct DockTile: View {
         .overlay(alignment: .bottom) {
             if item.isRunning { light.offset(y: DockLayout.below / 2 + 2) }
         }
+        .overlay(alignment: .topTrailing) {
+            if apps.asking.contains(item.id) {
+                AttentionBadge(tile: tile).transition(.opacity.combined(with: .scale(scale: 0.5)))
+            }
+        }
+        .animation(.easeOut(duration: 0.25), value: apps.asking.contains(item.id))
         .overlay(alignment: .top) {
             if hovered && model.reordering == nil && !asking {
                 DockLabel(text: item.name).fixedSize().offset(y: -32).transition(.opacity.combined(with: .scale(scale: 0.9, anchor: .bottom)))

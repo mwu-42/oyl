@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// screenshots, what's just been saved and what Claude's just written or edited, and files kept
 /// here, in a row, newest first, each to be dragged out into any app (or onto one in the Dock),
 /// each marked with where it came from in a color the card's top says the meaning of. Hovered, one
-/// has a way to convert it and a way off the shelf; right-clicked, the rest (copy, show in Finder,
+/// has AirDrop, a way to convert it and a way off the shelf; right-clicked, the rest (copy, show in Finder,
 /// the Trash). Files dropped on the card or the tile, or chosen with its +, are kept.
 struct ShelfCard: View {
     @ObservedObject var shelf: Shelf
@@ -321,7 +321,8 @@ struct ShelfTile: View {
     }
 
     /// Top left, the file into the Trash (not one from Photos, which is in Photos still); top
-    /// right, just off the shelf (well apart, so one's not hit for the other); low right, convert.
+    /// right, just off the shelf (well apart, so one's not hit for the other); low right, AirDrop
+    /// and convert.
     private var controls: some View {
         VStack {
             HStack {
@@ -332,8 +333,10 @@ struct ShelfTile: View {
                 button("xmark", help: "Take off the shelf (the file stays)") { shelf.remove(item) }
             }
             Spacer()
-            HStack {
+            HStack(spacing: 4) {
                 Spacer()
+                // (AirDrop's own mark isn't one of the symbols apps get; this is the nearest.)
+                button("dot.radiowaves.up.forward", help: "AirDrop") { shelf.airDrop(item) }
                 button("arrow.triangle.2.circlepath", help: "Convert to another format") { menu(false) }
             }
         }

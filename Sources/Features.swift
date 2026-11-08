@@ -45,6 +45,8 @@ enum Feature: String, CaseIterable, Sendable {
     // The Dock's shelf, and what's on it: screenshots, what's been saved, and what Claude Code's
     // written or edited.
     case shelf, screenshotsShelf, savedShelf, claudeShelf, labelScreenshots, hidesMacDock
+    /// Apps asking for you marked along the bottom edge, rather than bouncing in the macOS Dock.
+    case attentionMarks
 
     case openAtLogin
 

@@ -37,6 +37,10 @@ final class DockApps: ObservableObject {
     /// None for one with no one glyph on it: it keeps its icon.
     @Published private(set) var glyphs: [String: DockGlyph] = [:]
     private var lifted: Set<String> = []
+    /// Apps asking for you (see `AppAttention`), by id, the first to ask first: looked for while
+    /// `watchAttention` has it.
+    @Published private(set) var asking: [String] = []
+    private var attentionTimer: Timer?
 
     private var kept: [Item] = []
     /// The apps as they've been dragged along Oyl's Dock (the macOS Dock keeps its own order):
@@ -121,6 +125,7 @@ final class DockApps: ObservableObject {
         // Each icon's its own (SwiftUI lays them out by id): one kept in the Dock twice is shown once.
         shown = Self.arranged(Self.unique(shown), by: order)
         if shown != apps { apps = shown }
+        if !asking.isEmpty { checkAttention() }
         liftGlyphs()
         let up = Set(shown.filter(\.isRunning).map(\.id))
         if !launching.isDisjoint(with: up) { launching.subtract(up) }
@@ -157,6 +162,37 @@ final class DockApps: ObservableObject {
                 if let glyph { self?.glyphs[id] = glyph }
             }
         }
+    }
+
+    /// Apps asking for you looked for (`on`) a few times a second, as quick as the Dock bounces one;
+    /// or not, and none are.
+    func watchAttention(_ on: Bool) {
+        guard on != (attentionTimer != nil) else { return }
+        attentionTimer?.invalidate()
+        attentionTimer = nil
+        guard on, AppAttention.canTell else {
+            if !asking.isEmpty { asking = [] }
+            return
+        }
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.checkAttention() }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        attentionTimer = timer
+        checkAttention()
+    }
+
+    /// Who's asking, of the apps in the bar: one stays till it's gone to or quits.
+    private func checkAttention() {
+        guard attentionTimer != nil else { return }
+        let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let shown = apps.filter(\.isRunning)
+        let id = { (app: NSRunningApplication) in shown.first { Self.matches(app, $0) }?.id }
+        let front = NSWorkspace.shared.frontmostApplication.flatMap(id)
+        let now = running.filter { $0 != NSRunningApplication.current && AppAttention.asks($0.processIdentifier) }.compactMap(id)
+        let asking = AppAttention.asking(before: asking, now: now, open: Set(shown.map(\.id)), front: front)
+        if asking != self.asking { self.asking = asking }
     }
 
     /// Whether the app at `url` has an icon of its own (else macOS shows the plain one apps get):
