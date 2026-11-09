@@ -163,6 +163,7 @@ struct SettingsPage: View {
                 feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
+                feature(.emojiKey, "⌘. Emoji", "The emoji picker, from any app, as on Windows (not in a terminal or code editor, which have their own ⌘.)"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
             ]

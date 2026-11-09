@@ -531,8 +531,9 @@ final class NotchPanel: NSPanel {
     }
 }
 
-/// Cut, copy, paste, select all, undo and redo, from the keyboard. They're the Edit menu's, and
-/// Oyl has no menu bar, so nothing would answer them: they're sent to whatever's typing instead.
+/// Cut, copy, paste, select all, undo and redo, from the keyboard, and Command-period for the
+/// emoji picker (as `KeyTap` brings it up in other apps). They're the Edit menu's, and Oyl has no
+/// menu bar, so nothing would answer them: they're sent to whatever's typing instead.
 @MainActor
 enum EditKeys {
     static func perform(_ event: NSEvent) -> Bool {
@@ -547,6 +548,7 @@ enum EditKeys {
         case "v" where !shifted: action = #selector(NSText.paste(_:))
         case "a" where !shifted: action = #selector(NSText.selectAll(_:))
         case "z": action = shifted ? Selector(("redo:")) : Selector(("undo:"))
+        case "." where !shifted && Feature.emojiKey.isOn: action = #selector(NSApplication.orderFrontCharacterPalette(_:))
         default: return false
         }
         return NSApp.sendAction(action, to: nil, from: nil)
@@ -598,7 +600,7 @@ final class NotchController {
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
-    private var songKeys: SongKeys?
+    private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
     /// The lid's shut with no other screen on.
@@ -857,13 +859,19 @@ final class NotchController {
             },
         ])
         // Control-Option and an arrow: the next song, or the one before, while there's one on.
-        songKeys = SongKeys { [weak self] forward in
+        // Command-period: the emoji picker, in the app you're in (Oyl's own notch, when it has
+        // the keyboard, answers it itself).
+        keyTap = KeyTap(skip: { [weak self] forward in
             // (Not a tap of control and option, for the camera.)
             self?.cameraTaps?.interrupt()
             guard let self, !self.state.isOff, Feature.songKeys.isOn, self.state.nowPlaying.player != nil else { return false }
             if forward { self.state.nowPlaying.next() } else { self.state.nowPlaying.previous() }
             return true
-        }
+        }, emoji: { [weak self] in
+            guard let self, !self.state.isOff, Feature.emojiKey.isOn, NSApp.keyWindow == nil,
+                  let app = NSWorkspace.shared.frontmostApplication, app != .current else { return false }
+            return !KeyTap.keepsPeriod.contains(app.bundleIdentifier ?? "")
+        })
         state.$showsCountdowns
             .sink { [weak self] shows in
                 MainActor.assumeIsolated { self?.walkers.showsCountdowns = shows }

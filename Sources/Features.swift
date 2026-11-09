@@ -41,6 +41,8 @@ enum Feature: String, CaseIterable, Sendable {
     /// they're tapped twice again.
     case cameraKeys
     case approveTap
+    /// Command-period: the emoji picker, from any app, as on Windows.
+    case emojiKey
 
     // The Dock's shelf, and what's on it: screenshots, what's been saved, and what Claude Code's
     // written or edited.
