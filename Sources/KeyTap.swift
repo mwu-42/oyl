@@ -11,9 +11,9 @@ import ApplicationServices
 ///
 /// Command-period for the emoji picker, as the Windows key and period bring it up on Windows: by
 /// pressing the Mac's own shortcut for it (Control-Command-Space, Emoji & Symbols in any app's
-/// Edit menu), so it comes up at the caret wherever you're typing. Not in a terminal, where
-/// Command-period stops what's running, or a code editor, where it offers fixes; nor in Oyl's own
-/// notch, which brings the picker up itself (`EditKeys`).
+/// Edit menu), so it comes up at the caret wherever you're typing: in every app, terminals and
+/// code editors too (in place of their own Command-period, which stops what's running, or offers
+/// fixes). Not in Oyl's own notch, which brings the picker up itself (`EditKeys`).
 @MainActor
 final class KeyTap {
     nonisolated static let left: Int64 = 123
@@ -56,15 +56,6 @@ final class KeyTap {
     nonisolated static func isEmojiKey(_ characters: String?, flags: CGEventFlags) -> Bool {
         flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]) == .maskCommand && characters == "."
     }
-
-    /// Apps whose own Command-period is kept: terminals, where it stops what's running, and code
-    /// editors, where it offers fixes (or, in Xcode, stops the build).
-    nonisolated static let keepsPeriod: Set = [
-        "com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
-        "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper",
-        "com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium", "com.todesktop.230313mzl4w4u92",  // …Cursor
-        "com.exafunction.windsurf", "dev.zed.Zed", "com.apple.dt.Xcode",
-    ]
 
     /// The emoji picker up in the app in front, at its caret, as its Edit menu's Emoji & Symbols
     /// has it: Control-Command-Space pressed for it, Command (still held) and all.

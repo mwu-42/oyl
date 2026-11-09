@@ -151,6 +151,7 @@ final class NotchState: ObservableObject {
     @Published var isResting = false    // the lid's shut with no other screen, or Oyl's off: nothing's drawn
     @Published var isOff = false        // switched off by three taps of control, till three more
     @Published var isViewingDesktops = false  // Mission Control's up: the top of the screen is its
+    @Published var isTakingShot = false  // an area's being picked out for an idea's screenshot: out of the way
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
     @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
@@ -234,6 +235,12 @@ final class NotchState: ObservableObject {
     let shelf = Shelf()
     /// Gives the keyboard back to the app you were using. Set by the controller.
     var resignKeyboard: () -> Void = {}
+    /// Takes a screenshot for the idea being jotted. Set by the controller.
+    var takeIdeaShot: () -> Void = {}
+    /// What's being jotted on the ideas page, kept while the notch is closed, and the screenshots
+    /// ideas are about.
+    let ideaDraft = IdeaDraft()
+    let ideaPictures = IdeaPictures()
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
@@ -317,7 +324,7 @@ final class NotchState: ObservableObject {
         // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
         if isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
         // Midnight Oyl pinned open, on display (but not over Mission Control's desktops).
-        if isPinned && theme == .midnight && !isViewingDesktops { return .expanded }
+        if isPinned && theme == .midnight && !isViewingDesktops && !isTakingShot { return .expanded }
         return closedMode
     }
 
@@ -639,6 +646,7 @@ final class NotchController {
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
+        state.takeIdeaShot = { [weak self] in self?.takeIdeaShot() }
         state.gestures = gestures
         dock = DockController(state: state)
         approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
@@ -672,8 +680,9 @@ final class NotchController {
         // through instead.
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { [weak self] _ in
             MainActor.assumeIsolated {
-                // Not a click on Mission Control's desktops, wherever an Oyl was standing.
-                guard let self, !self.state.isViewingDesktops else { return }
+                // Not a click on Mission Control's desktops, wherever an Oyl was standing, or
+                // picking out an area for a screenshot.
+                guard let self, !self.state.isViewingDesktops, !self.state.isTakingShot else { return }
                 self.walkers.clickedThrough(at: NSEvent.mouseLocation)
             }
         }) {
@@ -868,9 +877,8 @@ final class NotchController {
             if forward { self.state.nowPlaying.next() } else { self.state.nowPlaying.previous() }
             return true
         }, emoji: { [weak self] in
-            guard let self, !self.state.isOff, Feature.emojiKey.isOn, NSApp.keyWindow == nil,
-                  let app = NSWorkspace.shared.frontmostApplication, app != .current else { return false }
-            return !KeyTap.keepsPeriod.contains(app.bundleIdentifier ?? "")
+            guard let self else { return false }
+            return !self.state.isOff && Feature.emojiKey.isOn && NSApp.keyWindow == nil
         })
         state.$showsCountdowns
             .sink { [weak self] shows in
@@ -1134,8 +1142,47 @@ final class NotchController {
         walkers.letPointerThrough()
     }
 
+    /// A screenshot for an idea, from the ideas page's camera: the notch closes out of the way and
+    /// stays closed (the pointer let through, and Oyl's Dock kept down) while an area's picked out,
+    /// as ⇧⌘4 has you, then opens on the page again, the picture at the head of the field, which
+    /// takes the keyboard for what the idea is. Called off with Escape, it's back to the field as
+    /// it was.
+    private func takeIdeaShot() {
+        guard !state.isTakingShot else { return }
+        state.isTakingShot = true
+        hoverWork?.cancel()
+        pointerInside = false
+        gestures.hovering = false
+        close()
+        panel.ignoresMouseEvents = true
+        // Once it's closed, so it's not in the picture.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            MainActor.assumeIsolated {
+                IdeaPictures.take { shot in
+                    guard let self else { return }
+                    self.state.isTakingShot = false
+                    if let shot { self.state.ideaDraft.attach(shot) }
+                    self.state.page = .ideas
+                    self.state.ideaDraft.wantsKeyboard = true
+                    self.state.isRevealing = true
+                    self.updatePassThrough(at: NSEvent.mouseLocation)
+                    // Open while it's typed in; otherwise, as a revealed page is, for a moment.
+                    self.revealWork?.cancel()
+                    let work = DispatchWorkItem { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self, !self.pointerInside else { return }
+                            self.state.isRevealing = false
+                        }
+                    }
+                    self.revealWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
+                }
+            }
+        }
+    }
+
     private func pointerMoved(released: Bool) {
-        guard !state.isOff, !state.isResting, !state.isViewingDesktops else { return }
+        guard !state.isOff, !state.isResting, !state.isViewingDesktops, !state.isTakingShot else { return }
         let rect = hoverRect()
         let location = NSEvent.mouseLocation
         walkers.pointerMoved(to: location)

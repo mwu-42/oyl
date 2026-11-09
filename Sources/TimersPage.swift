@@ -465,10 +465,11 @@ struct ReminderField: NSViewRepresentable {
         }
     }
 
-    /// The system's in Oyl's own look; Midnight Oyl's reading face (Georgia) in its.
+    /// The system's in Oyl's own look; Midnight Oyl's reading face (Georgia) in its. (And the
+    /// placeholder in it, as it is now.)
     private func setFont(of field: KeyField, for theme: NotchTheme) {
         let font = theme == .midnight ? NSFont(name: "Georgia", size: 13 * 1.06) ?? .systemFont(ofSize: 13) : .systemFont(ofSize: 13)
-        guard field.font != font else { return }
+        guard field.font != font || field.placeholderAttributedString?.string != placeholder else { return }
         field.font = font
         field.placeholderAttributedString = NSAttributedString(string: placeholder, attributes: [
             .foregroundColor: NSColor.white.withAlphaComponent(0.38),

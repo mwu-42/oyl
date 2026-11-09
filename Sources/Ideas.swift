@@ -385,26 +385,32 @@ extension TodStore {
 // MARK: - The page
 
 /// The ideas page: a field to jot one down (with its deadline or aim, if it has one, in the same
-/// line), and the ideas under it, each where it belongs (see `IdeaBoard`), to check off, put off a
-/// week or a month, or keep. In Midnight Oyl the rows drift in one after another, an aim's when in
-/// the flourish's italic and a deadline's in Bodoni's figures.
+/// line), or a screenshot to jot one about (its camera), and the ideas under it, each where it
+/// belongs (see `IdeaBoard`), to check off, put off a week or a month, or keep; one about a
+/// screenshot has it small by its title. In Midnight Oyl the rows drift in one after another, an
+/// aim's when in the flourish's italic and a deadline's in Bodoni's figures.
 struct IdeasPage: View {
     @ObservedObject var tod: TodStore
     @ObservedObject var state: NotchState
 
     var body: some View {
-        IdeasLayout(tod: tod, editing: state.isEditing, listHeight: state.ideaListHeight, resign: state.resignKeyboard)
+        IdeasLayout(tod: tod, draft: state.ideaDraft, pictures: state.ideaPictures, editing: state.isEditing,
+                    listHeight: state.ideaListHeight, resign: state.resignKeyboard, takeShot: state.takeIdeaShot)
     }
 }
 
-/// The ideas page itself, given whether its field has the keyboard, how tall its list may stand
-/// before it scrolls, and how to give the keyboard back.
+/// The ideas page itself, given what's being jotted, the ideas' screenshots, whether its field
+/// has the keyboard, how tall its list may stand before it scrolls, how to give the keyboard
+/// back, and how to take a screenshot for an idea.
 struct IdeasLayout: View {
     @ObservedObject var tod: TodStore
+    @ObservedObject var draft: IdeaDraft
+    @ObservedObject var pictures: IdeaPictures
     let editing: Bool
     let listHeight: CGFloat
     let resign: () -> Void
-    @StateObject private var draft = LocalState("")
+    var takeShot: () -> Void = {}
+    @StateObject private var focus = LocalState(0)
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
@@ -427,24 +433,58 @@ struct IdeasLayout: View {
             .padding(.top, 6)
             .animation(NotchView.open, value: rows.map(\.id))
         }
+        .onAppear {
+            takeKeyboard()
+            // Screenshots whose ideas are gone from tod go too.
+            if tod.isAvailable, !tod.tasks.isEmpty { pictures.prune(keeping: Set(tod.tasks.map(\.id))) }
+        }
+        .onChange(of: draft.wantsKeyboard) { _, _ in takeKeyboard() }
+    }
+
+    /// Back from a screenshot: straight to the keyboard, for what the idea is.
+    private func takeKeyboard() {
+        guard draft.wantsKeyboard else { return }
+        draft.wantsKeyboard = false
+        focus.value += 1
     }
 
     private var field: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "lightbulb.fill")
-                .notchSymbol(size: 11, weight: .semibold)
-                .foregroundStyle(.white)
-            ReminderField(text: $draft.value, placeholder: "Dump an idea…   “due fri”, “by next month”, “in a month or so”",
-                          onSubmit: submit, onCancel: cancel)
-            if !draft.value.isEmpty {
+        let shot = draft.shot.flatMap { _ in draft.shotImage }
+        return HStack(spacing: 8) {
+            if let shot {
+                ShotChip(image: shot, drop: draft.drop)
+                    .transition(.opacity.combined(with: .scale(scale: 0.6)))
+            } else {
+                Image(systemName: "lightbulb.fill")
+                    .notchSymbol(size: 11, weight: .semibold)
+                    .foregroundStyle(.white)
+            }
+            ReminderField(text: $draft.text,
+                          placeholder: shot == nil ? "Dump an idea…   “due fri”, “by next month”, “in a month or so”"
+                              : "What's the idea?   “due fri”, “by next month”, “in a month or so”",
+                          onSubmit: submit, onCancel: cancel, focus: focus.value)
+            if !draft.text.isEmpty {
                 Image(systemName: "return")
                     .notchSymbol(size: 10, weight: .semibold)
                     .foregroundStyle(.white.opacity(0.4))
             }
+            if tod.isAvailable {
+                Button(action: takeShot) {
+                    Image(systemName: "camera.viewfinder")
+                        .notchSymbol(size: 12, weight: .semibold)
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(width: 18, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .help(shot == nil ? "Screenshot something to jot an idea about" : "Take another screenshot instead")
+            }
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, shot == nil ? 12 : 4)
+        .padding(.trailing, tod.isAvailable ? 8 : 12)
         .frame(height: 28)
         .background(Capsule().fill(.white.opacity(editing ? 0.14 : 0.08)))
+        .animation(.easeOut(duration: 0.25), value: draft.shot)
     }
 
     private func hint(_ text: String) -> some View {
@@ -466,7 +506,9 @@ struct IdeasLayout: View {
                     .frame(height: Layout.ideaHeaderHeight, alignment: .bottomLeading)
                     .modifier(IdeaDrift(order: index * 3, on: theme == .midnight))
                 ForEach(Array(rows.filter { $0.kind == kind }.enumerated()), id: \.element.id) { offset, row in
-                    IdeaRow(row: row, done: { tod.toggle(row.id) }, putOff: { tod.putOff(row.id, by: $0) }, keep: { tod.keep(row.id) })
+                    let picture = pictures.url(for: row.id).flatMap { url in pictures.thumbnail(for: row.id).map { (url, $0) } }
+                    IdeaRow(row: row, picture: picture, done: { tod.toggle(row.id) }, putOff: { tod.putOff(row.id, by: $0) },
+                            keep: { tod.keep(row.id) })
                         .modifier(IdeaDrift(order: index * 3 + offset + 1, on: theme == .midnight))
                 }
             }
@@ -474,25 +516,59 @@ struct IdeasLayout: View {
     }
 
     private func submit() {
-        let text = draft.value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        if tod.addIdea(text) != nil {
+        if let idea = tod.addIdea(text) {
+            if let shot = draft.handOver() { pictures.keep(shot, for: idea.id) }
             Haptics.perform(.alignment)
             // Kept in the field for the next one: ideas come in runs.
-            draft.value = ""
+            draft.text = ""
         }
     }
 
     private func cancel() {
-        draft.value = ""
+        draft.text = ""
+        draft.drop()
         resign()
     }
 }
 
-/// An idea: a ring to check it off, its title, and when (or, pointed at, what can be done about
+/// The screenshot an idea being jotted is about, at the head of the field: pointed at, an × to
+/// let go of it.
+private struct ShotChip: View {
+    let image: NSImage
+    let drop: () -> Void
+    @StateObject private var hover = LocalState(false)
+
+    var body: some View {
+        Button(action: drop) {
+            IdeaShot(image: image, width: 32, height: 20)
+                .overlay {
+                    if hover.value {
+                        Image(systemName: "xmark")
+                            .notchSymbol(size: 8, weight: .bold)
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 20)
+                            .background(.black.opacity(0.45))
+                            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+                            .transition(.opacity)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .onHover { hover.value = $0 }
+        .animation(.easeOut(duration: 0.15), value: hover.value)
+        .help("Let go of the screenshot")
+    }
+}
+
+/// An idea: a ring to check it off, its screenshot if it's about one (a click opens it; it can
+/// be dragged out, into a chat), its title, and when (or, pointed at, what can be done about
 /// when: put off a week or a month, or kept).
 private struct IdeaRow: View {
     let row: IdeaBoard.Row
+    var picture: (url: URL, image: NSImage)?
     let done: () -> Void
     let putOff: (Int) -> Void
     let keep: () -> Void
@@ -516,6 +592,16 @@ private struct IdeaRow: View {
             }
             .buttonStyle(PressableStyle())
             .help("Done")
+            if let picture {
+                Button { NSWorkspace.shared.open(picture.url) } label: {
+                    IdeaShot(image: picture.image)
+                        .opacity(checked.value ? 0.5 : 1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressableStyle())
+                .onDrag { NSItemProvider(contentsOf: picture.url) ?? NSItemProvider() }
+                .help("Open the screenshot")
+            }
             Text(row.title)
                 .notchFont(size: 12)
                 .foregroundStyle(.white.opacity(checked.value ? 0.4 : 0.9))

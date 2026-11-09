@@ -146,7 +146,7 @@ final class DockController {
         return pressedOn
     }
 
-    private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops }
+    private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops && !state.isTakingShot }
 
     private func pointerMoved() {
         guard canOpen else { return }
