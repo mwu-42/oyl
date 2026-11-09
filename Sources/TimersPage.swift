@@ -257,14 +257,15 @@ struct TimerRow: View {
     }
 }
 
-/// Shown in place of the pages when a timer finishes, until it's stopped or snoozed.
+/// Shown in place of the pages when a timer finishes, until it's stopped or snoozed: in the blue
+/// its ring has deepened to by then (paled to ice in Midnight Oyl).
 struct AlertPage: View {
     let timer: ReminderTimer
     @ObservedObject var timers: TimerStore
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        let alarm = theme.tint(Color.orange, urgent: true)
+        let alarm = theme.tint(Oyl.timerBlue, urgent: true)
         HStack(spacing: 12) {
             Image(systemName: "alarm.fill")
                 .notchSymbol(size: 20, weight: .semibold)
@@ -284,7 +285,7 @@ struct AlertPage: View {
             Spacer(minLength: 8)
             pill("+1 min", foreground: .white, background: .white.opacity(0.14), bright: false) { timers.snoozeRinging(minutes: 1) }
             pill("+5 min", foreground: .white, background: .white.opacity(0.14), bright: false) { timers.snoozeRinging(minutes: 5) }
-            pill("Stop", foreground: .black, background: .orange) { timers.dismissRinging() }
+            pill("Stop", foreground: .black, background: Oyl.timerBlue) { timers.dismissRinging() }
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)

@@ -1068,7 +1068,7 @@ extension OylDrawing {
 
     // Clock
 
-    /// An alarm clock, the time that's gone filled in orange around its face.
+    /// An alarm clock, the time that's gone filled in blue around its face.
     private func clock(in context: GraphicsContext, at center: CGPoint, radius r: CGFloat, timer: ReminderTimer, date: Date) {
         let gone = 1 - timer.fractionLeft(at: date)
         let metal = Color(white: 0.42)
