@@ -1,5 +1,4 @@
 import AppKit
-import CoreGraphics
 import os
 
 /// One thing you said you got done, for one project, in your own words.
@@ -223,11 +222,9 @@ protocol LogWriting: Sendable {
     func story(project: String, chapters: [String], earlier: String?) async -> String?
 }
 
-/// Your daily check-ins, each part filed under its project's #tag: the log Oyl keeps of your
+/// Your check-ins, each part filed under its project's #tag: the log Oyl keeps of your
 /// work, in your own words, with a story for each project written on the Mac to tie its days
 /// together (see `LogWriter`), and a document of it all, a tab to a project (see `WorkLogDoc`).
-/// Once a day, at the hour you've set, the notch asks what you got done, until you've said, put
-/// it off, or said not today.
 @MainActor
 final class WorkLog: ObservableObject {
     struct Saved: Codable, Equatable {
@@ -238,34 +235,19 @@ final class WorkLog: ObservableObject {
         var chapters: [String: LogSynthesis] = [:]
         /// By tag.
         var stories: [String: LogSynthesis] = [:]
-        /// A day it was told not today.
-        var skipped: Date?
     }
 
     @Published private(set) var saved: Saved
-    /// It's past the hour and you haven't checked in: the notch asks.
-    @Published private(set) var reminding = false
     /// The project whose story's being written, while one is.
     @Published private(set) var writing: String?
-    /// The hour (0–23) the notch asks at. Remembered.
-    @Published var hour: Int {
-        didSet {
-            store.set(hour, forKey: "log.hour")
-            check()
-        }
-    }
     /// The look the document's in.
     var look: NotchTheme = .standard {
         didSet { if look != oldValue { writeDoc() } }
     }
 
     nonisolated static let log = Logger(subsystem: "Oyl", category: "worklog")
-    /// The hours it can ask at, from the afternoon round to the small hours.
-    static let hours = Array(16...23)
     /// When the log's day turns: four in the morning.
     nonisolated static let turn: TimeInterval = 4 * 3600
-    /// Put off, it asks again in an hour.
-    static let later: TimeInterval = 3600
 
     /// Where it keeps what you've said.
     let file: URL
@@ -273,10 +255,7 @@ final class WorkLog: ObservableObject {
     let docFolder: URL
     let fallbackFolder: URL
     private let writer: LogWriting?
-    private let store: UserDefaults
     let calendar: Calendar
-    private var snoozedUntil: Date?
-    private var clock: Timer?
     private var synthesizing: Task<Void, Never>?
     private var again = false
     /// Where the document is, once it's been written.
@@ -290,27 +269,19 @@ final class WorkLog: ObservableObject {
     }
 
     init(file: URL = WorkLog.defaultFile, docFolder: URL = WorkLog.defaultDocFolder, writer: LogWriting? = WorkLog.onDevice,
-         store: UserDefaults = .standard, calendar: Calendar = .current, ticking: Bool = true) {
+         calendar: Calendar = .current, resuming: Bool = true) {
         self.file = file
         self.docFolder = docFolder
         fallbackFolder = file.deletingLastPathComponent().appendingPathComponent("Work Log", isDirectory: true)
         self.writer = writer
-        self.store = store
         self.calendar = calendar
-        hour = (store.object(forKey: "log.hour") as? Int).flatMap { Self.hours.contains($0) ? $0 : nil } ?? 21
         saved = (try? Data(contentsOf: file)).flatMap { try? JSONDecoder.workLog.decode(Saved.self, from: $0) } ?? Saved()
         let doc = [docFolder, fallbackFolder].map { $0.appendingPathComponent(WorkLogDoc.htmlName) }
         docURL = doc.first { FileManager.default.fileExists(atPath: $0.path) }
-        guard ticking else { return }
-        clock = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.check() }
-        }
+        guard resuming else { return }
+        // Anything left unwritten when Oyl last quit.
         DispatchQueue.main.async { [weak self] in
-            MainActor.assumeIsolated {
-                self?.check()
-                // Anything left unwritten when Oyl last quit.
-                self?.synthesizeSoon()
-            }
+            MainActor.assumeIsolated { self?.synthesizeSoon() }
         }
     }
 
@@ -344,7 +315,6 @@ final class WorkLog: ObservableObject {
             saved.projects.append(LogProject(tag: part.tag, name: part.name, started: now))
         }
         changed()
-        check(at: now)
         return entries
     }
 
@@ -356,55 +326,6 @@ final class WorkLog: ObservableObject {
         let tags = Set(saved.entries.map(\.tag))
         saved.projects.removeAll { !tags.contains($0.tag) }
         changed()
-        check()
-    }
-
-    /// Asked, and put off for an hour (or, opening the page to answer, in case it's left).
-    func putOff(at now: Date = Date()) {
-        snoozedUntil = now.addingTimeInterval(Self.later)
-        reminding = false
-    }
-
-    /// Not today: it doesn't ask again till tomorrow.
-    func skipToday(at now: Date = Date()) {
-        saved.skipped = day(of: now)
-        save()
-        reminding = false
-    }
-
-    /// Whether there's a check-in for the day `date` is in.
-    func hasCheckedIn(at date: Date = Date()) -> Bool {
-        let day = day(of: date)
-        return saved.messages.contains { $0.day == day }
-    }
-
-    /// The time it asks, on the log's day for `date`.
-    func askingTime(at date: Date) -> Date {
-        calendar.date(bySettingHour: hour, minute: 0, second: 0, of: day(of: date)) ?? date
-    }
-
-    /// Whether it'd ask now: on, past the hour, not checked in, put off or skipped.
-    func isDue(at now: Date) -> Bool {
-        guard Feature.checkIn.isOn, Feature.logPage.isOn, now >= askingTime(at: now) else { return false }
-        if hasCheckedIn(at: now) || saved.skipped == day(of: now) { return false }
-        return snoozedUntil.map { now >= $0 } ?? true
-    }
-
-    /// Asks (while you're at the Mac), or stops asking.
-    func check(at now: Date = Date()) {
-        let due = isDue(at: now)
-        if !due {
-            if reminding { reminding = false }
-            return
-        }
-        if !reminding, Self.isUp { reminding = true }
-    }
-
-    /// Someone's at the Mac: it's been touched in the last five minutes.
-    private static var isUp: Bool {
-        let kinds: [CGEventType] = [.mouseMoved, .keyDown, .leftMouseDown, .scrollWheel]
-        let idle = kinds.map { CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0) }.min() ?? 0
-        return idle < 5 * 60
     }
 
     // MARK: What's there

@@ -73,11 +73,6 @@ struct SettingsPage: View {
                 feature(.timersPage, "Timers page", "Timers and reminders"),
                 feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines or rough aims, in tod's brain dump"),
                 feature(.logPage, "Work log page", "What you got done, a #tag for each project, filed into a log with a tab each"),
-                feature(.checkIn, "Daily check-in", "At \(WorkLog.hourTitle(state.workLog.hour)), the notch asks what you got done today"),
-                SettingItem(id: "checkInHour", title: "Check in at \(WorkLog.hourTitle(state.workLog.hour))",
-                            hint: "Click for another hour, from 4 pm to 11 pm", action: {
-                                state.workLog.hour = WorkLog.nextHour(after: state.workLog.hour)
-                            }, isButton: true),
                 feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
                 feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
             ]

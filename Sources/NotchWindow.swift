@@ -155,9 +155,6 @@ final class NotchState: ObservableObject {
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
     @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
-    /// The log page's field is to take the keyboard as it comes up (the notch asked, and you
-    /// said you'd check in).
-    @Published var focusCheckIn = false
     /// How tall the timers' rows stand, and for how many: a long name wraps, so they're measured
     /// as they're laid out (see `TimersPage`).
     @Published var timerRowsMeasure: (count: Int, height: CGFloat)?
@@ -245,7 +242,7 @@ final class NotchState: ObservableObject {
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
     let tod = TodStore()
-    /// Your daily check-ins, filed by #tag (see `WorkLog`).
+    /// Your check-ins, filed by #tag (see `WorkLog`).
     let workLog = WorkLog()
     private var todForwarding: AnyCancellable?
     private var logForwarding: AnyCancellable?
@@ -316,9 +313,8 @@ final class NotchState: ObservableObject {
         }
     }
 
-    /// A timer's gone off, it's two in the morning, or it's time to check in: the notch pops open
-    /// to say so.
-    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding || workLog.reminding }
+    /// A timer's gone off, or it's two in the morning: the notch pops open to say so.
+    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding }
 
     var mode: NotchMode {
         // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)

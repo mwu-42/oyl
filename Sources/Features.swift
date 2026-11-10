@@ -9,8 +9,6 @@ import SwiftUI
 enum Feature: String, CaseIterable, Sendable {
     // The notch's pages (the Oyls' is always there: the settings are on it).
     case musicPage, timersPage, awakePage, activityPage, ideasPage, logPage
-    /// The notch asking each day what you got done, for the work log.
-    case checkIn
     /// The trackpad's tap as the notch pops, opens, and takes a gesture.
     case haptics
     /// Wispr Flow's listening, in the closed notch, and its button.

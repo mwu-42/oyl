@@ -271,14 +271,6 @@ struct ExpandedNotch: View {
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
-                } else if state.workLog.reminding {
-                    CheckInAlert(log: state.workLog) {
-                        // Asked again in an hour, if it's left unsaid.
-                        state.workLog.putOff()
-                        state.page = .log
-                        state.focusCheckIn = true
-                    }
-                    .transition(NotchView.swap)
                 } else {
                     switch state.page {
                     case .music:

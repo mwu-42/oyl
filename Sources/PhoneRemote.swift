@@ -456,8 +456,8 @@ struct PhoneSnapshot: Codable, Equatable {
         var stale: Bool
     }
 
-    /// The work log: its projects (the latest worked on first), what's been filed today, and
-    /// whether the notch is asking for today's check-in.
+    /// The work log: what it asks today, its projects (the latest worked on first), and what's
+    /// been filed today.
     struct Log: Codable, Equatable {
         struct Project: Codable, Equatable {
             var tag: String
@@ -472,7 +472,6 @@ struct PhoneSnapshot: Codable, Equatable {
         }
 
         var prompt: String
-        var asking: Bool
         var projects: [Project]
         var today: [Entry]
     }
@@ -521,7 +520,7 @@ final class NotchPhoneControls: PhoneControls {
         if Feature.ideasPage.isOn, state.tod.isAvailable { pages.append("ideas") }
         if Feature.logPage.isOn { pages.append("log") }
         let log = state.workLog
-        let logged = PhoneSnapshot.Log(prompt: log.prompt(at: now), asking: log.reminding,
+        let logged = PhoneSnapshot.Log(prompt: log.prompt(at: now),
                                        projects: log.projects.map { .init(tag: $0.tag, name: $0.name, days: log.days(of: $0.tag)) },
                                        today: log.entries(on: now).map { entry in
                                            .init(id: entry.id.uuidString, name: log.project(entry.tag)?.name ?? entry.tag, text: entry.text)

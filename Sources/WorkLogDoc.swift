@@ -105,7 +105,7 @@ struct WorkLogDoc {
     // MARK: Markdown
 
     func markdown() -> String {
-        var out = "# Work Log\n\nFrom your daily check-ins with Oyl. Updated \(updated).\n"
+        var out = "# Work Log\n\nFrom your check-ins with Oyl. Updated \(updated).\n"
         if tabs.isEmpty { out += "\nNo check-ins yet.\n" }
         for tab in tabs {
             out += "\n## \(tab.name) (#\(tab.tag))\n\n\(meta(tab))\n\n### The story so far\n\n\(tab.story ?? unwritten)\n"

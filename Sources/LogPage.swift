@@ -18,7 +18,7 @@ extension Layout {
 }
 
 extension WorkLog {
-    /// What the notch asks, a different way each day.
+    /// What the field asks, a different way each day.
     static let prompts = ["What did you get done today?", "What moved forward today?",
                           "What did you finish, fix or figure out today?", "What did today's work come to?",
                           "What would you want to remember about today's work?"]
@@ -26,17 +26,6 @@ extension WorkLog {
     func prompt(at date: Date = Date()) -> String {
         let day = calendar.ordinality(of: .day, in: .era, for: day(of: date)) ?? 0
         return Self.prompts[day % Self.prompts.count]
-    }
-
-    /// "9 pm".
-    static func hourTitle(_ hour: Int) -> String {
-        let twelve = hour % 12 == 0 ? 12 : hour % 12
-        return "\(twelve) \(hour < 12 ? "am" : "pm")"
-    }
-
-    /// The next hour it could ask at, round again after the last.
-    static func nextHour(after hour: Int) -> Int {
-        hours.first { $0 > hour } ?? hours[0]
     }
 
     /// What tod has had done today, to put in a check-in with a click: each with its list's #tag
@@ -72,27 +61,24 @@ extension WorkLog {
 /// project's part ("#oyl shipped the dock delay. #cs229 finished pset 3"), filed into the log
 /// with Return (⌥↩ for a new line; Tab finishes a tag). Under it, your projects' tags (click one
 /// to start its part; right-click to open its tab of the log), what tod has had done today, and
-/// what's been filed today (× takes one back out). Then the way to the document, and when the
-/// notch asks. In Midnight Oyl it's engraved, without a box, and drifts in.
+/// what's been filed today (× takes one back out). Then the way to the document. In Midnight Oyl
+/// it's engraved, without a box, and drifts in.
 struct LogPage: View {
     @ObservedObject var log: WorkLog
     @ObservedObject var state: NotchState
     @ObservedObject var tod: TodStore
 
     var body: some View {
-        LogLayout(log: log, suggestions: log.fromTod(tod), editing: state.isEditing, takesKeyboard: state.focusCheckIn,
-                  tookKeyboard: { state.focusCheckIn = false }, resign: state.resignKeyboard)
+        LogLayout(log: log, suggestions: log.fromTod(tod), editing: state.isEditing, resign: state.resignKeyboard)
     }
 }
 
-/// The log page itself, given what tod's had done today, whether its field has the keyboard,
-/// whether it's to take it as it comes up, and how to give it back.
+/// The log page itself, given what tod's had done today, whether its field has the keyboard, and
+/// how to give it back.
 struct LogLayout: View {
     @ObservedObject var log: WorkLog
     let suggestions: [(id: String, text: String)]
     let editing: Bool
-    let takesKeyboard: Bool
-    let tookKeyboard: () -> Void
     let resign: () -> Void
     @StateObject private var draft = LocalState("")
     @StateObject private var focus = LocalState(0)
@@ -124,13 +110,6 @@ struct LogLayout: View {
         .padding(.horizontal, 24)
         .padding(.top, 6)
         .animation(NotchView.open, value: today.map(\.id))
-        .onAppear {
-            // Opened from the notch asking: straight to the keyboard.
-            if takesKeyboard {
-                tookKeyboard()
-                focus.value += 1
-            }
-        }
     }
 
     // MARK: The field
@@ -326,16 +305,6 @@ struct LogLayout: View {
                 WritingNote(name: project.name)
             }
             Spacer(minLength: 8)
-            Button { log.hour = WorkLog.nextHour(after: log.hour) } label: {
-                Text(Feature.checkIn.isOn ? "asks at \(WorkLog.hourTitle(log.hour))" : "doesn't ask")
-                    .notchFont(size: 10.5, role: midnight ? .body : nil)
-                    .italic(midnight)
-                    .foregroundStyle(.white.opacity(0.45))
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressableStyle())
-            .disabled(!Feature.checkIn.isOn)
-            .help("When the notch asks each day (click for another hour)")
         }
         .frame(height: Layout.logFooterHeight)
     }
@@ -402,56 +371,5 @@ private struct LogRow: View {
         .contentShape(Rectangle())
         .onHover { hover.value = $0 }
         .animation(.easeOut(duration: 0.15), value: hover.value)
-    }
-}
-
-/// Shown in place of the pages at the hour, till you check in, put it off an hour, or say not
-/// today.
-struct CheckInAlert: View {
-    @ObservedObject var log: WorkLog
-    let checkIn: () -> Void
-    @Environment(\.notchTheme) private var theme
-
-    static let ledger = Color(red: 0.6, green: 0.86, blue: 0.7)
-
-    var body: some View {
-        let ledger = theme.tint(Self.ledger, urgent: true)
-        HStack(spacing: 12) {
-            Image(systemName: "book.closed.fill")
-                .notchSymbol(size: 17, weight: .semibold)
-                .foregroundStyle(ledger)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(ledger.opacity(0.16)))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Daily check-in")
-                    .notchFont(size: 13, weight: .semibold)
-                    .foregroundStyle(.white)
-                Text(log.prompt())
-                    .notchFont(size: 10.5)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            pill("Not today", foreground: .white, background: .white.opacity(0.14), bright: false) { log.skipToday() }
-            pill("Later", foreground: .white, background: .white.opacity(0.14), bright: false) { log.putOff() }
-            pill("Check in", foreground: .black, background: Self.ledger, action: checkIn)
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-    }
-
-    private func pill(_ title: String, foreground: Color, background: Color, bright: Bool = true,
-                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .notchFont(size: 11.5, weight: .semibold)
-                .lineLimit(1)
-                .fixedSize()
-                .padding(.horizontal, 11)
-                .frame(height: 26)
-                .notchPill(background, text: foreground, bright: bright, urgent: true)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(PressableStyle())
     }
 }

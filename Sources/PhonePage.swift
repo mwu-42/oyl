@@ -85,7 +85,6 @@ enum PhonePage {
       min-height: 84px; resize: vertical; outline: none; display: block; }
     textarea::placeholder { color: var(--faint); }
     .ask { color: var(--soft); margin: 0 0 10px; }
-    .ask.due { color: var(--fg); font-weight: 600; }
     .jot { display: flex; gap: 8px; margin-bottom: 6px; }
     .jot input { flex: 1; }
     .kind { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); margin: 12px 0 2px; }
@@ -148,8 +147,6 @@ enum PhonePage {
       background-image: linear-gradient(90deg, rgba(214,222,237,.42), rgba(214,222,237,.08)); background-size: 100% 1px;
       background-position: 0 100%; background-repeat: no-repeat; }
     body[data-look=midnight] .ask { font-family: Superclarendon, Georgia, serif; font-style: italic; }
-    body[data-look=midnight] .ask.due { font-weight: 400; color: var(--accent); }
-    body[data-look=midnight] .ask.due::before { content: "\2726\00a0"; display: inline-block; animation: twinkle 1.6s ease-in-out infinite; }
     body[data-look=midnight] #log .chips { gap: 6px 16px; }
     body[data-look=midnight] #logToday { margin-left: 7%; }
     body[data-look=midnight] { --late: #ffb3c0; }
@@ -443,7 +440,6 @@ enum PhonePage {
       $("log").hidden = !next.pages.includes("log") || !log;
       if (!log) return;
       $("logPrompt").textContent = log.prompt;
-      $("logPrompt").className = "ask" + (log.asking ? " due" : "");
       $("logTags").replaceChildren(...log.projects.map((project) => button("#" + project.name, "", () => startPart(project.name))));
       const today = log.today || [];
       $("logToday").replaceChildren(...(today.length ? [el("div", "kind", "Filed today")] : []), ...today.map((entry) => {
