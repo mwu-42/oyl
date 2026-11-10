@@ -448,6 +448,10 @@ struct ClosedLyricsFrame: View {
 
     /// How wide a constellation is.
     static let constellationWidth: CGFloat = 132
+    /// How far into the beat the light along a constellation's line reaches each star after the
+    /// one before, and how long it's lit there (both of a beat).
+    static let runStep = 0.02
+    static let runLength = 0.13
 
     /// The song's constellation (the same for the same `seed`): seven stars across the strip,
     /// joined by a faint dotted line, set out from `x` (leftward or not) and moved `shift` along.
@@ -472,9 +476,11 @@ struct ClosedLyricsFrame: View {
         path.addLines(places)
         thread.stroke(path, with: .color(Midnight.silver), style: StrokeStyle(lineWidth: 0.6, dash: [1.2, 2.6]))
         for (index, star) in stars.enumerated() {
-            // The light running out along the line from the brightest, a star a tenth of a beat.
+            // The light running out along the line from the brightest, quickly: a star a fiftieth
+            // of a beat (all of them in a few frames), each lit about an eighth of a beat, so none's
+            // lit only between frames.
             let away = Double(abs(index - brightest))
-            let run = through.map { exp(-pow(($0 * 10 - away) * 0.9, 2)) } ?? 0
+            let run = through.map { exp(-pow(($0 - away * Self.runStep) / Self.runLength, 2)) } ?? 0
             let twinkle = 0.75 + 0.25 * sin(time * (1.8 + 0.9 * LyricsSkyFrame.noise(index, 31)) + Double(index) * 2.1)
             let lift = index == brightest ? pulse : 0.45 * pulse + 0.55 * run
             var glow = context
