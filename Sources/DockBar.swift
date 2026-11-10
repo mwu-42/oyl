@@ -942,7 +942,7 @@ private struct ButtonTile: View {
 
 /// One app or folder: its icon, lifting a little and saying its name when the pointer's
 /// on it, with a light under it while it's open, hopping while it opens, marked while it's asking
-/// for you (see `AttentionBadge`).
+/// for you and popping up now and then (see `AttentionBadge`, `AttentionPop`).
 private struct DockTile: View {
     let item: DockApps.Item
     @ObservedObject var model: DockModel
@@ -971,6 +971,8 @@ private struct DockTile: View {
             }
             .opacity(item.isHidden ? 0.6 : 1)
         }
+        // Asking for you: popping up now and then, once the bar's come up (see `AttentionPop`).
+        .modifier(AttentionPop(active: apps.asking.contains(item.id), height: tile * 0.22, after: 0.6))
         .scaleEffect(hovered ? 1.1 : 1, anchor: .bottom)
         .offset(y: hovered ? -3 : 0)
         .frame(width: tile, height: tile)

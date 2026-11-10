@@ -42,13 +42,16 @@ enum AppAttention {
 }
 
 /// A mark for an app asking for you, along the bottom edge under where its icon is in Oyl's Dock,
-/// in place of the macOS Dock's icon bouncing up there: small, and still, there till you go to it.
-/// In Oyl's look, a little of the Dock come up out of the edge, black, flared into it, its icon on
-/// it; in Midnight Oyl's, its glyph traced in starlight just over the edge, out of a pool of night,
+/// in place of the macOS Dock's icon bouncing up there: small, there till you go to it, its icon
+/// popping up off it as it starts asking, and now and then after (see `AttentionPop`). In Oyl's
+/// look, a little of the Dock come up out of the edge, black, flared into it, its icon on it; in
+/// Midnight Oyl's, its glyph traced in starlight just over the edge, out of a pool of night,
 /// breathing, with a glint by it.
 struct AttentionMark: View {
     let glyph: DockGlyph?
     let icon: NSImage
+    /// Held at one point of its pop (for a picture of it).
+    var lifted: AttentionPop.Lift?
     @Environment(\.notchTheme) private var theme
 
     static let tile: CGFloat = 20
@@ -75,6 +78,7 @@ struct AttentionMark: View {
     private var plain: some View {
         let flare: CGFloat = 6
         return picture
+            .modifier(AttentionPop(height: 9, after: 0.3, still: lifted))
             .padding(.horizontal, 4)
             .padding(.top, 3)
             .frame(height: Self.height, alignment: .top)
@@ -102,6 +106,7 @@ struct AttentionMark: View {
                         .shadow(color: Midnight.moonlight.opacity(0.7), radius: 2)
                         .offset(x: 6, y: -5)
                 }
+                .modifier(AttentionPop(height: 8, after: 0.4, still: lifted))
                 .padding(.top, 2)
                 .frame(height: Self.height, alignment: .top)
                 .background {
@@ -110,6 +115,93 @@ struct AttentionMark: View {
                         .frame(width: Self.tile * 2.6, height: Self.height * 1.8)
                         .offset(y: 4)
                 }
+        }
+    }
+}
+
+/// An app's icon popping up while it's asking for you, as the macOS Dock's bounces, but less: two
+/// low hops (`height`, then under half that) a moment (`after`) after it starts asking, or comes
+/// into sight asking, and one lower hop each minute it's still asking. In Oyl's look, up and down
+/// on a plain ease; in Midnight Oyl's, lifted slowly as if on the air and let down again, the
+/// moonlight round it flaring at the top. Not while `active` is off.
+struct AttentionPop: ViewModifier {
+    var active = true
+    let height: CGFloat
+    var after: TimeInterval = 0.3
+    /// Held at one point of a hop, rather than hopping (for a picture of it).
+    var still: Lift?
+    @StateObject private var pops = LocalState(Pops())
+    @Environment(\.notchTheme) private var theme
+
+    /// How long between the hops after the first.
+    static let every: TimeInterval = 60
+
+    /// How high it is, of `height`, and (Midnight Oyl's) how bright the moonlight round it.
+    struct Lift: Equatable {
+        var height: CGFloat = 0
+        var glow: CGFloat = 0
+    }
+
+    /// Each pop, and whether it's the first since it started asking.
+    struct Pops: Equatable {
+        var count = 0
+        var first = true
+    }
+
+    func body(content: Content) -> some View {
+        let midnight = theme == .midnight
+        if let still {
+            lifted(content, still, midnight: midnight)
+        } else {
+            content
+                .keyframeAnimator(initialValue: Lift(), trigger: pops.value) { view, lift in
+                    lifted(view, lift, midnight: midnight)
+                } keyframes: { _ in
+                    Self.keyframes(midnight: midnight, first: pops.value.first)
+                }
+                .task(id: active) {
+                    guard active else { return }
+                    try? await Task.sleep(for: .seconds(after))
+                    var first = true
+                    while !Task.isCancelled {
+                        pops.value = Pops(count: pops.value.count + 1, first: first)
+                        first = false
+                        try? await Task.sleep(for: .seconds(Self.every))
+                    }
+                }
+        }
+    }
+
+    /// Lifted, and in Midnight Oyl, moonlight round it: a halo of its own behind it (a shadow over
+    /// the glint's own would leave its edges in it).
+    private func lifted(_ view: some View, _ lift: Lift, midnight: Bool) -> some View {
+        view
+            .background {
+                if midnight, lift.glow > 0 {
+                    Circle()
+                        .fill(Midnight.moonlight.opacity(0.4 * lift.glow))
+                        .scaleEffect(1.2)
+                        .blur(radius: 6)
+                }
+            }
+            .offset(y: -lift.height * height)
+    }
+
+    /// A pop: the first since it started asking two hops, the second under half the first; after
+    /// that, one, lower.
+    @KeyframesBuilder<Lift>
+    static func keyframes(midnight: Bool, first: Bool) -> some Keyframes<Lift> {
+        let (high, low): (CGFloat, CGFloat) = first ? (1, 0.42) : (0.6, 0)
+        let up: UnitCurve = midnight ? .easeInOut : .easeOut, down: UnitCurve = midnight ? .easeInOut : .easeIn
+        KeyframeTrack(\.height) {
+            LinearKeyframe(high, duration: midnight ? 0.6 : 0.24, timingCurve: up)
+            LinearKeyframe(0, duration: midnight ? 0.8 : 0.24, timingCurve: down)
+            LinearKeyframe(low, duration: midnight ? 0.45 : 0.17, timingCurve: up)
+            LinearKeyframe(0, duration: midnight ? 0.6 : 0.17, timingCurve: down)
+        }
+        KeyframeTrack(\.glow) {
+            LinearKeyframe(midnight ? high : 0, duration: midnight ? 0.6 : 0.01, timingCurve: .easeInOut)
+            LinearKeyframe(0, duration: midnight ? 1.2 : 0.01, timingCurve: .easeInOut)
         }
     }
 }
