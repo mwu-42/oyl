@@ -118,13 +118,25 @@ final class DockController {
             monitors.append(monitor)
         }
         let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.pointerMoved() }
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.pointerMoved(event) }
         }) {
             monitors.append(monitor)
         }
         if let monitor = NSEvent.addLocalMonitorForEvents(matching: events, handler: { [weak self] event in
-            MainActor.assumeIsolated { self?.pointerMoved() }
+            MainActor.assumeIsolated { self?.pointerMoved(event) }
+            return event
+        }) {
+            monitors.append(monitor)
+        }
+        // Let go: whatever was dropped is in, before the next press.
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: { [weak self] _ in
+            MainActor.assumeIsolated { self?.noteDragBoard() }
+        }) {
+            monitors.append(monitor)
+        }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp, handler: { [weak self] event in
+            MainActor.assumeIsolated { self?.noteDragBoard() }
             return event
         }) {
             monitors.append(monitor)
@@ -146,9 +158,35 @@ final class DockController {
         return pressedOn
     }
 
+    /// Where what's dragged to be dropped goes, in every app (files, a link, a picture, words
+    /// dragged out), as the drag starts; a drag selecting, or moving a window, never puts
+    /// anything there.
+    private let dragBoard = NSPasteboard(name: .drag)
+    /// Its count before the button last went down: as it was at the last move without it, or
+    /// as it was let go. (Not as it goes down: one seen late, the drag might have begun.)
+    private var dragCountAtPress: Int?
+
+    private func noteDragBoard() {
+        dragCountAtPress = dragBoard.changeCount
+    }
+
+    /// The button's down for something other than a drag to be dropped: selecting (in a document,
+    /// running on down it as the pointer reaches the bottom; cells; files in a box), or moving a
+    /// window. It doesn't come up for it.
+    private var isSelecting: Bool {
+        NSEvent.pressedMouseButtons & 1 != 0 && !Self.isDropping(dragCount: dragBoard.changeCount, atPress: dragCountAtPress)
+    }
+
+    /// Whether a drag's one to be dropped: something's gone on the drag pasteboard since the button
+    /// went down (or it was down before Oyl was there to see).
+    nonisolated static func isDropping(dragCount: Int, atPress: Int?) -> Bool {
+        atPress.map { dragCount != $0 } ?? true
+    }
+
     private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops && !state.isTakingShot }
 
-    private func pointerMoved() {
+    private func pointerMoved(_ event: NSEvent) {
+        if event.type == .mouseMoved { noteDragBoard() }
         guard canOpen else { return }
         let location = NSEvent.mouseLocation
         if model.isOpen {
@@ -168,8 +206,9 @@ final class DockController {
             return
         }
         // Reaching the bottom edge under where its icons would be (see `calls`) and staying a moment,
-        // as the Dock comes up: mid-drag too, as the Dock does, to be dropped on.
-        guard callingScreen(at: location) != nil else {
+        // as the Dock comes up: mid-drag too, as the Dock does, to be dropped on, but not while
+        // you're selecting.
+        guard callingScreen(at: location) != nil, !isSelecting else {
             opening?.cancel()
             opening = nil
             return
@@ -179,7 +218,8 @@ final class DockController {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.opening = nil
-                guard self.canOpen, !self.model.isOpen, let screen = self.callingScreen(at: NSEvent.mouseLocation) else { return }
+                guard self.canOpen, !self.model.isOpen, !self.isSelecting,
+                      let screen = self.callingScreen(at: NSEvent.mouseLocation) else { return }
                 self.open(on: screen)
             }
         }
