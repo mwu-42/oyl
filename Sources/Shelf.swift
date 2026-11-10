@@ -98,9 +98,13 @@ final class Shelf: ObservableObject {
     /// What's in the folders it watches.
     private var watched: [Item] = []
     private var kept: [Item]
-    /// What's been taken off the shelf from there (it stays where it is).
+    /// What's been taken off the shelf from there (it stays where it is), the latest last, and
+    /// when: one saved again since is back.
     private var hidden: [String]
+    private var hiddenAt: [String: Date]
     private var loading: Set<URL> = []
+    /// What each thumbnail was made of: the file as of then, so one saved over is made again.
+    private var thumbnailDates: [URL: Date] = [:]
     private var sharing: NSSharingService?
     /// Waiting to be labeled, newest first; one's labeled at a time.
     private var unlabeled: [Item] = []
@@ -117,7 +121,16 @@ final class Shelf: ObservableObject {
             guard let path = entry["path"] as? String, let kind = (entry["kind"] as? String).flatMap(Item.Kind.init) else { return nil }
             return Item(url: URL(fileURLWithPath: path), kind: kind, date: entry["date"] as? Date ?? .distantPast)
         }
-        hidden = defaults.stringArray(forKey: Self.key("hidden")) ?? []
+        let hidden = defaults.stringArray(forKey: Self.key("hidden")) ?? []
+        var hiddenAt = defaults.dictionary(forKey: Self.key("hiddenAt")) as? [String: Date] ?? [:]
+        // Taken off before they were dated: as of now, so only what's saved from now on is back.
+        let undated = hidden.filter { hiddenAt[$0] == nil }
+        if !undated.isEmpty {
+            for path in undated { hiddenAt[path] = Date() }
+            defaults.set(hiddenAt, forKey: Self.key("hiddenAt"))
+        }
+        self.hidden = hidden
+        self.hiddenAt = hiddenAt
         labels = defaults.dictionary(forKey: Self.key("labels")) as? [String: String] ?? [:]
         if defaults.object(forKey: "shelf.renamingSince") == nil { defaults.set(Date(), forKey: "shelf.renamingSince") }
         renamingSince = defaults.object(forKey: "shelf.renamingSince") as? Date ?? Date()
@@ -288,7 +301,7 @@ final class Shelf: ObservableObject {
         let folders = folders
         guard !folders.isEmpty else { return }
         DispatchQueue.global(qos: .utility).async {
-            let keys: Set<URLResourceKey> = [.creationDateKey, .addedToDirectoryDateKey, .isRegularFileKey, .isDirectoryKey]
+            let keys = Self.fileKeys
             var found: [Item] = []
             var blocked: [URL] = []
             for watched in folders {
@@ -318,9 +331,13 @@ final class Shelf: ObservableObject {
         }
     }
 
+    /// What `item` reads of a file.
+    nonisolated static let fileKeys: Set<URLResourceKey> = [.creationDateKey, .addedToDirectoryDateKey, .contentModificationDateKey,
+                                                             .isRegularFileKey, .isDirectoryKey]
+
     /// One of a watched folder's files, if it's one the shelf has there: a screenshot or recording,
     /// or a file or folder that's done downloading (and, `onlyReceived`, came from elsewhere), as
-    /// of when it got there.
+    /// of when it got there or was saved over (see `savedDate`).
     nonisolated static func item(_ url: URL, _ values: URLResourceValues, in watched: Watched) -> Item? {
         if isScreenCapture(url) {
             guard watched.captures, values.isRegularFile == true else { return nil }
@@ -329,18 +346,31 @@ final class Shelf: ObservableObject {
         }
         guard watched.saved, values.isRegularFile == true || values.isDirectory == true, !unfinished.contains(url.pathExtension.lowercased()),
               !watched.onlyReceived || isReceived(url) else { return nil }
-        return Item(url: url, kind: .saved, date: values.addedToDirectoryDate ?? values.creationDate ?? .distantPast)
+        return Item(url: url, kind: .saved, date: savedDate(values))
+    }
+
+    /// When a file got where it is, or was last saved over, whichever's later: saved over (Replace
+    /// in a save panel, or saved again), it keeps when it was made and added, as macOS does for a
+    /// safe save, and only its modification date moves on. Not a folder's, which moves on whenever
+    /// anything in it does; nor a date still to come (unpacked from an archive made on a clock
+    /// that was ahead).
+    nonisolated static func savedDate(_ values: URLResourceValues, now: Date = Date()) -> Date {
+        let came = values.addedToDirectoryDate ?? values.creationDate ?? .distantPast
+        guard values.isRegularFile == true, let modified = values.contentModificationDate, modified <= now else { return came }
+        return max(came, modified)
     }
 
     /// What's been saved into the folders among `entries` (a watched folder's), up to `depth` down:
-    /// each file (or folder) added to its folder over a minute (`margin`) after that folder came
-    /// there itself, so a folder unzipped or moved in whole shows as itself, not each file in it.
+    /// each file (or folder) added to its folder, or saved over, over a minute (`margin`) after
+    /// that folder came there itself, so a folder unzipped or moved in whole shows as itself, not
+    /// each file in it.
     /// Only so many are looked through, in case one's huge.
     nonisolated static func savedInside(_ entries: [URL], depth: Int, margin: TimeInterval = 60) -> [Item] {
-        let keys: Set<URLResourceKey> = [.creationDateKey, .addedToDirectoryDateKey, .isRegularFileKey, .isDirectoryKey, .isPackageKey]
+        let keys = fileKeys.union([.isPackageKey])
         var found: [Item] = []
         var budget = 4000
-        func added(_ values: URLResourceValues) -> Date { values.addedToDirectoryDate ?? values.creationDate ?? .distantPast }
+        let now = Date()
+        func added(_ values: URLResourceValues) -> Date { savedDate(values, now: now) }
         func look(in folder: URL, came: Date, level: Int) {
             guard budget > 0, let contents = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: Array(keys),
                                                                                            options: [.skipsHiddenFiles]) else { return }
@@ -383,30 +413,36 @@ final class Shelf: ObservableObject {
         let files = FileManager.default
         let claude = Feature.claudeShelf.isOn
             ? ClaudeFiles.shared.recent.map { Item(url: URL(fileURLWithPath: $0.path), kind: .claude, date: $0.date) }
-                .filter { !hidden.contains($0.url.path) && files.fileExists(atPath: $0.url.path) }
+                .filter { !Self.isHidden($0, hiddenAt) && files.fileExists(atPath: $0.url.path) }
             : []
         let all = Self.shown(claude: claude, watched: watched + fromPhotos, kept: kept.filter { files.fileExists(atPath: $0.url.path) },
-                             hidden: Set(hidden))
+                             hidden: hiddenAt)
         if all != items { items = all }
         let urls = Set(all.map(\.url))
         let current = thumbnails.filter { urls.contains($0.key) }
         if current.count != thumbnails.count { thumbnails = current }
-        for item in all where thumbnails[item.url] == nil { makeThumbnail(for: item.url) }
+        thumbnailDates = thumbnailDates.filter { urls.contains($0.key) }
+        for item in all where thumbnails[item.url] == nil || thumbnailDates[item.url] != item.date { makeThumbnail(for: item) }
         unlabeled = all.filter { $0.isCapture && labels[$0.url.path] == nil && $0.url != labeling }
         labelNext()
     }
 
     /// What's on it, newest first: the latest few of each of screenshots, what's been saved and
-    /// Claude's (not those taken off it), and what's kept there; each once, as Claude's if it made
-    /// it (in Downloads, say).
-    nonisolated static func shown(claude: [Item], watched: [Item], kept: [Item], hidden: Set<String>) -> [Item] {
+    /// Claude's (not those taken off it, by path and when, unless they've been saved again since),
+    /// and what's kept there; each once, as Claude's if it made it (in Downloads, say).
+    nonisolated static func shown(claude: [Item], watched: [Item], kept: [Item], hidden: [String: Date]) -> [Item] {
         func latest(_ items: [Item], _ most: Int) -> [Item] {
-            Array(items.filter { !hidden.contains($0.url.path) }.sorted { $0.date > $1.date }.prefix(most))
+            Array(items.filter { !isHidden($0, hidden) }.sorted { $0.date > $1.date }.prefix(most))
         }
         var seen = Set<String>()
         let all = latest(claude, shownClaude) + latest(watched.filter(\.isCapture), shownWatched)
             + latest(watched.filter { !$0.isCapture }, shownWatched) + kept
         return all.filter { seen.insert($0.url.standardizedFileURL.path).inserted }.sorted { $0.date > $1.date }
+    }
+
+    /// Taken off, and not saved again since.
+    nonisolated static func isHidden(_ item: Item, _ hidden: [String: Date]) -> Bool {
+        hidden[item.url.path].map { item.date <= $0 } ?? false
     }
 
     /// The label for an item, once there is one.
@@ -440,7 +476,8 @@ final class Shelf: ObservableObject {
         UserDefaults.standard.set(labels, forKey: key("labels"))
     }
 
-    private func makeThumbnail(for url: URL) {
+    private func makeThumbnail(for item: Item) {
+        let url = item.url, date = item.date
         guard !loading.contains(url) else { return }
         loading.insert(url)
         let request = QLThumbnailGenerator.Request(fileAt: url, size: CGSize(width: 170, height: 112), scale: 2,
@@ -453,6 +490,7 @@ final class Shelf: ObservableObject {
                     self.loading.remove(url)
                     guard self.items.contains(where: { $0.url == url }) else { return }
                     self.thumbnails[url] = image ?? NSWorkspace.shared.icon(forFile: url.path)
+                    self.thumbnailDates[url] = date
                 }
             }
         }
@@ -475,9 +513,14 @@ final class Shelf: ObservableObject {
     /// Off the shelf. The file itself stays where it is.
     func remove(_ item: Item) {
         if item.isWatched {
+            hidden.removeAll { $0 == item.url.path }
             hidden.append(item.url.path)
             hidden = Array(hidden.suffix(200))
+            hiddenAt[item.url.path] = Date()
+            let still = Set(hidden)
+            hiddenAt = hiddenAt.filter { still.contains($0.key) }
             UserDefaults.standard.set(hidden, forKey: key("hidden"))
+            UserDefaults.standard.set(hiddenAt, forKey: key("hiddenAt"))
         }
         kept.removeAll { $0.url == item.url }
         saveKept()
@@ -588,6 +631,7 @@ final class Shelf: ObservableObject {
         let moved = Item(url: renamed, kind: item.kind, date: item.date)
         labels[renamed.path] = labels.removeValue(forKey: item.url.path)
         thumbnails[renamed] = thumbnails.removeValue(forKey: item.url)
+        thumbnailDates[renamed] = thumbnailDates.removeValue(forKey: item.url)
         watched = watched.map { $0.url == item.url ? moved : $0 }
         kept = kept.map { $0.url == item.url ? moved : $0 }
         saveLabels()
