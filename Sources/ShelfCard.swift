@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 /// here, in a row, newest first, each to be dragged out into any app (or onto one in the Dock),
 /// each marked with where it came from in a color the card's top says the meaning of. Hovered, one
 /// has AirDrop, a way to convert it and a way off the shelf; right-clicked, the rest (copy, show in Finder,
-/// the Trash). Files dropped on the card or the tile, or chosen with its +, are kept.
+/// the Trash). Click one to pick it out, shift-click another to pick out everything between, ⌘-click
+/// to pick out one more (or one fewer): they drag out together, and what's done to one of them is
+/// done to them all. Files dropped on the card or the tile, or chosen with its +, are kept.
 struct ShelfCard: View {
     @ObservedObject var shelf: Shelf
     let width: CGFloat
@@ -34,6 +36,8 @@ struct ShelfCard: View {
                         .notchFont(size: 10, role: .body)
                         .foregroundStyle(.white.opacity(0.8))
                         .lineLimit(1)
+                } else if shelf.selection.count > 1 {
+                    picked
                 } else {
                     legend
                 }
@@ -66,6 +70,9 @@ struct ShelfCard: View {
         }
         .padding(Self.padding)
         .frame(width: width, height: Self.height, alignment: .topLeading)
+        // A click off the tiles lets go of what's picked out, as it does once the shelf's put away.
+        .background(Color.clear.contentShape(Rectangle()).onTapGesture { shelf.clearSelection() })
+        .onDisappear { shelf.clearSelection() }
         .background {
             // Black, as the notch; or night, thinning out at its edges.
             if midnight {
@@ -90,7 +97,23 @@ struct ShelfCard: View {
         }
         .onDrop(of: [.fileURL], isTargeted: $targeted.value, perform: drop)
         .animation(.easeOut(duration: 0.15), value: taking)
+        .animation(.easeOut(duration: 0.15), value: shelf.selection.count > 1)
         .animation(NotchView.open, value: shelf.items.map(\.id))
+    }
+
+    /// How many are picked out, and a way to let go of them.
+    private var picked: some View {
+        HStack(spacing: 8) {
+            Text("\(shelf.selection.count) selected · drag them out together")
+                .notchFont(size: 10, role: .body)
+                .foregroundStyle(.white.opacity(0.7))
+                .lineLimit(1)
+            Button("Clear") { shelf.clearSelection() }
+                .buttonStyle(.plain)
+                .notchFont(size: 10, weight: .semibold, role: .label)
+                .foregroundStyle(.white.opacity(0.85))
+                .help("Let go of what's selected")
+        }
     }
 
     /// What each color means, for what's on.
@@ -177,29 +200,38 @@ struct ShelfCard: View {
         }
     }
 
-    /// What can be done with an item: what it converts into, then (`full`, right-clicked) the rest.
+    /// What can be done with an item (or everything picked out with it): what it converts into,
+    /// then (`full`, right-clicked) the rest.
     private func menu(for item: Shelf.Item, full: Bool) {
         let menu = NSMenu()
-        let formats = Converter.formats(for: item.url)
-        menu.addItem(.sectionHeader(title: "Convert to"))
+        let items = shelf.acting(on: item)
+        let many = items.count > 1
+        let formats = Shelf.formats(for: items)
+        menu.addItem(.sectionHeader(title: many ? "Convert \(items.count) to" : "Convert to"))
         for format in formats {
-            menu.addItem(ClosureMenuItem(title: format.name) { shelf.convert(item, to: format) })
+            menu.addItem(ClosureMenuItem(title: format.name) { shelf.convert(items, to: format) })
+        }
+        if many, formats.isEmpty {
+            let none = NSMenuItem(title: "Nothing they all convert to", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            menu.addItem(none)
         }
         if full {
+            let files = items.contains { $0.kind != .photo }
             menu.addItem(.separator())
-            menu.addItem(ClosureMenuItem(title: "Open") { shelf.open(item) })
-            menu.addItem(ClosureMenuItem(title: "Copy") { shelf.copy(item) })
-            menu.addItem(ClosureMenuItem(title: "AirDrop…") { shelf.airDrop(item) })
-            if item.kind != .photo {
-                menu.addItem(ClosureMenuItem(title: "Show in Finder") { shelf.reveal(item) })
+            menu.addItem(ClosureMenuItem(title: many ? "Open \(items.count)" : "Open") { shelf.open(items) })
+            menu.addItem(ClosureMenuItem(title: many ? "Copy \(items.count)" : "Copy") { shelf.copy(items) })
+            menu.addItem(ClosureMenuItem(title: many ? "AirDrop \(items.count)…" : "AirDrop…") { shelf.airDrop(items) })
+            if files {
+                menu.addItem(ClosureMenuItem(title: "Show in Finder") { shelf.reveal(items) })
             }
-            if let label = shelf.label(for: item), item.url.deletingPathExtension().lastPathComponent != label {
+            if !many, let label = shelf.label(for: item), item.url.deletingPathExtension().lastPathComponent != label {
                 menu.addItem(ClosureMenuItem(title: "Rename to “\(label)”") { shelf.renameToLabel(item) })
             }
             menu.addItem(.separator())
-            menu.addItem(ClosureMenuItem(title: "Take Off the Shelf") { shelf.remove(item) })
-            if item.kind != .photo {
-                menu.addItem(ClosureMenuItem(title: "Move to Trash") { shelf.trash(item) })
+            menu.addItem(ClosureMenuItem(title: many ? "Take \(items.count) Off the Shelf" : "Take Off the Shelf") { shelf.remove(items) })
+            if files {
+                menu.addItem(ClosureMenuItem(title: many ? "Move \(items.count) to Trash" : "Move to Trash") { shelf.trash(items) })
             }
         }
         // Keep the Dock up while the menu is; popUp returns once it closes.
@@ -211,7 +243,9 @@ struct ShelfCard: View {
 
 /// One thing on the shelf: its picture, with what it is on it, and under it what it shows (a
 /// screenshot's label; see `ScreenshotLabeler`) or its name, and when it was taken or kept. The
-/// picture drags out as the file.
+/// picture drags out as the file (with the rest picked out, if it's one of them). Picked out, in
+/// Oyl's look it's ringed in white, its name on a pill; in Midnight Oyl's, moonlight comes up
+/// inside it, breathing, and a star twinkles by its name.
 struct ShelfTile: View {
     @ObservedObject var shelf: Shelf
     let item: Shelf.Item
@@ -228,6 +262,7 @@ struct ShelfTile: View {
         let shape = RoundedRectangle(cornerRadius: midnight ? 2.5 : 9, style: .continuous)
         let converting = shelf.converting[item.url]
         let failure = shelf.failures[item.url]
+        let picked = shelf.selection.contains(item.url)
         VStack(spacing: 4) {
             ZStack {
                 shape.fill(midnight ? Midnight.ink.opacity(0.5) : Color.white.opacity(0.07))
@@ -237,8 +272,8 @@ struct ShelfTile: View {
                         .aspectRatio(contentMode: .fit)
                         .padding(3)
                 }
-                DragHandle(url: item.url, image: shelf.thumbnails[item.url], hovered: { hover.value = $0 },
-                           open: { shelf.open(item) }, menu: { menu(true) })
+                DragHandle(files: dragged, hovered: { hover.value = $0 }, pick: { shelf.pick(item, $0) },
+                           isAmongOthers: { shelf.acting(on: item).count > 1 }, open: { shelf.open(item) }, menu: { menu(true) })
                 badge
                 if converting != nil || failure != nil {
                     shape.fill(Color.black.opacity(0.6))
@@ -263,6 +298,16 @@ struct ShelfTile: View {
             .frame(width: Self.picture.width, height: Self.picture.height)
             .clipShape(shape)
             .overlay(shape.strokeBorder(Midnight.silver.opacity(midnight ? (hover.value ? 0.75 : 0.4) : 0), lineWidth: 0.6))
+            // Picked out.
+            .overlay {
+                if picked {
+                    if midnight {
+                        Moonlit(shape: shape).transition(.opacity)
+                    } else {
+                        shape.strokeBorder(.white.opacity(0.9), lineWidth: 2).transition(.opacity)
+                    }
+                }
+            }
             // What was just made, picked out.
             .overlay(shape.strokeBorder((midnight ? Midnight.starlight : Color.white).opacity(shelf.fresh == item.url ? 0.9 : 0),
                                         lineWidth: 1.5))
@@ -270,14 +315,22 @@ struct ShelfTile: View {
 
             VStack(spacing: 0) {
                 HStack(spacing: 4) {
-                    if let origin = item.origin { OriginMark(origin: origin) }
+                    if picked && midnight {
+                        Twinkle().transition(.opacity)
+                    } else if let origin = item.origin {
+                        OriginMark(origin: origin)
+                    }
                     Text(title)
                         .notchFont(size: 9.5, role: .body)
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(picked ? (midnight ? Midnight.starlight : .white) : .white.opacity(0.75))
                         .lineLimit(1)
                         .truncationMode(item.isCapture ? .tail : .middle)
                 }
+                .padding(.horizontal, picked && !midnight ? 5 : 0)
                 .frame(height: 12)
+                .background {
+                    if picked && !midnight { Capsule().fill(.white.opacity(0.2)).transition(.opacity) }
+                }
                 Text(when)
                     .notchFont(size: 8.5, digits: true, role: .data)
                     .foregroundStyle(.white.opacity(0.4))
@@ -289,6 +342,13 @@ struct ShelfTile: View {
             .animation(.easeOut(duration: 0.3), value: shelf.label(for: item))
         }
         .animation(.easeOut(duration: 0.15), value: hover.value)
+        .animation(.easeOut(duration: 0.15), value: picked)
+    }
+
+    /// What dragging it takes out: it, then the rest picked out with it, each with its picture.
+    private func dragged() -> [(url: URL, image: NSImage?)] {
+        let rest = shelf.acting(on: item).filter { $0.url != item.url }
+        return ([item] + rest).map { ($0.url, shelf.thumbnails[$0.url]) }
     }
 
     /// The format, low left; a recording's, a converted file's or one from Photos' mark beside it.
@@ -322,22 +382,28 @@ struct ShelfTile: View {
 
     /// Top left, the file into the Trash (not one from Photos, which is in Photos still); top
     /// right, just off the shelf (well apart, so one's not hit for the other); low right, AirDrop
-    /// and convert.
+    /// and convert. Each for everything picked out with it, if it's one of them.
     private var controls: some View {
-        VStack {
+        let items = shelf.acting(on: item)
+        let these = items.count > 1 ? "these \(items.count)" : nil
+        return VStack {
             HStack {
                 if item.kind != .photo {
-                    button("trash", help: "Move to the Trash") { shelf.trash(item) }
+                    button("trash", help: these.map { "Move \($0) to the Trash" } ?? "Move to the Trash") { shelf.trash(items) }
                 }
                 Spacer()
-                button("xmark", help: "Take off the shelf (the file stays)") { shelf.remove(item) }
+                button("xmark", help: these.map { "Take \($0) off the shelf (the files stay)" } ?? "Take off the shelf (the file stays)") {
+                    shelf.remove(items)
+                }
             }
             Spacer()
             HStack(spacing: 4) {
                 Spacer()
                 // (AirDrop's own mark isn't one of the symbols apps get; this is the nearest.)
-                button("dot.radiowaves.up.forward", help: "AirDrop") { shelf.airDrop(item) }
-                button("arrow.triangle.2.circlepath", help: "Convert to another format") { menu(false) }
+                button("dot.radiowaves.up.forward", help: these.map { "AirDrop \($0)" } ?? "AirDrop") { shelf.airDrop(items) }
+                button("arrow.triangle.2.circlepath", help: these.map { "Convert \($0) to another format" } ?? "Convert to another format") {
+                    menu(false)
+                }
             }
         }
         .padding(3)
@@ -373,33 +439,42 @@ struct ShelfTile: View {
     }
 }
 
-/// Over a shelf item's picture: dragged, it's the file itself, going out to whatever it's dropped
-/// on; double-clicked, it opens; right-clicked, its menu. (AppKit's own drag, so the notch can
-/// follow it out; see `ShelfDrag`.)
+/// Over a shelf item's picture: clicked, it's picked out (shift-clicked, everything between; ⌘,
+/// one more or fewer); dragged, it's the file itself (and the rest picked out with it), going out
+/// to whatever it's dropped on; double-clicked, it opens; right-clicked, its menu. (AppKit's own
+/// drag, so the notch can follow it out; see `ShelfDrag`.)
 private struct DragHandle: NSViewRepresentable {
-    let url: URL
-    let image: NSImage?
+    /// What a drag takes out, the one pressed first.
+    let files: () -> [(url: URL, image: NSImage?)]
     let hovered: (Bool) -> Void
+    let pick: (Shelf.Picking) -> Void
+    /// It's picked out, with others.
+    let isAmongOthers: () -> Bool
     let open: () -> Void
     let menu: () -> Void
 
     func makeNSView(context: Context) -> HandleView { HandleView() }
 
     func updateNSView(_ view: HandleView, context: Context) {
-        view.url = url
-        view.image = image
+        view.files = files
         view.hovered = hovered
+        view.pick = pick
+        view.isAmongOthers = isAmongOthers
         view.open = open
         view.showMenu = menu
     }
 
     final class HandleView: NSView {
-        var url: URL?
-        var image: NSImage?
+        var files: () -> [(url: URL, image: NSImage?)] = { [] }
         var hovered: (Bool) -> Void = { _ in }
+        var pick: (Shelf.Picking) -> Void = { _ in }
+        var isAmongOthers: () -> Bool = { false }
         var open: () -> Void = {}
         var showMenu: () -> Void = {}
         private var pressed: NSEvent?
+        /// Pressed plainly on one picked out with others: it's picked out alone only once it's let
+        /// go without a drag, so they can all be dragged out together.
+        private var pickOnRelease = false
 
         // The panel's rarely key, so the first press has to start the drag.
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -416,25 +491,46 @@ private struct DragHandle: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             pressed = event
-            if event.clickCount == 2 {
+            pickOnRelease = false
+            let keys = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if keys.contains(.shift) {
+                pick(.through)
+            } else if keys.contains(.command) {
+                pick(.toggle)
+            } else if event.clickCount == 2 {
                 pressed = nil
                 open()
+            } else if isAmongOthers() {
+                pickOnRelease = true
+            } else {
+                pick(.only)
             }
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard let pressed, let url else { return }
+            guard let pressed else { return }
             let from = pressed.locationInWindow, to = event.locationInWindow
             guard hypot(to.x - from.x, to.y - from.y) > 3 else { return }
             self.pressed = nil
-            let picture = image ?? NSWorkspace.shared.icon(forFile: url.path)
-            let item = NSDraggingItem(pasteboardWriter: url as NSURL)
-            item.setDraggingFrame(fitted(picture.size), contents: picture)
-            beginDraggingSession(with: [item], event: pressed, source: ShelfDrag.shared)
+            pickOnRelease = false
+            let files = files()
+            guard !files.isEmpty else { return }
+            // Each its own picture, piled a little behind the one pressed.
+            let items = files.enumerated().map { index, file in
+                let picture = file.image ?? NSWorkspace.shared.icon(forFile: file.url.path)
+                let item = NSDraggingItem(pasteboardWriter: file.url as NSURL)
+                let step = CGFloat(min(index, 3)) * 4
+                item.setDraggingFrame(fitted(picture.size).offsetBy(dx: step, dy: -step), contents: picture)
+                return item
+            }
+            let session = beginDraggingSession(with: items, event: pressed, source: ShelfDrag.shared)
+            if items.count > 1 { session.draggingFormation = .pile }
         }
 
         override func mouseUp(with event: NSEvent) {
+            if pickOnRelease { pick(.only) }
             pressed = nil
+            pickOnRelease = false
         }
 
         override func rightMouseDown(with event: NSEvent) {
@@ -516,5 +612,39 @@ struct OriginMark: View {
         case .claude: return 2.1
         case .screenshot: return 4.2
         }
+    }
+}
+
+/// Midnight Oyl's picked out: moonlight come up inside the picture from its edges, with no edge of
+/// its own, slowly breathing.
+struct Moonlit<S: InsettableShape>: View {
+    let shape: S
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
+            let breath = 0.5 + 0.5 * sin(context.date.timeIntervalSinceReferenceDate * 1.6)
+            ZStack {
+                shape.fill(Midnight.moonlight.opacity(0.03 + 0.03 * breath))
+                shape.stroke(Midnight.starlight.opacity(0.35 + 0.2 * breath), lineWidth: 6)
+                    .blur(radius: 6)
+            }
+            .clipShape(shape)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+/// By a picked-out item's name, in Midnight Oyl: a star, twinkling, turning a little.
+struct Twinkle: View {
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
+            let time = context.date.timeIntervalSinceReferenceDate
+            let twinkle = 0.5 + 0.5 * sin(time * 2 * .pi / 1.7)
+            Sparkle(size: 3.4 + 1.4 * twinkle)
+                .fill(Midnight.starlight.opacity(0.7 + 0.3 * twinkle))
+                .rotationEffect(.radians(time * 0.5))
+                .shadow(color: Midnight.moonlight.opacity(0.7), radius: 2)
+        }
+        .frame(width: 9, height: 9)
     }
 }

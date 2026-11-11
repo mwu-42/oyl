@@ -59,6 +59,10 @@ final class Shelf: ObservableObject {
     @Published private(set) var failures: [URL: String] = [:]
     /// The file just made, picked out for a moment.
     @Published private(set) var fresh: URL?
+    /// Picked out (clicked, shift-clicked through, ⌘-clicked), to drag out or act on together.
+    @Published private(set) var selection: Set<URL> = []
+    /// Where a shift-click picks out through from: the last one clicked.
+    private var anchor: URL?
     /// The folders it watches that it couldn't read: permission to them was turned down.
     @Published private(set) var blocked: [URL] = []
     /// What each screenshot and recording shows, in a few words (see `ScreenshotLabeler`), by
@@ -419,6 +423,9 @@ final class Shelf: ObservableObject {
                              hidden: hiddenAt)
         if all != items { items = all }
         let urls = Set(all.map(\.url))
+        // What's gone from it isn't picked out any more.
+        if !selection.isSubset(of: urls) { selection.formIntersection(urls) }
+        if let anchor, !urls.contains(anchor) { self.anchor = nil }
         let current = thumbnails.filter { urls.contains($0.key) }
         if current.count != thumbnails.count { thumbnails = current }
         thumbnailDates = thumbnailDates.filter { urls.contains($0.key) }
@@ -494,6 +501,66 @@ final class Shelf: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: Picking out
+
+    /// How a click picks one out: it alone; it and everything from the last clicked to it (shift);
+    /// or it as well, or not any more (⌘).
+    enum Picking {
+        case only, through, toggle
+    }
+
+    func pick(_ item: Item, _ how: Picking) {
+        (selection, anchor) = Self.picking(item.url, how, selection: selection, anchor: anchor, in: items.map(\.url))
+    }
+
+    /// What's picked out once `url` is clicked (`how`), and where a shift-click goes from next:
+    /// shift-clicked, the far end stays where it was, for another; ⌘-clicked out, it stays where
+    /// it was too (the last picked out).
+    nonisolated static func picking(_ url: URL, _ how: Picking, selection: Set<URL>, anchor: URL?,
+                                    in order: [URL]) -> (Set<URL>, URL?) {
+        switch how {
+        case .only:
+            return ([url], url)
+        case .through:
+            return (through(from: anchor ?? url, to: url, in: order), anchor ?? url)
+        case .toggle:
+            return selection.contains(url) ? (selection.subtracting([url]), anchor) : (selection.union([url]), url)
+        }
+    }
+
+    func clearSelection() {
+        if !selection.isEmpty { selection = [] }
+        anchor = nil
+    }
+
+    /// From `from` to `to` along `order`, both ends in it; just `to` if `from`'s not there.
+    nonisolated static func through(from: URL, to: URL, in order: [URL]) -> Set<URL> {
+        guard let start = order.firstIndex(of: from), let end = order.firstIndex(of: to) else { return [to] }
+        return Set(order[min(start, end)...max(start, end)])
+    }
+
+    /// What something done to `item` is done to: everything picked out, if it's one of them, in
+    /// the order they're on the shelf; or just it.
+    func acting(on item: Item) -> [Item] { Self.acting(on: item, selection: selection, in: items) }
+
+    nonisolated static func acting(on item: Item, selection: Set<URL>, in items: [Item]) -> [Item] {
+        guard selection.contains(item.url), selection.count > 1 else { return [item] }
+        return items.filter { selection.contains($0.url) }
+    }
+
+    /// Some at once, as each is alone.
+    func remove(_ items: [Item]) { items.forEach(remove) }
+    func trash(_ items: [Item]) { items.forEach(trash) }
+    func convert(_ items: [Item], to format: FileFormat) { items.forEach { convert($0, to: format) } }
+    func open(_ items: [Item]) { items.forEach(open) }
+
+    /// The formats every one of `items` converts to.
+    nonisolated static func formats(for items: [Item]) -> [FileFormat] {
+        guard let first = items.first else { return [] }
+        let shared = items.dropFirst().reduce(Set(Converter.formats(for: first.url))) { $0.intersection(Converter.formats(for: $1.url)) }
+        return Converter.formats(for: first.url).filter(shared.contains)
     }
 
     // MARK: Keeping and taking off
@@ -587,18 +654,25 @@ final class Shelf: ObservableObject {
         NSWorkspace.shared.open(item.url)
     }
 
-    func reveal(_ item: Item) {
-        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    func reveal(_ item: Item) { reveal([item]) }
+
+    /// In the Finder, picked out there too (not a copy out of Photos, which is Oyl's own).
+    func reveal(_ items: [Item]) {
+        let urls = items.filter { $0.kind != .photo }.map(\.url)
+        if !urls.isEmpty { NSWorkspace.shared.activateFileViewerSelecting(urls) }
     }
 
+    func airDrop(_ item: Item) { airDrop([item]) }
+
     /// To someone nearby: macOS's own AirDrop window comes up to pick who to.
-    func airDrop(_ item: Item) {
-        guard let service = NSSharingService(named: .sendViaAirDrop), service.canPerform(withItems: [item.url]) else { return }
+    func airDrop(_ items: [Item]) {
+        let urls = items.map(\.url)
+        guard let service = NSSharingService(named: .sendViaAirDrop), service.canPerform(withItems: urls) else { return }
         // Held while its window's up.
         sharing = service
         // Oyl's never in front, and the window would come up behind whatever is.
         NSApp.activate(ignoringOtherApps: true)
-        service.perform(withItems: [item.url])
+        service.perform(withItems: urls)
     }
 
     /// Still called what macOS called it: "Screenshot 2026-11-01 at 10.23.45 PM", say, or by the
@@ -639,17 +713,24 @@ final class Shelf: ObservableObject {
         refresh()
     }
 
-    /// The file, to paste into a chat or a folder; a picture's pixels too, for apps that only take those.
-    func copy(_ item: Item) {
+    func copy(_ item: Item) { copy([item]) }
+
+    /// The files, to paste into a chat or a folder; one picture's pixels too, for apps that only
+    /// take those.
+    func copy(_ items: [Item]) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
-        let entry = NSPasteboardItem()
-        entry.setString(item.url.absoluteString, forType: .fileURL)
-        if Converter.kind(of: item.url) == .image, let image = NSImage(contentsOf: item.url), let tiff = image.tiffRepresentation {
-            entry.setData(tiff, forType: .tiff)
-            if let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) { entry.setData(png, forType: .png) }
+        let entries = items.map { item in
+            let entry = NSPasteboardItem()
+            entry.setString(item.url.absoluteString, forType: .fileURL)
+            return entry
         }
-        pasteboard.writeObjects([entry])
+        if items.count == 1, let item = items.first, Converter.kind(of: item.url) == .image,
+           let image = NSImage(contentsOf: item.url), let tiff = image.tiffRepresentation {
+            entries[0].setData(tiff, forType: .tiff)
+            if let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) { entries[0].setData(png, forType: .png) }
+        }
+        pasteboard.writeObjects(entries)
     }
 }
 
