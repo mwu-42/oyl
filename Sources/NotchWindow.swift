@@ -1006,9 +1006,12 @@ final class NotchController {
         case .music(_, .singing):
             return walkers.walkers.lyricLine(now).map { "♪ \($0)" } ?? "♪ La la la"
         case .music(_, .reading):
-            return state.nowPlaying.track.map { "Reading \($0.title)" + ($0.artist.isEmpty ? "" : ", by \($0.artist)") } ?? "Reading"
+            return state.nowPlaying.track.map { track in
+                let artist = state.nowPlaying.artist(of: track)
+                return "Reading \(track.title)" + (artist.isEmpty ? "" : ", by \(artist)")
+            } ?? "Reading"
         case .music:
-            return state.nowPlaying.track.map { "♪ \($0.title), by \($0.artist)" } ?? "♪"
+            return state.nowPlaying.track.map { "♪ \($0.title), by \(state.nowPlaying.artist(of: $0))" } ?? "♪"
         case .timer(let timer):
             return "\(timer.title): \(ReminderTimer.format(timer.remaining(at: now))) left" + (timer.isRunning ? "" : ", paused")
         case .awake(.until(let end)):

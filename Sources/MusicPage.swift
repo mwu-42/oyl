@@ -24,9 +24,15 @@ struct MusicPage: View {
                                 Text(track.title)
                                     .notchFont(size: 14, weight: .semibold)
                                     .foregroundStyle(.white)
-                                Text(track.artist.isEmpty ? track.album : track.artist)
+                                // Everyone it's by (on Spotify, once they're looked up, a moment
+                                // in: they ease in over the first), a little smaller before it's cut short.
+                                let by = nowPlaying.artist(of: track)
+                                Text(by.isEmpty ? track.album : by)
                                     .notchFont(size: 12)
                                     .foregroundStyle(.white.opacity(0.55))
+                                    .minimumScaleFactor(0.85)
+                                    .contentTransition(.opacity)
+                                    .animation(.easeInOut(duration: theme == .midnight ? 0.6 : 0.25), value: by)
                             }
                             .lineLimit(1)
                             .contentShape(Rectangle())

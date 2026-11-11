@@ -271,6 +271,9 @@ final class NowPlaying: ObservableObject {
     @Published private(set) var palette: [NSColor] = []
     /// The song's synced lyrics; nil while they're being looked up, or when there are none.
     @Published private(set) var lyrics: Lyrics?
+    /// Everyone a song on Spotify is by ("A, B"), once looked up (`SpotifyCredits`): the player
+    /// says only the first. The track keeps that one, which its lyrics are looked up by.
+    @Published private(set) var credit: Credit?
     // Playback position is reported once a second; views interpolate from this anchor.
     @Published private(set) var anchorPosition: Double = 0
     @Published private(set) var anchorDate = Date()
@@ -295,6 +298,21 @@ final class NowPlaying: ObservableObject {
     private var artworkCache: [String: NSImage] = [:]
     private var lyricsTask: Task<Void, Never>?
     private var lyricsCache: [String: Lyrics?] = [:]  // nil: looked up, and none
+    private var creditTask: Task<Void, Never>?
+    private var creditCache: [String: String] = [:]
+
+    /// Everyone a song's by, as `credit` says.
+    struct Credit: Equatable {
+        let trackID: String
+        let artists: String
+    }
+
+    /// Who `track` is by: all its artists once they're known, till then (and for anything they
+    /// aren't looked up for) whoever the player says.
+    func artist(of track: Track) -> String {
+        if let credit, credit.trackID == track.id { return credit.artists }
+        return track.artist
+    }
     private var analyzing: AnyCancellable?
     /// Whether Spotify's playing here, or only says so (playing on another device).
     private var spotify = Earshot()
@@ -514,6 +532,7 @@ final class NowPlaying: ObservableObject {
         if trackChanged {
             loadArtwork(for: chosen, track: newTrack, url: status.artworkURL)
             loadLyrics(for: newTrack)
+            loadCredit(for: chosen, track: newTrack)
             // Covers skips made in the player itself, and one song running into the next.
             spectrum.easeNextChange()
         }
@@ -528,6 +547,8 @@ final class NowPlaying: ObservableObject {
         artworkKey = nil
         lyricsTask?.cancel()
         lyrics = nil
+        creditTask?.cancel()
+        credit = nil
         player = nil
         track = nil
         isPlaying = false
@@ -558,6 +579,29 @@ final class NowPlaying: ObservableObject {
             if lyricsCache.count > 200 { lyricsCache.removeAll() }
             lyricsCache[track.id] = .some(found)
             lyrics = found
+        }
+    }
+
+    // MARK: Artists
+
+    /// A song on Spotify's artists, looked up once each as it starts (Music already says them
+    /// all). One not found is asked after again next time it plays.
+    private func loadCredit(for player: Player, track: Track) {
+        guard credit?.trackID != track.id else { return }
+        creditTask?.cancel()
+        if credit != nil { credit = nil }
+        guard player == .spotify, SpotifyCredits.song(track.id) != nil else { return }
+        if let cached = creditCache[track.id] {
+            credit = Credit(trackID: track.id, artists: cached)
+            return
+        }
+        creditTask = Task {
+            guard let names = await SpotifyCredits.artists(of: track.id),
+                  !Task.isCancelled, self.track?.id == track.id else { return }
+            let artists = SpotifyCredits.credit(names)
+            if creditCache.count > 200 { creditCache.removeAll() }
+            creditCache[track.id] = artists
+            credit = Credit(trackID: track.id, artists: artists)
         }
     }
 
@@ -700,6 +744,58 @@ enum SpotifyCover {
               let address = address(in: answer), let (cover, _) = try? await URLSession.shared.data(from: address),
               Look(url: address, data: cover, of: "").isSquare else { return nil }
         return cover
+    }
+}
+
+/// Everyone a song on Spotify is by. Its scripting, and the notice it posts, give only the first
+/// of them, so they're read off the song's embed page on open.spotify.com (the player a site puts
+/// a song in), which says them all, in Spotify's order, in the data it's drawn from. Only for a
+/// song (not an episode, an audiobook's chapter or a local file); the song's ID is all that's sent,
+/// to Spotify, which knows what's playing already.
+enum SpotifyCredits {
+    /// The bare ID of the song with Spotify ID `id` ("spotify:track:…"), if it's one that can be
+    /// looked up: Spotify's 22 letters and digits.
+    static func song(_ id: String) -> String? {
+        let parts = id.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 3, parts[0] == "spotify", parts[1] == "track", parts[2].count == 22,
+              parts[2].allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { return nil }
+        return String(parts[2])
+    }
+
+    /// The artists on the embed page `page` of the song `id`, in its order, each once; nil if it
+    /// isn't that song's page, or says none.
+    static func artists(inEmbed page: Data, of id: String) -> [String]? {
+        guard let html = String(data: page, encoding: .utf8),
+              let open = html.range(of: #"<script[^>]*\bid="__NEXT_DATA__"[^>]*>"#, options: .regularExpression),
+              let close = html.range(of: "</script>", range: open.upperBound..<html.endIndex),
+              let data = try? JSONSerialization.jsonObject(with: Data(html[open.upperBound..<close.lowerBound].utf8)),
+              let entity = dig(data, "props", "pageProps", "state", "data", "entity") as? [String: Any],
+              entity["uri"] as? String == id,
+              let artists = entity["artists"] as? [[String: Any]] else { return nil }
+        var names: [String] = []
+        for artist in artists {
+            guard let name = (artist["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty, !names.contains(name) else { continue }
+            names.append(name)
+        }
+        return names.isEmpty ? nil : names
+    }
+
+    /// As Spotify lists them: "A, B".
+    static func credit(_ names: [String]) -> String { names.joined(separator: ", ") }
+
+    /// Everyone the song with Spotify ID `id` is by, or nil (not a song, or not found).
+    static func artists(of id: String) async -> [String]? {
+        guard let song = song(id), let url = URL(string: "https://open.spotify.com/embed/track/\(song)") else { return nil }
+        var request = URLRequest(url: url, timeoutInterval: 10)
+        request.setValue("text/html", forHTTPHeaderField: "Accept")
+        guard let (page, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return artists(inEmbed: page, of: id)
+    }
+
+    private static func dig(_ value: Any, _ keys: String...) -> Any? {
+        keys.reduce(value as Any?) { ($0 as? [String: Any])?[$1] }
     }
 }
 

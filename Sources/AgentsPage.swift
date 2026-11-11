@@ -220,7 +220,10 @@ struct OylsPage: View {
             AgentRow(session: session)
         case .music(let cover, let listening):
             // An audiobook's often a show's episode, with no artist: by the show, then.
-            let by = nowPlaying.track.map { $0.artist.isEmpty && listening == .reading ? $0.album : $0.artist } ?? ""
+            let by = nowPlaying.track.map { track in
+                let artist = nowPlaying.artist(of: track)
+                return artist.isEmpty && listening == .reading ? track.album : artist
+            } ?? ""
             OylRow(title: nowPlaying.track?.title ?? "Music", tag: listening == .reading ? "Reading" : listening == .singing ? "Singing" : "DJ",
                    subtitle: by) {
                 Oyl(duty: .music(cover: cover, listening: listening))
