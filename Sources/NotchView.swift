@@ -167,13 +167,16 @@ struct CompactNotch: View {
     }
 }
 
-/// The timer held on the closed notch: its ring and name on the left, its time on the right,
-/// ticking each second.
+/// The timer held on the closed notch: its ring and name (if it has one) on the left, its time on
+/// the right, ticking each second.
 struct HeldTimer: View {
     let timer: ReminderTimer
     let size: CGSize
     let notchWidth: CGFloat
     @Environment(\.notchTheme) private var theme
+
+    /// Its name, if it was given one.
+    private var name: String { timer.label.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         Countdown(timer: timer) { remaining, left in
@@ -182,10 +185,13 @@ struct HeldTimer: View {
                 HStack(spacing: 5) {
                     TimerRing(fraction: left, lineWidth: theme == .midnight ? 1.25 : 2, color: tint)
                         .frame(width: 14, height: 14)
-                    Text(timer.title)
-                        .notchFont(size: 11, weight: .medium)
-                        .foregroundStyle(.white.opacity(0.75))
-                        .lineLimit(1)
+                    // An unnamed one has just its ring: no stand-in name.
+                    if !name.isEmpty {
+                        Text(name)
+                            .notchFont(size: 11, weight: .medium)
+                            .foregroundStyle(.white.opacity(0.75))
+                            .lineLimit(1)
+                    }
                 }
                 .frame(width: CompactLayout.timerWing - 12, alignment: .leading)
                 Spacer(minLength: notchWidth)
