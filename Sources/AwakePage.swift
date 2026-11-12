@@ -54,7 +54,8 @@ struct AwakePage: View {
                     Image(systemName: "clock")
                         .notchSymbol(size: 10, weight: .semibold)
                         .foregroundStyle(.white.opacity(0.6))
-                    ReminderField(text: $draft.value, placeholder: "For… e.g. 2h", onSubmit: submit, onCancel: finish)
+                    ReminderField(text: $draft.value, placeholder: isTimed ? "For… e.g. 2h, or +30m" : "For… e.g. 2h",
+                                  onSubmit: submit, onCancel: finish)
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 26)
@@ -62,13 +63,31 @@ struct AwakePage: View {
                 chip(symbol: "app.badge", title: appTitle, selected: isWatchingApp, action: chooseApp)
             }
 
-            HStack(spacing: 16) {
-                option("Screen may sleep", isOn: awake.displayMaySleep) { awake.displayMaySleep.toggle() }
-                option("Stop at \(AwakeManager.batteryFloor)% battery", isOn: awake.stopOnLowBattery) {
-                    awake.stopOnLowBattery.toggle()
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                GridRow {
+                    option("Screen may sleep", isOn: awake.displayMaySleep,
+                           help: "Only the Mac's kept awake; the screen sleeps (and locks) as it's set to") {
+                        awake.displayMaySleep.toggle()
+                    }
+                    option("Stop at \(AwakeManager.batteryFloor)% battery", isOn: awake.stopOnLowBattery,
+                           help: "On battery, at \(AwakeManager.batteryFloor)% or if the battery can't be read. It always stops if your Mac gets critically hot") {
+                        awake.stopOnLowBattery.toggle()
+                    }
                 }
+                .frame(height: 18)
+                GridRow {
+                    option("Mute speakers when shut", isOn: awake.muteWhenShut,
+                           help: "While the lid's down, the Mac's own speakers are quiet; headphones and AirPods aren't touched") {
+                        awake.muteWhenShut.toggle()
+                    }
+                    option(awake.installingLowPower ? "Low Power Mode…" : "Low Power Mode when shut", isOn: awake.lowPowerWhenShut,
+                           help: "On battery: while the lid's down, under \(AwakeManager.lowPowerFloor)%, or while your Mac's running hot. "
+                               + (awake.lowPowerHelperInstalled ? "Off again after" : "Needs your password once")) {
+                        awake.setLowPower(!awake.lowPowerWhenShut)
+                    }
+                }
+                .frame(height: 18)
             }
-            .frame(height: 18)
         }
         .padding(.horizontal, 24)
         .padding(.top, 6)
@@ -79,7 +98,12 @@ struct AwakePage: View {
         let lid = awake.lidHelperInstalled ? " · lid can be closed" : ""
         switch awake.mode {
         case nil:
-            Text("Choose how long to stay awake")
+            // Stopped by itself lately (the battery, the heat): why, till it's started again.
+            if let stopped = awake.stopped, Date().timeIntervalSince(stopped.at) < 12 * 3600 {
+                Text("Stopped at \(stopped.at.formatted(date: .omitted, time: .shortened)) · \(stopped.reason)")
+            } else {
+                Text("Choose how long to stay awake")
+            }
         case .indefinitely:
             Text("Until you stop it" + lid)
         case .until(let end):
@@ -94,6 +118,11 @@ struct AwakePage: View {
         case .whileRunning(_, let name):
             Text("While \(name) is open" + lid)
         }
+    }
+
+    private var isTimed: Bool {
+        if case .until = awake.mode { return true }
+        return false
     }
 
     private var isWatchingApp: Bool {
@@ -125,7 +154,7 @@ struct AwakePage: View {
         .fixedSize()
     }
 
-    private func option(_ title: String, isOn: Bool, action: @escaping () -> Void) -> some View {
+    private func option(_ title: String, isOn: Bool, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 5) {
                 Image(systemName: isOn ? "checkmark.circle.fill" : "circle")
@@ -138,9 +167,20 @@ struct AwakePage: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
+        .help(help)
     }
 
     private func submit() {
+        // "+30m": that much more.
+        let text = draft.value.trimmingCharacters(in: .whitespaces)
+        if text.hasPrefix("+") {
+            guard let extra = ReminderParser.parse(String(text.dropFirst())).duration, awake.extend(by: extra) else {
+                NSSound.beep()
+                return
+            }
+            finish()
+            return
+        }
         if ReminderParser.isEndless(draft.value) {
             awake.start(.indefinitely)
             finish()

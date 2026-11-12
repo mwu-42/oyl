@@ -10,7 +10,7 @@ enum Layout {
     static let activityHeight: CGFloat = 148
     static let mirrorSize = CGSize(width: 240, height: 180)  // the camera's 4:3, about the size it's taken at
     static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
-    static let awakeHeight: CGFloat = 124
+    static let awakeHeight: CGFloat = 146
     static let alertHeight: CGFloat = 72
     static let timerRowHeight: CGFloat = 30
     static let maxVisibleTimers = 3                      // at least; as many as fit (see `timerRowsFit`)
