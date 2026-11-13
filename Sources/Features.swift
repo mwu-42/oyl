@@ -50,6 +50,8 @@ enum Feature: String, CaseIterable, Sendable {
 
     /// The desktop you're on, named at the top left of the menu bar.
     case spaceLabel
+    /// Picture in picture for any window, over every desktop: ⌃⌥P, or from Oyl's Dock.
+    case pictureInPicture
 
     case openAtLogin
 

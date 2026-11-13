@@ -14,6 +14,9 @@ import ApplicationServices
 /// Edit menu), so it comes up at the caret wherever you're typing: in every app, terminals and
 /// code editors too (in place of their own Command-period, which stops what's running, or offers
 /// fixes). Not in Oyl's own notch, which brings the picker up itself (`EditKeys`).
+///
+/// Control-Option-P for picture in picture: the window in front into it, or put away (see
+/// `PictureInPicture`); only taken when there's one to do it to.
 @MainActor
 final class KeyTap {
     nonisolated static let left: Int64 = 123
@@ -24,14 +27,18 @@ final class KeyTap {
     private let skip: @MainActor (_ forward: Bool) -> Bool
     /// Whether Command-period's for the emoji picker now.
     private let emoji: @MainActor () -> Bool
+    /// Picture in picture for the window in front, saying whether it was.
+    private let pictureInPicture: @MainActor () -> Bool
     private var tap: CFMachPort?
     private var retrying: Timer?
     /// The key whose press was taken, so its letting go is too.
     private var taken: Int64?
 
-    init(skip: @escaping @MainActor (_ forward: Bool) -> Bool, emoji: @escaping @MainActor () -> Bool) {
+    init(skip: @escaping @MainActor (_ forward: Bool) -> Bool, emoji: @escaping @MainActor () -> Bool,
+         pictureInPicture: @escaping @MainActor () -> Bool) {
         self.skip = skip
         self.emoji = emoji
+        self.pictureInPicture = pictureInPicture
         install()
         // Until Accessibility's allowed.
         retrying = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
@@ -55,6 +62,13 @@ final class KeyTap {
     /// with Command and nothing else held.
     nonisolated static func isEmojiKey(_ characters: String?, flags: CGEventFlags) -> Bool {
         flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]) == .maskCommand && characters == "."
+    }
+
+    /// Whether a key pressed is Control-Option-P: its P wherever the keyboard's layout has it, with
+    /// Control and Option and nothing else held.
+    nonisolated static func isPictureInPictureKey(_ characters: String?, flags: CGEventFlags) -> Bool {
+        flags.intersection([.maskCommand, .maskControl, .maskAlternate, .maskShift]) == [.maskControl, .maskAlternate]
+            && characters?.lowercased() == "p"
     }
 
     /// The emoji picker up in the app in front, at its caret, as its Edit menu's Emoji & Symbols
@@ -104,6 +118,11 @@ final class KeyTap {
                       Self.isEmojiKey(NSEvent(cgEvent: event)?.charactersIgnoringModifiers, flags: event.flags), emoji() {
                 taken = code
                 Self.pickEmoji()
+                return nil
+            } else if event.flags.contains([.maskControl, .maskAlternate]),
+                      Self.isPictureInPictureKey(NSEvent(cgEvent: event)?.charactersIgnoringModifiers, flags: event.flags),
+                      pictureInPicture() {
+                taken = code
                 return nil
             }
         default:

@@ -10,7 +10,8 @@ struct CurrentSpace: Equatable {
     /// A fullscreen app's window, which keeps its name when it leaves fullscreen and comes back
     /// (a new Space each time), till the Mac restarts.
     let window: String?
-    /// "Desktop 2", as Mission Control numbers them; a fullscreen app's, the app's name.
+    /// "desktop 2", as Mission Control numbers them; a fullscreen app's, the app's name: in lower
+    /// case, as names Oyl gives are (one you type is kept as you type it).
     let standard: String
     let isFullscreen: Bool
 }
@@ -33,11 +34,12 @@ enum Spaces {
         if number(space["type"]) == FullscreenSpace.fullscreenType {
             let window = number(space["fs_wid"]).map { "window:\(boot)-\($0)" }
             let name = number(space["pid"]).flatMap { appName(pid_t($0)) } ?? "Full Screen"
-            return CurrentSpace(key: key, window: window, standard: name, isFullscreen: true)
+            return CurrentSpace(key: key, window: window, standard: name.lowercased(), isFullscreen: true)
         }
         let desktops = (display["Spaces"] as? [[String: Any]] ?? []).filter { number($0["type"]) != FullscreenSpace.fullscreenType }
         let index = desktops.firstIndex { number($0["ManagedSpaceID"]) == id }
-        return CurrentSpace(key: key, window: nil, standard: index.map { "Desktop \($0 + 1)" } ?? "Desktop", isFullscreen: false)
+        return CurrentSpace(key: key, window: nil, standard: (index.map { "Desktop \($0 + 1)" } ?? "Desktop").lowercased(),
+                            isFullscreen: false)
     }
 
     private static func number(_ value: Any?) -> Int? { (value as? NSNumber)?.intValue }
@@ -88,10 +90,12 @@ struct SpaceNames {
     }
 }
 
-/// The desktop you're on, named at the top left of the menu bar, on the notch's screen: "Desktop
-/// 2" as Mission Control numbers them (a fullscreen app's Space, the app), or whatever you've
-/// called it. Click it to rename it: Return keeps what's typed (nothing puts its own name back),
-/// Escape doesn't, and clicking anywhere else keeps it too.
+/// The desktop you're on, named at the top left of the menu bar, on the notch's screen: "desktop
+/// 2" as Mission Control numbers them (a fullscreen app's Space, the app's name), in lower case,
+/// or whatever you've called it, as you typed it. Click it to rename it: Return keeps what's typed
+/// (nothing puts its own name back), Escape doesn't, and clicking anywhere else keeps it too. It's
+/// up for 3 seconds on each desktop you go to (and as Oyl or it is turned on), then fades: longer
+/// while the pointer's on it or it's being renamed, and for 3 seconds more once it's been renamed.
 ///
 /// In Oyl's look it's a piece of the notch, in black, flush with the top and left of the screen,
 /// its bottom corner rounded and its top flared into the edge as the notch's are; a new desktop's
@@ -124,8 +128,16 @@ final class SpaceLabel {
     private var menuBarDown = false
     private var shrinking: DispatchWorkItem?
     private var going: DispatchWorkItem?
+    /// Still in its first moments on this Space (it fades once they're over).
+    private var lingering = true
+    private var lingerWork: DispatchWorkItem?
+    /// It could be up (it's on, Oyl's on, and the Space is known): coming to be, it lingers again.
+    private var couldBeUp = false
     private var monitors: [Any] = []
     private var cancellables = Set<AnyCancellable>()
+
+    /// How long it stays on each Space you go to.
+    static let stays: TimeInterval = 3
 
     /// Where it is along the bar, from the screen's left, while it's up: for the Oyls to keep off.
     var onSpan: (ClosedRange<CGFloat>?) -> Void = { _ in }
@@ -201,6 +213,7 @@ final class SpaceLabel {
         screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.screens.first
         let now = screen.flatMap(Spaces.current(on:))
         if now?.key != space?.key, model.editing { finish(keeping: true) }
+        if now?.key != space?.key { linger() }
         if now != space {
             space = now
             menuBarDown = false
@@ -216,7 +229,10 @@ final class SpaceLabel {
 
     /// Up, or away.
     private func update() {
-        let wanted = isOn && space != nil && !state.isOff && !state.isResting && !state.isViewingDesktops && !state.isBlooming
+        let could = isOn && space != nil && !state.isOff && !state.isResting
+        if could, !couldBeUp { linger() }
+        couldBeUp = could
+        let wanted = could && (lingering || model.editing) && !state.isViewingDesktops && !state.isBlooming
         if !wanted, model.editing { finish(keeping: true) }
         let through = !wanted || (space?.isFullscreen == true && !model.editing)
         if panel.ignoresMouseEvents != through { panel.ignoresMouseEvents = through }
@@ -244,6 +260,30 @@ final class SpaceLabel {
             going = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
         }
+    }
+
+    /// Up for its few seconds again, from now.
+    private func linger() {
+        lingering = true
+        lingerWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.lingerOver() }
+        lingerWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.stays, execute: work)
+    }
+
+    /// Its seconds are up: it fades, unless it's being renamed or the pointer's on it (then once
+    /// that's over).
+    private func lingerOver() {
+        lingerWork = nil
+        let pointedAt = model.shown && panel.isVisible && panel.frame.contains(NSEvent.mouseLocation)
+        guard !model.editing, !pointedAt else {
+            let work = DispatchWorkItem { [weak self] in self?.lingerOver() }
+            lingerWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+            return
+        }
+        lingering = false
+        update()
     }
 
     /// At the screen's top left, as deep as the menu bar, as wide as the name: grown at once, and
@@ -300,6 +340,8 @@ final class SpaceLabel {
         panel.ignoresMouseEvents = space?.isFullscreen == true
         let name = space.map(names.name(of:)) ?? ""
         if name != model.name { model.name = name }
+        // The new name's up a moment before it goes.
+        linger()
         DispatchQueue.main.async { [weak self] in self?.place() }
     }
 

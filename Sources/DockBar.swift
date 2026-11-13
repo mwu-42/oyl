@@ -1027,6 +1027,7 @@ private struct DockTile: View {
         case .app where item.isRunning:
             menu.addItem(ClosureMenuItem(title: item.isHidden ? "Show" : "Hide") { apps.hide(item) })
             menu.addItem(ClosureMenuItem(title: "Show in Finder") { apps.reveal(item) })
+            if let entry = pictureInPictureItem() { menu.addItem(entry) }
             menu.addItem(.separator())
             menu.addItem(ClosureMenuItem(title: "Quit") { apps.quit(item) })
         case .app, .folder:
@@ -1037,6 +1038,25 @@ private struct DockTile: View {
         model.isHeld = true
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
         model.isHeld = false
+    }
+
+    /// Picture in picture for one of its windows (a menu of them, if it has a few), or put away
+    /// if one's in it already.
+    private func pictureInPictureItem() -> NSMenuItem? {
+        guard Feature.pictureInPicture.isOn, let pip = PictureInPicture.shared else { return nil }
+        let windows = PiPWindows.windows(of: apps.processes(of: item))
+        if let showing = pip.window, windows.contains(where: { $0.id == showing.id }) {
+            return ClosureMenuItem(title: "Close Picture in Picture") { pip.close() }
+        }
+        guard let first = windows.first else { return nil }
+        guard windows.count > 1 else { return ClosureMenuItem(title: "Picture in Picture") { pip.show(first) } }
+        let entry = NSMenuItem(title: "Picture in Picture", action: nil, keyEquivalent: "")
+        let list = NSMenu()
+        for (index, window) in windows.enumerated() {
+            list.addItem(ClosureMenuItem(title: PiPWindows.menuTitle(of: window, at: index, app: item.name)) { pip.show(window) })
+        }
+        entry.submenu = list
+        return entry
     }
 }
 

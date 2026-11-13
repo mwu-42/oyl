@@ -607,6 +607,7 @@ final class NotchController {
     private var dock: DockController?
     private var approvalCorner: ApprovalCorner?
     private var spaceLabel: SpaceLabel?
+    private var pictureInPicture: PictureInPicture?
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
@@ -655,6 +656,7 @@ final class NotchController {
         approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
         spaceLabel = SpaceLabel(state: state)
         spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
+        pictureInPicture = PictureInPicture(state: state)
 
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -886,6 +888,11 @@ final class NotchController {
         }, emoji: { [weak self] in
             guard let self else { return false }
             return !self.state.isOff && Feature.emojiKey.isOn && NSApp.keyWindow == nil
+        }, pictureInPicture: { [weak self] in
+            // Control-Option-P: the window in front into picture in picture, or put away.
+            self?.cameraTaps?.interrupt()
+            guard let self, !self.state.isOff, Feature.pictureInPicture.isOn else { return false }
+            return self.pictureInPicture?.toggleFront() ?? false
         })
         state.$showsCountdowns
             .sink { [weak self] shows in

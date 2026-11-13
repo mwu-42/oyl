@@ -280,6 +280,9 @@ final class DockApps: ObservableObject {
     /// The first of them, if there's more than one.
     private func running(_ item: Item) -> NSRunningApplication? { instances(of: item).first }
 
+    /// Every one of it that's open's process.
+    func processes(of item: Item) -> Set<pid_t> { Set(instances(of: item).map(\.processIdentifier)) }
+
     /// Every one of it that's open.
     private func instances(of item: Item) -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter { Self.matches($0, item) }
