@@ -830,9 +830,10 @@ final class NotchController {
                 self.switchOff(!self.state.isOff)
             },
         ])
-        // Command on its own twice, either one: a screenshot of part of the screen (as ⇧⌘4), but
+        // Command on its own twice, either one, quickly (the second pressed within a quarter of a
+        // second of letting go of the first): a screenshot of part of the screen (as ⇧⌘4), but
         // not while Oyl's off. Never an OK on the way, if the second was the right one.
-        commandTaps = TapWatcher(.command, actions: [
+        commandTaps = TapWatcher(.command, gap: ModifierTaps.commandGap, actions: [
             2: { [weak self] in
                 self?.approveTaps?.interrupt()
                 guard self?.state.isOff == false, Feature.screenshotTaps.isOn else { return }
@@ -841,8 +842,9 @@ final class NotchController {
         ])
         // The right Command key tapped on its own, while a request's waiting for your OK (its card's
         // in the corner): allowed, as its Allow would, once it's plain no second tap is coming (two
-        // are a screenshot). (With a key, it's a shortcut, not a tap.)
-        approveTaps = TapWatcher(.command, side: ModifierTaps.rightCommand, actions: [
+        // are a screenshot, so it waits as long as they can be apart). (With a key, it's a
+        // shortcut, not a tap.)
+        approveTaps = TapWatcher(.command, side: ModifierTaps.rightCommand, gap: ModifierTaps.commandGap, actions: [
             1: { [weak self] in
                 guard let self, !self.state.isOff, Feature.approveTap.isOn, let approval = self.state.agents.approvals.first else { return }
                 self.state.agents.answer(approval, allow: true)

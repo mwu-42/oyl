@@ -180,6 +180,32 @@ enum DockGlyphs {
         return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
     }
 
+    /// Outlook's: just a mail envelope's outline, drawn in a line as fine as the star's, its flap
+    /// coming down from the top corners to a point a little past halfway.
+    @MainActor
+    static func envelope() -> DockGlyph? {
+        let side = DockGlyph.side
+        guard let context = Pixels.context(side: side) else { return nil }
+        let line = CGFloat(side) * 0.034
+        let width = CGFloat(side) * 0.56, height = width * 0.68
+        let body = CGRect(x: (CGFloat(side) - width) / 2, y: (CGFloat(side) - height) / 2, width: width, height: height)
+        // (The context counts up from the bottom, so the top's maxY.)
+        let inset = line * 1.6
+        let flap = CGMutablePath()
+        flap.move(to: CGPoint(x: body.minX + inset, y: body.maxY - inset))
+        flap.addLine(to: CGPoint(x: body.midX, y: body.maxY - height * 0.56))
+        flap.addLine(to: CGPoint(x: body.maxX - inset, y: body.maxY - inset))
+        context.setStrokeColor(CGColor(gray: 1, alpha: 1))
+        context.setLineWidth(line)
+        context.setLineJoin(.round)
+        context.setLineCap(.round)
+        context.addPath(CGPath(roundedRect: body, cornerWidth: width * 0.09, cornerHeight: width * 0.09, transform: nil))
+        context.addPath(flap)
+        context.strokePath()
+        guard let image = context.makeImage(), let pixels = Pixels(image, side: side) else { return nil }
+        return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
+    }
+
     /// The first letter or figure of `name`, as a capital: "Tone_Matrix" is T.
     nonisolated static func initial(of name: String) -> String? {
         name.first { $0.isLetter || $0.isNumber }.map { String($0).uppercased() }

@@ -1,15 +1,18 @@
 import AppKit
 
 /// Quick taps of one modifier key on its own (command twice takes a screenshot, control three
-/// times switches Oyl off), or of a few pressed together (control and option, for the camera): a tap is
-/// the key (all of them) pressed and let go within `longest`, with no other modifier with it, and
-/// each comes within `gap` of the last. A key or a click in between starts the count
-/// again, so typing, shortcuts and Oyl's own Mission Control keys (control and an arrow, posted by
-/// the hand pointer) never count. The most taps that mean anything are told at once; fewer, once
+/// times switches Oyl off), or of a few pressed together (control and option, for the camera): a
+/// tap is the key (all of them) pressed and let go within `longest`, with no other modifier with
+/// it, and each pressed within `gap` of letting go of the last (Command's quicker than the rest).
+/// A key or a click in between starts the count again, so typing, shortcuts and Oyl's own Mission
+/// Control keys (control and an arrow, posted by the hand pointer) never count. The most taps that mean anything are told at once; fewer, once
 /// they're over (no more having come within `gap`), so two never count on the way to three.
 struct ModifierTaps {
     static let press: TimeInterval = 0.35
-    static let gap: TimeInterval = 0.5
+    static let usualGap: TimeInterval = 0.5
+    /// Command's: two taps a screenshot only when they're quick, so pressing it twice on the way
+    /// to a shortcut, thought better of, isn't one.
+    static let commandGap: TimeInterval = 0.25
 
     let key: NSEvent.ModifierFlags
     /// For one side's key alone (the right Command): its own bit in the flags, and the other
@@ -18,6 +21,8 @@ struct ModifierTaps {
     let most: Int
     /// The longest a tap's held: `press`, or a little longer for keys pressed together.
     let longest: TimeInterval
+    /// The longest from letting go of one tap to pressing the next.
+    let gap: TimeInterval
     /// Taps so far.
     private(set) var count = 0
     private var pressedAt: TimeInterval?
@@ -27,11 +32,13 @@ struct ModifierTaps {
     /// The right Command key's bit in an event's flags, and the left's.
     static let rightCommand = (this: UInt(0x10), other: UInt(0x08))
 
-    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, most: Int, longest: TimeInterval = Self.press) {
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, most: Int, longest: TimeInterval = Self.press,
+         gap: TimeInterval = Self.usualGap) {
         self.key = key
         self.side = side
         self.most = most
         self.longest = longest
+        self.gap = gap
     }
 
     /// The modifier keys are now `flags`, at `time` (seconds since the Mac started, as events
@@ -52,7 +59,7 @@ struct ModifierTaps {
             return nil
         }
         if down, !held {
-            if time - releasedAt > Self.gap { count = 0 }
+            if time - releasedAt > gap { count = 0 }
             pressedAt = time
             return nil
         }
@@ -71,7 +78,7 @@ struct ModifierTaps {
 
     /// At `time`: how many taps there were, once they're over and if there were any; told once.
     mutating func settled(at time: TimeInterval) -> Int? {
-        guard count > 0, pressedAt == nil, time - releasedAt > Self.gap else { return nil }
+        guard count > 0, pressedAt == nil, time - releasedAt > gap else { return nil }
         defer { count = 0 }
         return count
     }
@@ -96,8 +103,8 @@ final class TapWatcher {
     private var settling: Timer?
 
     init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, longest: TimeInterval = ModifierTaps.press,
-         each: (@MainActor (Int) -> Void)? = nil, actions: [Int: @MainActor () -> Void]) {
-        taps = ModifierTaps(key, side: side, most: actions.keys.max() ?? 1, longest: longest)
+         gap: TimeInterval = ModifierTaps.usualGap, each: (@MainActor (Int) -> Void)? = nil, actions: [Int: @MainActor () -> Void]) {
+        taps = ModifierTaps(key, side: side, most: actions.keys.max() ?? 1, longest: longest, gap: gap)
         self.actions = actions
         self.each = each
         let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
@@ -138,7 +145,7 @@ final class TapWatcher {
     /// Fewer taps than the most count once no more come.
     private func settleLater() {
         settling?.invalidate()
-        settling = Timer.scheduledTimer(withTimeInterval: ModifierTaps.gap + 0.02, repeats: false) { [weak self] _ in
+        settling = Timer.scheduledTimer(withTimeInterval: taps.gap + 0.02, repeats: false) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, let count = self.taps.settled(at: ProcessInfo.processInfo.systemUptime) else { return }
                 self.actions[count]?()
