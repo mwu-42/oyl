@@ -180,27 +180,39 @@ enum DockGlyphs {
         return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
     }
 
-    /// Outlook's: just a mail envelope's outline, drawn in a line as fine as the star's, its flap
-    /// coming down from the top corners to a point a little past halfway.
+    /// Outlook's: the open envelope on its icon, as an outline in a line as fine as the star's (no
+    /// O on it): its flap standing up to a rounded peak, straight sides, and the front pocket's
+    /// fold dipping from either shoulder to a point past halfway down.
     @MainActor
     static func envelope() -> DockGlyph? {
         let side = DockGlyph.side
         guard let context = Pixels.context(side: side) else { return nil }
         let line = CGFloat(side) * 0.034
-        let width = CGFloat(side) * 0.56, height = width * 0.68
-        let body = CGRect(x: (CGFloat(side) - width) / 2, y: (CGFloat(side) - height) / 2, width: width, height: height)
-        // (The context counts up from the bottom, so the top's maxY.)
-        let inset = line * 1.6
-        let flap = CGMutablePath()
-        flap.move(to: CGPoint(x: body.minX + inset, y: body.maxY - inset))
-        flap.addLine(to: CGPoint(x: body.midX, y: body.maxY - height * 0.56))
-        flap.addLine(to: CGPoint(x: body.maxX - inset, y: body.maxY - inset))
+        // As the icon has it: about as tall as it's wide, its shoulders a little over a quarter of
+        // the way down. (The context counts up from the bottom, so the top's the larger y.)
+        let width = CGFloat(side) * 0.56, height = width * 1.0
+        let left = (CGFloat(side) - width) / 2, right = left + width, middle = CGFloat(side) / 2
+        let bottom = (CGFloat(side) - height) / 2, top = bottom + height, shoulder = top - width * 0.3
+        let outline = CGMutablePath()
+        outline.move(to: CGPoint(x: middle, y: bottom))
+        outline.addArc(tangent1End: CGPoint(x: left, y: bottom), tangent2End: CGPoint(x: left, y: shoulder), radius: width * 0.09)
+        outline.addArc(tangent1End: CGPoint(x: left, y: shoulder), tangent2End: CGPoint(x: middle, y: top), radius: width * 0.06)
+        outline.addArc(tangent1End: CGPoint(x: middle, y: top), tangent2End: CGPoint(x: right, y: shoulder), radius: width * 0.13)
+        outline.addArc(tangent1End: CGPoint(x: right, y: shoulder), tangent2End: CGPoint(x: right, y: bottom), radius: width * 0.06)
+        outline.addArc(tangent1End: CGPoint(x: right, y: bottom), tangent2End: CGPoint(x: middle, y: bottom), radius: width * 0.09)
+        outline.closeSubpath()
+        // The pocket's fold, from just inside either side at the shoulders.
+        let inset = line * 1.5
+        let fold = CGMutablePath()
+        fold.move(to: CGPoint(x: left + inset, y: shoulder - inset * 0.6))
+        fold.addLine(to: CGPoint(x: middle, y: shoulder - (shoulder - bottom) * 0.52))
+        fold.addLine(to: CGPoint(x: right - inset, y: shoulder - inset * 0.6))
         context.setStrokeColor(CGColor(gray: 1, alpha: 1))
         context.setLineWidth(line)
         context.setLineJoin(.round)
         context.setLineCap(.round)
-        context.addPath(CGPath(roundedRect: body, cornerWidth: width * 0.09, cornerHeight: width * 0.09, transform: nil))
-        context.addPath(flap)
+        context.addPath(outline)
+        context.addPath(fold)
         context.strokePath()
         guard let image = context.makeImage(), let pixels = Pixels(image, side: side) else { return nil }
         return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })

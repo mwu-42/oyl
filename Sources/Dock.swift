@@ -144,7 +144,7 @@ final class DockApps: ObservableObject {
             lifted.insert(item.id)
             let bundle = item.kind == .app ? Bundle(url: item.url)?.bundleIdentifier : nil
             // Some drawn rather than lifted: Finder's a magnifying glass, a folder a folder, Chrome
-            // Google's G, Outlook an envelope's outline, and an app with no icon of its own a star
+            // Google's G, Outlook its icon's open envelope, outlined, and an app with no icon of its own a star
             // with its first letter in it.
             let drawn: DockGlyph?? = switch (item.kind, bundle) {
             case (.folder, _): DockGlyphs.symbol("folder")
