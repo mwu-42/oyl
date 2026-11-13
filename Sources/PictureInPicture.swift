@@ -74,12 +74,25 @@ final class PictureInPicture {
     /// ⌃⌥P: the window in front into it, or (if it's that one already) put away. Whether there was
     /// one to do it to.
     func toggleFront() -> Bool {
-        guard let front = PiPWindows.front() else {
+        let candidates = PiPWindows.inFront()
+        guard let first = candidates.first else {
             guard session != nil else { return false }
             close()
             return true
         }
-        if session?.window.id == front.id { close() } else { show(front) }
+        // Which of them has the app's focus, as Accessibility says (it can keep the key waiting,
+        // so not here): else the frontmost.
+        let pid = first.pid
+        DispatchQueue.global(qos: .userInteractive).async {
+            let focused = PiPWindows.focusedWindow(of: pid)
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let front = candidates.first { $0.id == focused } ?? first
+                    if self.session?.window.id == front.id { self.close() } else { self.show(front) }
+                }
+            }
+        }
         return true
     }
 
@@ -113,14 +126,38 @@ enum PiPWindows {
         return shown(list, pids: pids)
     }
 
-    /// The window in front: the frontmost app's frontmost window here (never one of Oyl's).
+    /// The frontmost app's windows here, front to back (never Oyl's own).
     @MainActor
-    static func front() -> PiPWindow? {
+    static func inFront() -> [PiPWindow] {
         guard let app = NSWorkspace.shared.frontmostApplication,
-              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return nil }
+              app.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return [] }
         let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        return shown(list, pids: [app.processIdentifier], onScreenOnly: true).first
+        return shown(list, pids: [app.processIdentifier], onScreenOnly: true)
     }
+
+    /// The window `pid` has its focus in, by the window server's number, as Accessibility says.
+    nonisolated static func focusedWindow(of pid: pid_t) -> CGWindowID? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.5)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &value) == .success, let value,
+              CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+        var number: CGWindowID = 0
+        guard let windowNumber, windowNumber(value as! AXUIElement, &number) == .success, number != 0 else { return nil }
+        return number
+    }
+
+    typealias WindowNumber = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+    /// The window server's number for an Accessibility window (as every window switcher finds it).
+    nonisolated static let windowNumber: WindowNumber? = {
+        guard let services = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY),
+              let symbol = dlsym(services, "_AXUIElementGetWindow") else { return nil }
+        return unsafeBitCast(symbol, to: WindowNumber.self)
+    }()
+
+    /// Wider or taller than this, it's a strip (a fullscreen app's toolbar, sliding in over it),
+    /// not a window to watch, if the app has another.
+    static let narrowest: CGFloat = 4
 
     /// Where `id` is now: nil once it's closed.
     static func bounds(of id: CGWindowID) -> CGRect? {
@@ -134,8 +171,22 @@ enum PiPWindows {
 
     /// Those of `list` (the window server's, front to back) that are `pids`' windows to watch:
     /// ordinary ones, big enough, that can be captured. One out of sight (on another Space, or in
-    /// the Dock) only if it has a name: apps keep windows out of sight that aren't any.
+    /// the Dock) only if it has a name: apps keep windows out of sight that aren't any. And while
+    /// an app has a window with a name in a window's shape, not its nameless ones or strips (Chrome
+    /// in fullscreen has its toolbar in a window of its own, the screen's width and nameless).
     static func shown(_ list: [[String: Any]], pids: Set<pid_t>, onScreenOnly: Bool = false) -> [PiPWindow] {
+        let all = eligible(list, pids: pids, onScreenOnly: onScreenOnly)
+        func isStrip(_ window: PiPWindow) -> Bool {
+            let aspect = window.bounds.width / max(window.bounds.height, 1)
+            return aspect > narrowest || aspect < 1 / narrowest
+        }
+        func isReal(_ window: PiPWindow) -> Bool { !window.title.isEmpty && !isStrip(window) }
+        return all.filter { window in
+            isReal(window) || !all.contains { $0.pid == window.pid && isReal($0) }
+        }
+    }
+
+    private static func eligible(_ list: [[String: Any]], pids: Set<pid_t>, onScreenOnly: Bool) -> [PiPWindow] {
         list.compactMap { info in
             guard let number = info[kCGWindowNumber as String] as? Int, let owner = info[kCGWindowOwnerPID as String] as? Int,
                   pids.contains(pid_t(owner)), info[kCGWindowLayer as String] as? Int == 0,
@@ -220,13 +271,27 @@ struct PiPFraming: Equatable {
         return framing.clamped(source: source, size: size)
     }
 
-    /// Where in the frame the window's picture is, ScreenCaptureKit having fitted it in, its shape
-    /// kept and centered (0...1 of the frame, the same either way up).
-    static func content(of source: CGSize, inFrame frame: CGSize) -> CGRect {
-        guard source.width > 0, source.height > 0, frame.width > 0, frame.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
-        let scale = min(frame.width / source.width, frame.height / source.height)
-        let width = min(source.width * scale / frame.width, 1), height = min(source.height * scale / frame.height, 1)
-        return CGRect(x: (1 - width) / 2, y: (1 - height) / 2, width: width, height: height)
+    /// Where in the frame the window's picture is (0...1 of the frame, from its top left), as
+    /// ScreenCaptureKit says (`reported`, in whatever units it likes: its shape, and where it
+    /// starts, are what count), having fitted it in, its shape kept (and put in the top left, not
+    /// the middle). Without one, the window's own shape, fitted in the middle.
+    static func content(reported: CGRect?, of source: CGSize, inFrame frame: CGSize) -> CGRect {
+        guard frame.width > 0, frame.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        let shape = reported.flatMap { $0.width > 0 && $0.height > 0 ? $0.size : nil } ?? source
+        guard shape.width > 0, shape.height > 0 else { return CGRect(x: 0, y: 0, width: 1, height: 1) }
+        let scale = min(frame.width / shape.width, frame.height / shape.height)
+        let width = min(shape.width * scale / frame.width, 1), height = min(shape.height * scale / frame.height, 1)
+        guard let reported, reported.width > 0, reported.height > 0 else {
+            return CGRect(x: (1 - width) / 2, y: (1 - height) / 2, width: width, height: height)
+        }
+        // Its units across the whole frame, from how much of the frame it fills.
+        let x = reported.minX * width / reported.width, y = reported.minY * height / reported.height
+        return CGRect(x: min(max(x, 0), 1 - width), y: min(max(y, 0), 1 - height), width: width, height: height)
+    }
+
+    /// A part of a frame from its top left, as a layer's contentsRect has it: from its bottom left.
+    static func layerRect(_ rect: CGRect) -> CGRect {
+        CGRect(x: rect.minX, y: 1 - rect.maxY, width: rect.width, height: rect.height)
     }
 
     /// How big a frame to ask ScreenCaptureKit for, in pixels: enough for the picture at its size
@@ -284,7 +349,9 @@ struct PiPGrip: Equatable {
             let across = start.width + (right ? delta.width : -delta.width)
             let down = (start.height + (top ? delta.height : -delta.height)) * aspect
             let least = max(smallest.width, smallest.height * aspect), most = min(largest.width, largest.height * aspect)
-            let width = min(max(abs(across - start.width) >= abs(down - start.width) ? across : down, least), max(most, least))
+            // A shape that can't be both big enough and small enough stays as it is.
+            guard least <= most else { return start }
+            let width = min(max(abs(across - start.width) >= abs(down - start.width) ? across : down, least), most)
             frame.size = CGSize(width: width, height: width / aspect)
         } else {
             if left || right {
@@ -320,18 +387,35 @@ enum PiPPlacement {
     /// of the screen's, within reason), with its middle at `middle` (0...1 across and up the area),
     /// else low on the right.
     static func first(aspect: CGFloat, width: CGFloat?, middle: CGPoint?, in area: CGRect) -> CGRect {
-        let largest = largest(in: area)
-        var size = CGSize(width: width ?? min(max(area.width * 0.24, 240), 480), height: 0)
-        size.width = min(max(size.width, smallest.width), largest.width)
-        size.height = size.width / max(aspect, 0.1)
-        let tallest = min(largest.height, area.height * 0.5)
-        if size.height > tallest {
-            size.height = tallest
-            size.width = max(size.height * aspect, smallest.width)
-        }
+        // Never more than half the screen across to begin with, whatever the last one was.
+        let across = min(width ?? min(max(area.width * 0.24, 240), 480), area.width * 0.5)
+        let size = size(aspect: aspect, width: across, in: area, tallest: area.height * 0.5)
         let origin = middle.map { CGPoint(x: area.minX + $0.x * area.width - size.width / 2, y: area.minY + $0.y * area.height - size.height / 2) }
             ?? CGPoint(x: area.maxX - inset - size.width, y: area.minY + inset)
         return kept(CGRect(origin: origin, size: size), within: area)
+    }
+
+    /// `aspect` wide to each point high, `width` wide if it can be: no bigger than it gets (nor
+    /// taller than `tallest`), no smaller (its shape given up only for a strip).
+    static func size(aspect: CGFloat, width: CGFloat, in area: CGRect, tallest: CGFloat? = nil) -> CGSize {
+        let largest = largest(in: area), aspect = max(aspect, 0.05)
+        let high = min(largest.height, tallest ?? largest.height)
+        var size = CGSize(width: min(max(width, smallest.width), largest.width), height: 0)
+        size.height = size.width / aspect
+        if size.height > high {
+            size.height = high
+            size.width = size.height * aspect
+        }
+        size.width = min(max(size.width, smallest.width), largest.width)
+        size.height = min(max(size.height, smallest.height), high)
+        return size
+    }
+
+    /// `frame` made `aspect`'s shape, as wide as it is (as it can be), its middle where it was.
+    static func shaped(_ frame: CGRect, aspect: CGFloat, in area: CGRect) -> CGRect {
+        let size = size(aspect: aspect, width: frame.width, in: area)
+        return kept(CGRect(x: frame.midX - size.width / 2, y: frame.midY - size.height / 2, width: size.width, height: size.height),
+                    within: area)
     }
 
     /// Moved (as little as it can be) to be all on `area`.
@@ -402,8 +486,13 @@ private final class PiPSession {
     private let view: PiPPictureView
     private var stream: SCStream?
     private var frames: PiPFrames?
-    /// The window's size, in points.
+    /// The window's size, in points: as wide as the window server says, and the shape its
+    /// frames say (the window server's can be another window's: Chrome's toolbar in fullscreen).
     private var source: CGSize
+    /// The window server's, last time.
+    private var bounds: CGSize
+    /// Its frames' shape, once one's in.
+    private var shape: CGFloat?
     private var framing = PiPFraming()
     /// It's the window's own shape (it hasn't been given another), so it follows the window's.
     private var followsShape = true
@@ -419,6 +508,7 @@ private final class PiPSession {
         self.window = window
         self.theme = theme
         source = window.bounds.size
+        bounds = window.bounds.size
         view = PiPPictureView(model: model)
         model.theme = theme
         let app = NSRunningApplication(processIdentifier: window.pid)
@@ -514,8 +604,8 @@ private final class PiPSession {
 
     private func capture(_ found: SCWindow) async throws {
         let frames = PiPFrames()
-        frames.delivered = { [weak self] surface in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.show(surface.surface) } }
+        frames.delivered = { [weak self] frame in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.show(frame) } }
         }
         frames.stopped = { [weak self] in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.close() } }
@@ -560,30 +650,43 @@ private final class PiPSession {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    private func show(_ surface: IOSurface) {
+    private func show(_ frame: PiPSurface) {
         guard !closing else { return }
-        view.show(surface, content: PiPFraming.content(of: source, inFrame: CGSize(width: IOSurfaceGetWidth(surface),
-                                                                                    height: IOSurfaceGetHeight(surface))))
+        let size = CGSize(width: IOSurfaceGetWidth(frame.surface), height: IOSurfaceGetHeight(frame.surface))
+        if let reported = frame.content, reported.width > 0, reported.height > 0 {
+            let aspect = reported.width / reported.height
+            if shape.map({ abs($0 - aspect) / $0 > 0.01 }) ?? true {
+                shape = aspect
+                resized()
+            }
+        }
+        view.show(frame.surface, content: PiPFraming.layerRect(PiPFraming.content(reported: frame.content, of: source, inFrame: size)))
         reveal()
     }
 
     /// The window's still there (else it goes), and its size: followed if it's changed.
     private func watch() {
         guard !closing else { return }
-        guard let bounds = PiPWindows.bounds(of: window.id), NSRunningApplication(processIdentifier: window.pid) != nil else {
+        guard let now = PiPWindows.bounds(of: window.id), NSRunningApplication(processIdentifier: window.pid) != nil else {
             close()
             return
         }
-        guard abs(bounds.width - source.width) > 0.5 || abs(bounds.height - source.height) > 0.5 else { return }
-        source = bounds.size
+        guard abs(now.width - bounds.width) > 0.5 || abs(now.height - bounds.height) > 0.5 else { return }
+        bounds = now.size
+        resized()
+    }
+
+    /// The window's another size, or shape: it follows (if it's still its own shape), and what's
+    /// in it.
+    private func resized() {
+        let next = shape.map { CGSize(width: bounds.width, height: bounds.width / max($0, 0.01)) } ?? bounds
+        guard abs(next.width - source.width) > 0.5 || abs(next.height - source.height) > 0.5 else { return }
+        source = next
         view.source = source
         if followsShape {
             // Its own shape still: the window's new one, as wide as it is, its middle where it was.
-            var frame = panel.frame
-            let height = frame.width * source.height / max(source.width, 1)
-            frame.origin.y += (frame.height - height) / 2
-            frame.size.height = height
-            panel.setFrame(PiPPlacement.kept(frame, within: PiPPlacement.area(of: screen)), display: true)
+            panel.setFrame(PiPPlacement.shaped(panel.frame, aspect: source.width / max(source.height, 1),
+                                               in: PiPPlacement.area(of: screen)), display: true)
         }
         reframe(framing)
         recapture()
@@ -650,16 +753,8 @@ private final class PiPSession {
     /// Back to the window's own shape, all of it.
     private func fit() {
         followsShape = true
-        var frame = panel.frame
-        let height = frame.width * source.height / max(source.width, 1)
-        frame.origin.y += (frame.height - height) / 2
-        frame.size.height = height
-        let area = PiPPlacement.area(of: screen)
-        let largest = PiPPlacement.largest(in: area)
-        if frame.height > largest.height {
-            frame.size = CGSize(width: largest.height * source.width / max(source.height, 1), height: largest.height)
-        }
-        panel.setFrame(PiPPlacement.kept(frame, within: area), display: true)
+        panel.setFrame(PiPPlacement.shaped(panel.frame, aspect: source.width / max(source.height, 1),
+                                           in: PiPPlacement.area(of: screen)), display: true)
         reframe(PiPFraming())
         remember()
     }
@@ -683,7 +778,7 @@ private final class PiPSession {
     private nonisolated static func raise(_ id: CGWindowID, of app: AXUIElement) -> Bool {
         for window in ButtonReader.elements(app, kAXWindowsAttribute) {
             var number: CGWindowID = 0
-            guard let windowNumber, windowNumber(window, &number) == .success, number == id else { continue }
+            guard let windowNumber = PiPWindows.windowNumber, windowNumber(window, &number) == .success, number == id else { continue }
             AXUIElementPerformAction(window, kAXRaiseAction as CFString)
             AXUIElementSetAttributeValue(window, kAXMainAttribute as CFString, kCFBooleanTrue)
             return true
@@ -691,23 +786,17 @@ private final class PiPSession {
         return false
     }
 
-    private typealias WindowNumber = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
-    /// The window server's number for an Accessibility window (as every window switcher finds it).
-    private nonisolated static let windowNumber: WindowNumber? = {
-        guard let services = dlopen("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices", RTLD_LAZY),
-              let symbol = dlsym(services, "_AXUIElementGetWindow") else { return nil }
-        return unsafeBitCast(symbol, to: WindowNumber.self)
-    }()
-
     static func openPermission() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
         NSWorkspace.shared.open(url)
     }
 }
 
-/// A frame, handed from ScreenCaptureKit's queue to the main thread.
+/// A frame, handed from ScreenCaptureKit's queue to the main thread: and where in it the window
+/// is, as it says.
 private struct PiPSurface: @unchecked Sendable {
     let surface: IOSurface
+    let content: CGRect?
 }
 
 /// ScreenCaptureKit's frames, as they come.
@@ -719,9 +808,10 @@ private final class PiPFrames: NSObject, SCStreamOutput, SCStreamDelegate, @unch
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
         guard type == .screen, sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]],
-              let status = attachments.first?[.status] as? Int, SCFrameStatus(rawValue: status) == .complete,
+              let info = attachments.first, let status = info[.status] as? Int, SCFrameStatus(rawValue: status) == .complete,
               let buffer = sampleBuffer.imageBuffer, let surface = CVPixelBufferGetIOSurface(buffer)?.takeUnretainedValue() else { return }
-        delivered(PiPSurface(surface: surface))
+        let content = (info[.contentRect] as? NSDictionary).flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) }
+        delivered(PiPSurface(surface: surface, content: content))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) { stopped() }
