@@ -89,6 +89,11 @@ final class WalkerOverlay {
     var inFullscreen = false {
         didSet { if inFullscreen { panel.ignoresMouseEvents = true } }
     }
+    /// Along the bar from its left, what they keep off besides: the desktop's name, at the top
+    /// left (see `SpaceLabel`). One standing there as it comes moves out of the way.
+    var keepClear: ClosedRange<CGFloat>? {
+        didSet { if keepClear != oldValue { layOutCalendar() } }
+    }
     /// The menu bar goes dark behind them whenever they're out.
     var dimsBar = false {
         didSet { updateDim() }
@@ -856,6 +861,7 @@ final class WalkerOverlay {
         let notch = min(covered.lowerBound, gap.lowerBound - Walker.fade + reach.right + 6)
             ... max(covered.upperBound, gap.upperBound + Walker.fade - reach.left - 6)
         return [notch] + (walkers.calendar.map { [$0.minX...$0.maxX] } ?? []) + (clock.map { [$0] } ?? [])
+            + (keepClear.map { [$0] } ?? [])
     }
 
     /// Whether an Oyl at its job at `x` would be in the clear: on screen, its things and label

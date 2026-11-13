@@ -48,6 +48,9 @@ enum Feature: String, CaseIterable, Sendable {
     /// Apps asking for you marked along the bottom edge, rather than bouncing in the macOS Dock.
     case attentionMarks
 
+    /// The desktop you're on, named at the top left of the menu bar.
+    case spaceLabel
+
     case openAtLogin
 
     var key: String { "feature." + rawValue }

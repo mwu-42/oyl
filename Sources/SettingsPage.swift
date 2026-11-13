@@ -99,6 +99,7 @@ struct SettingsPage: View {
                                          isOn: state.showsCalendar) { state.showsCalendar.toggle() })
             }
             items += [
+                feature(.spaceLabel, "Desktop's name", "Top left of the bar: the desktop you're on. Click it to rename it"),
                 feature(.agentOyls, "Agents' \(oyl)s", "One for each agent at work"),
                 feature(.musicOyl, "Music \(oyl)", "Dancing (or reading) to what's playing"),
                 feature(.timerOyls, "Timers' \(oyl)s", "One for each timer and reminder"),

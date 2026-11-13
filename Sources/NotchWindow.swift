@@ -568,19 +568,25 @@ enum FullscreenSpace {
     private static let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
     private static let connection = dlsym(defaultHandle, "CGSMainConnectionID").map { unsafeBitCast($0, to: ConnectionID.self) }
     private static let copySpaces = dlsym(defaultHandle, "CGSCopyManagedDisplaySpaces").map { unsafeBitCast($0, to: CopySpaces.self) }
-    private static let fullscreenType = 4
+    static let fullscreenType = 4
 
     /// Under a millisecond after the first call.
     static func isShowing(on screen: NSScreen) -> Bool {
+        let current = display(for: screen)?["Current Space"] as? [String: Any]
+        return current?["type"] as? Int == fullscreenType
+    }
+
+    /// `screen`'s Spaces as the window server lists them: "Current Space", the one showing, and
+    /// "Spaces", all of them in order, each with its "type" (0 a desktop, 4 a fullscreen app's),
+    /// "ManagedSpaceID", "uuid" and (a fullscreen app's) "pid" and "fs_wid", its window.
+    static func display(for screen: NSScreen) -> [String: Any]? {
         guard let connection, let copySpaces,
-              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return false }
+              let displays = copySpaces(connection())?.takeRetainedValue() as? [[String: Any]] else { return nil }
         let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
         let uuid = number.flatMap { CGDisplayCreateUUIDFromDisplayID($0)?.takeRetainedValue() }
             .map { CFUUIDCreateString(nil, $0) as String }
         // With "Displays have separate Spaces" off, there's one entry for all of them.
-        let display = displays.first { $0["Display Identifier"] as? String == uuid } ?? (displays.count == 1 ? displays.first : nil)
-        let current = display?["Current Space"] as? [String: Any]
-        return current?["type"] as? Int == fullscreenType
+        return displays.first { $0["Display Identifier"] as? String == uuid } ?? (displays.count == 1 ? displays.first : nil)
     }
 }
 
@@ -600,6 +606,7 @@ final class NotchController {
     private let closedLyrics: ClosedLyrics
     private var dock: DockController?
     private var approvalCorner: ApprovalCorner?
+    private var spaceLabel: SpaceLabel?
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
@@ -646,6 +653,8 @@ final class NotchController {
         state.gestures = gestures
         dock = DockController(state: state)
         approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
+        spaceLabel = SpaceLabel(state: state)
+        spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
 
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
