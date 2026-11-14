@@ -201,7 +201,7 @@ struct ActivityPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             system
-            claude
+            ClaudeUsageRows(totals: usage.totals)
         }
         .padding(.horizontal, 24)
         .padding(.top, 6)
@@ -261,44 +261,7 @@ struct ActivityPage: View {
                     .notchFont(size: 10, weight: .medium, digits: true)
                     .foregroundStyle(.white.opacity(0.4))
             }
-            .frame(maxWidth: .infinity, maxHeight: Layout.activityHeight - 22, alignment: .topLeading)
-        }
-    }
-
-    /// Claude Code's tokens today, hour by hour, then the totals and where most of them went.
-    private var claude: some View {
-        metric("Claude") {
-            HourlyBars(values: usage.totals?.hourly ?? [], hour: usage.totals?.hour ?? -1)
-                .frame(width: 92, height: 16)
-            if let totals = usage.totals {
-                if totals.today == 0 && totals.lastFiveHours == 0 {
-                    Text("No Claude Code usage today")
-                        .notchFont(size: 11, weight: .medium)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .lineLimit(1)
-                } else {
-                    let line = "\(Self.tokens(totals.today)) today · \(Self.tokens(totals.lastFiveHours)) last 5 h"
-                        + " · \(Self.tokens(totals.outputToday)) out"
-                    // Without room for both, the project is left out.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
-                            value(line)
-                            Spacer(minLength: 0)
-                            if let project = totals.busiestProject {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "folder")
-                                        .notchSymbol(size: 8, weight: .semibold)
-                                    Text(project)
-                                        .notchFont(size: 10, weight: .medium)
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(.white.opacity(0.4))
-                            }
-                        }
-                        value(line)
-                    }
-                }
-            }
+            .frame(maxWidth: .infinity, maxHeight: Layout.activityHeight - 22 - 24, alignment: .topLeading)  // Claude's rows under it
         }
     }
 
@@ -388,6 +351,108 @@ private struct Sparkline: View {
 }
 
 /// A bar for each hour of the day, the hour it is now brighter. Hours without any are a faint tick.
+/// Claude Code's tokens today, hour by hour, then the totals and where most of them went; and
+/// under them what they'd have cost at Anthropic's API prices (see `ClaudePrice`), hour by hour,
+/// today and in the last five hours.
+struct ClaudeUsageRows: View {
+    let totals: TokenUsage.Totals?
+    @Environment(\.notchTheme) private var theme
+    private var tint: Color { theme.tint(ActivityPage.tint) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            tokens
+            if let totals, totals.today > 0 || totals.lastFiveHours > 0 { spent(totals) }
+        }
+    }
+
+    private var tokens: some View {
+        metric("Claude") {
+            HourlyBars(values: totals?.hourly ?? [], hour: totals?.hour ?? -1)
+                .frame(width: 92, height: 16)
+            if let totals {
+                if totals.today == 0 && totals.lastFiveHours == 0 {
+                    Text("No Claude Code usage today")
+                        .notchFont(size: 11, weight: .medium)
+                        .foregroundStyle(.white.opacity(0.45))
+                        .lineLimit(1)
+                } else {
+                    let line = "\(ActivityPage.tokens(totals.today)) today · \(ActivityPage.tokens(totals.lastFiveHours)) last 5 h"
+                        + " · \(ActivityPage.tokens(totals.outputToday)) out"
+                    // Without room for both, the project is left out.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            value(line)
+                            Spacer(minLength: 0)
+                            if let project = totals.busiestProject {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "folder")
+                                        .notchSymbol(size: 8, weight: .semibold)
+                                    Text(project)
+                                        .notchFont(size: 10, weight: .medium)
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(.white.opacity(0.4))
+                            }
+                        }
+                        value(line)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Spent, hour by hour (in cents, for the bars), then today's and the last five hours'.
+    private func spent(_ totals: TokenUsage.Totals) -> some View {
+        metric("Spent") {
+            HourlyBars(values: totals.hourlySpend.map { Int(($0 * 100).rounded()) }, hour: totals.hour)
+                .frame(width: 92, height: 16)
+            let line = "\(Self.dollars(totals.spentToday)) today · \(Self.dollars(totals.spentLastFiveHours)) last 5 h"
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    value(line + (totals.unpriced ? "+" : ""))
+                    Spacer(minLength: 0)
+                    Text("at API prices")
+                        .notchFont(size: 10, weight: .medium)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .lineLimit(1)
+                }
+                value(line)
+            }
+            .help(totals.unpriced ? "What these tokens would cost on Anthropic's API, and more: some came from a model whose price Oyl doesn't know"
+                  : "What these tokens would cost on Anthropic's API, cache reads and writes included (a subscription doesn't charge by the token)")
+        }
+    }
+
+    /// "$0.42", "$12.40", "$318", "$1.2k"; under a cent, "<$0.01".
+    static func dollars(_ amount: Double) -> String {
+        switch amount {
+        case ..<0.005: return amount > 0 ? "<$0.01" : "$0"
+        case ..<99.995: return String(format: "$%.2f", amount)
+        case ..<999.5: return String(format: "$%.0f", amount)
+        default: return String(format: "$%.1fk", amount / 1000)
+        }
+    }
+
+    private func metric<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .notchFont(size: 11, weight: .medium)
+                .foregroundStyle(tint.opacity(0.75))
+                .frame(width: 54, alignment: .leading)
+            content()
+        }
+        .frame(height: 16)
+    }
+
+    private func value(_ text: String) -> some View {
+        Text(text)
+            .notchFont(size: 11, weight: .medium, digits: true)
+            .foregroundStyle(.white.opacity(0.85))
+            .lineLimit(1)
+    }
+}
+
 private struct HourlyBars: View {
     @Environment(\.notchTheme) private var theme
     /// The page's pink as this look shows it.

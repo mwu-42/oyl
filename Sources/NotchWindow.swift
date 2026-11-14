@@ -7,7 +7,8 @@ enum Layout {
     static let artSize: CGFloat = 94
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
-    static let activityHeight: CGFloat = 148
+    /// (With a row under Claude's tokens for what they'd cost.)
+    static let activityHeight: CGFloat = 172
     static let mirrorSize = CGSize(width: 240, height: 180)  // the camera's 4:3, about the size it's taken at
     static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
     static let awakeHeight: CGFloat = 146
@@ -507,6 +508,7 @@ final class NotchState: ObservableObject {
 
     var windowSize: CGSize {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
+                          Layout.activityHeight,
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
                           Layout.settingsHeight(rows: Layout.settingsRowsFit),

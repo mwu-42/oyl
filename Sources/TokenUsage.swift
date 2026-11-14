@@ -1,8 +1,9 @@
 import Foundation
 
-/// How many tokens Claude Code has been using, added up from the transcripts it keeps in
-/// ~/.claude/projects. Read every 30 seconds while the Activity page is open (and not at all
-/// otherwise), and only what was written since the last look.
+/// How many tokens Claude Code has been using, and what they'd cost at Anthropic's API prices
+/// (see `ClaudePrice`), added up from the transcripts it keeps in ~/.claude/projects. Read every
+/// 30 seconds while the Activity page is open (and not at all otherwise), and only what was
+/// written since the last look.
 @MainActor
 final class TokenUsage: ObservableObject {
     struct Totals: Equatable {
@@ -14,6 +15,13 @@ final class TokenUsage: ObservableObject {
         var hourly = [Int](repeating: 0, count: 24)  // today, by hour of the day
         var hour = 0                                  // the hour it is now
         var busiestProject: String?                   // the most tokens today
+        /// What they'd have cost at API prices, in dollars (cache reads included): today, in the
+        /// last five hours, and today by hour of the day.
+        var spentToday = 0.0
+        var spentLastFiveHours = 0.0
+        var hourlySpend = [Double](repeating: 0, count: 24)
+        /// Some of today's came from a model with no price known, so isn't in what's spent.
+        var unpriced = false
     }
 
     static let shared = TokenUsage()
@@ -66,6 +74,8 @@ private final class TranscriptReader: @unchecked Sendable {
         let output: Int
         let cacheReads: Int
         let project: String
+        /// In dollars, at API prices; nil for a model with no price known.
+        let cost: Double?
     }
 
     /// How far into a file has been read, and which file that was, to notice it being replaced.
@@ -78,12 +88,26 @@ private final class TranscriptReader: @unchecked Sendable {
     private struct Line: Decodable {
         struct Message: Decodable {
             struct Usage: Decodable {
+                /// The cache writes by how long they're kept, which are priced differently.
+                struct CacheCreation: Decodable {
+                    var ephemeral5mInputTokens: Int?
+                    var ephemeral1hInputTokens: Int?
+                }
                 var inputTokens: Int?
                 var outputTokens: Int?
                 var cacheCreationInputTokens: Int?
                 var cacheReadInputTokens: Int?
+                var cacheCreation: CacheCreation?
+                /// "fast" for fast mode, which costs twice as much.
+                var speed: String?
+                /// Web searches, which cost by the search.
+                struct ServerToolUse: Decodable {
+                    var webSearchRequests: Int?
+                }
+                var serverToolUse: ServerToolUse?
             }
             var id: String?
+            var model: String?
             var usage: Usage?
         }
         var type: String?
@@ -135,12 +159,19 @@ private final class TranscriptReader: @unchecked Sendable {
         let window = now.addingTimeInterval(-Self.fiveHours)
         var projects: [String: Int] = [:]
         for entry in entries {
-            if entry.time >= window { totals.lastFiveHours += entry.tokens }
+            if entry.time >= window {
+                totals.lastFiveHours += entry.tokens
+                totals.spentLastFiveHours += entry.cost ?? 0
+            }
             guard entry.time >= today else { continue }
+            let hour = calendar.component(.hour, from: entry.time)
             totals.today += entry.tokens
             totals.outputToday += entry.output
             totals.cacheReadsToday += entry.cacheReads
-            totals.hourly[calendar.component(.hour, from: entry.time)] += entry.tokens
+            totals.hourly[hour] += entry.tokens
+            totals.spentToday += entry.cost ?? 0
+            totals.hourlySpend[hour] += entry.cost ?? 0
+            if entry.cost == nil { totals.unpriced = true }
             projects[entry.project, default: 0] += entry.tokens
         }
         // Ties go to the first name, so the pick doesn't flicker between refreshes.
@@ -239,9 +270,19 @@ private final class TranscriptReader: @unchecked Sendable {
               let stamp = line.timestamp, let time = dates.date(from: stamp) ?? wholeSecondDates.date(from: stamp),
               time >= cutoff else { return }
         let output = usage.outputTokens ?? 0
-        let tokens = (usage.inputTokens ?? 0) + output + (usage.cacheCreationInputTokens ?? 0)
+        let input = usage.inputTokens ?? 0
+        let writes = usage.cacheCreationInputTokens ?? 0
+        let tokens = input + output + writes
         let cacheReads = usage.cacheReadInputTokens ?? 0
         guard tokens + cacheReads > 0 else { return }
+        // The writes kept an hour cost more than those kept five minutes; any not broken down are
+        // taken for five minutes'.
+        let hour = min(usage.cacheCreation?.ephemeral1hInputTokens ?? 0, writes)
+        let searches = Double(usage.serverToolUse?.webSearchRequests ?? 0) * ClaudePrice.perSearch
+        let cost = message.model.flatMap(ClaudePrice.of(model:)).map {
+            $0.cost(input: input, output: output, fiveMinuteWrites: writes - hour, hourWrites: hour, reads: cacheReads,
+                    fast: usage.speed == "fast") + searches
+        }
         // A reply is written out again as it streams in; count it once.
         if let id = message.id {
             let key = id + " " + (line.requestId ?? "")
@@ -250,6 +291,83 @@ private final class TranscriptReader: @unchecked Sendable {
         }
         let folder = line.cwd.map { ($0 as NSString).lastPathComponent } ?? ""
         entries.append(Entry(time: time, tokens: tokens, output: output, cacheReads: cacheReads,
-                             project: folder.isEmpty || folder == "/" ? project : folder))
+                             project: folder.isEmpty || folder == "/" ? project : folder, cost: cost))
     }
+}
+
+/// What a Claude model's tokens cost at Anthropic's API prices, in dollars a million tokens, as
+/// its pricing page has them (November 2026). Cache writes are 1.25× the input price kept five
+/// minutes and 2× kept an hour; cache reads 0.1× (0.05× on Claude Opus 5.5 and Sonnet 5.5,
+/// 0.025× on Claude Fable and Mythos 5.1 and 5.2). Fast mode is twice the price, caching on top
+/// of that; Claude Haiku 5.5 costs five times as much for a prompt over 100,000 tokens. Web
+/// searches are $10 a thousand on top (fetching a page costs only its tokens). It's what
+/// the same use would cost on the API: a subscription doesn't charge by the token.
+struct ClaudePrice: Equatable, Sendable {
+    let input: Double
+    let output: Double
+    /// Cache reads, as a fraction of the input price.
+    var reads = 0.1
+    /// A web search: $10 a thousand, whatever the model.
+    static let perSearch = 0.01
+    /// A prompt longer than this costs `longScale` times as much, all of it.
+    var longPrompt: Int?
+    var longScale = 1.0
+
+    /// The price of the model `id` names, as a transcript has it ("claude-opus-5-5",
+    /// "claude-sonnet-4-5-20250929", "claude-3-5-haiku-20241022", Bedrock's and Vertex's forms
+    /// too). A version newer than any here is priced as the newest of its kind; nil for anything
+    /// else (Claude Code's "<synthetic>", which has no usage anyway).
+    static func of(model id: String) -> ClaudePrice? {
+        let name = id.lowercased() as NSString
+        let whole = NSRange(location: 0, length: name.length)
+        var family: String, major: Int, minor: Int?
+        if let match = current.firstMatch(in: name as String, range: whole) {
+            family = name.substring(with: match.range(at: 1))
+            major = Int(name.substring(with: match.range(at: 2))) ?? 0
+            minor = match.range(at: 3).location == NSNotFound ? nil : Int(name.substring(with: match.range(at: 3)))
+        } else if let match = older.firstMatch(in: name as String, range: whole) {
+            major = Int(name.substring(with: match.range(at: 1))) ?? 0
+            minor = match.range(at: 2).location == NSNotFound ? nil : Int(name.substring(with: match.range(at: 2)))
+            family = name.substring(with: match.range(at: 3))
+        } else {
+            return nil
+        }
+        let version = major * 100 + (minor ?? 0)
+        switch family {
+        case "fable", "mythos":
+            if version >= 502 || version < 500 { return ClaudePrice(input: 8, output: 40, reads: 0.025) }
+            if version == 501 { return ClaudePrice(input: 10, output: 50, reads: 0.025) }
+            return ClaudePrice(input: 10, output: 50)
+        case "opus":
+            if version >= 505 { return ClaudePrice(input: 4, output: 20, reads: 0.05) }
+            if version >= 405 { return ClaudePrice(input: 5, output: 25) }
+            return ClaudePrice(input: 15, output: 75)
+        case "sonnet":
+            if version >= 505 { return ClaudePrice(input: 2, output: 10, reads: 0.05) }
+            if version >= 500 { return ClaudePrice(input: 2, output: 10) }
+            return ClaudePrice(input: 3, output: 15)
+        case "haiku":
+            if version >= 505 { return ClaudePrice(input: 0.1, output: 0.5, longPrompt: 100_000, longScale: 5) }
+            if version >= 405 { return ClaudePrice(input: 1, output: 5) }
+            if version >= 305 { return ClaudePrice(input: 0.8, output: 4) }
+            return ClaudePrice(input: 0.25, output: 1.25)
+        default:
+            return nil
+        }
+    }
+
+    /// One reply's cost, in dollars.
+    func cost(input: Int, output: Int, fiveMinuteWrites: Int, hourWrites: Int, reads cacheReads: Int, fast: Bool = false) -> Double {
+        var scale = fast ? 2.0 : 1.0
+        if let longPrompt, input + fiveMinuteWrites + hourWrites + cacheReads > longPrompt { scale *= longScale }
+        let prompt = Double(input) + Double(fiveMinuteWrites) * 1.25 + Double(hourWrites) * 2 + Double(cacheReads) * reads
+        return scale * (prompt * self.input + Double(output) * self.output) / 1_000_000
+    }
+
+    /// "claude-opus-5-5", "claude-haiku-4-5-20251001", "anthropic.claude-sonnet-4-6",
+    /// "claude-opus-4-1@20250805": a digit, then one or two (a date's eight aren't a version, so
+    /// "claude-3-5-sonnet-20241022" is left to the older form).
+    private static let current = try! NSRegularExpression(pattern: #"(opus|sonnet|haiku|fable|mythos)-(\d)(?:-(\d{1,2}))?(?!\d)"#)
+    /// The Claude 3 family's: "claude-3-7-sonnet-20250219", "claude-3-opus-20240229".
+    private static let older = try! NSRegularExpression(pattern: #"claude-(\d)(?:-(\d))?-(opus|sonnet|haiku)"#)
 }
