@@ -88,7 +88,14 @@ enum Midnight {
     }
     /// Shrinking to a shorter page: quicker, folding up.
     static let fold = Animation.spring(response: 0.6, dampingFraction: 0.92)
+    /// The Dock's shelf card going back into the bar: quick.
     static let wilt = Animation.easeIn(duration: 0.35)
+    /// Closing: the opening run back, nearly as slowly, the page going first and then the band
+    /// folding back up into the notch, settling into it as it settled open. On the bloom's own
+    /// curve (its critically damped spring's, to within 2%), but of a fixed length, so what waits
+    /// for the band to be gone knows how long.
+    static let closing = Animation.timingCurve(0.2, 0.1, 0.25, 1, duration: closingDuration)
+    static let closingDuration = 0.9
 
     /// Where a point in the camera's picture (0...1 across and down, as it's shown: mirrored) lands
     /// in a view of `size` the picture fills, cropped to fit (the way both the camera view and the

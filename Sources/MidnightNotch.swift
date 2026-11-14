@@ -21,11 +21,11 @@ struct MidnightNotch: View {
 
     @StateObject private var opening = BloomOpening()
 
-    /// For NotchView to take it away with: a quick wilt, the bloom folding back up into the notch
-    /// as it fades. (It blooms by itself once it's there, so coming in needs nothing.)
+    /// For NotchView to take it away with: the bloom run back (see `Wilting`). (It blooms by itself
+    /// once it's there, so coming in needs nothing.)
     static let transition = AnyTransition.asymmetric(
         insertion: .identity,
-        removal: .modifier(active: Wilting(amount: 1), identity: Wilting(amount: 0)).animation(Midnight.wilt))
+        removal: .modifier(active: Wilting(amount: 1), identity: Wilting(amount: 0)).animation(Midnight.closing))
 
     /// How many bands are up. A new one can open while the last is still wilting, and the camera
     /// (for the gestures, and the hands' constellation) stays on until both have gone.
@@ -110,7 +110,8 @@ struct MidnightBloom: View {
         let reach = opening.reach
         let layout = BloomLayout(state: state, size: size, reach: reach)
         let open = opening.bloom * (1 - wilt)
-        let shown = opening.reveal * (1 - min(wilt * 1.6, 1))
+        // The page goes first, as it came last: gone before the band's folded back past it.
+        let shown = opening.reveal * (1 - Wilting.smooth(wilt / 0.5))
         let notch = state.metrics.size
 
         ZStack(alignment: .topLeading) {
@@ -242,8 +243,11 @@ extension EnvironmentValues {
     }
 }
 
-/// Going, the bloom runs backwards, quickly: the silhouette folds back up toward the notch, the
-/// frame undraws, and the lot fades.
+/// Going, the bloom runs backwards, on its own curve (see `Midnight.closing`): the page blurs
+/// and lifts away as it came in, the foot swells a touch and draws back, the petals part and fold
+/// back up into the notch, the stars going out inward as they pass and the planisphere's hours
+/// unwinding. It fades only at the last, the bloom nearly back in the notch, so it's seen to go
+/// as it came, not faded out.
 struct Wilting: ViewModifier, Animatable {
     var amount: Double
 
@@ -255,7 +259,13 @@ struct Wilting: ViewModifier, Animatable {
     func body(content: Content) -> some View {
         content
             .environment(\.midnightWilt, amount)
-            .opacity(1 - amount * amount)
+            .opacity(1 - Self.smooth((amount - 0.85) / 0.15))
+    }
+
+    /// Smoothstep, 0 to 1 over 0...1.
+    static func smooth(_ x: Double) -> Double {
+        let t = min(max(x, 0), 1)
+        return t * t * (3 - 2 * t)
     }
 }
 

@@ -983,9 +983,9 @@ final class NotchController {
         pointerInside = false
         gestures.hovering = false
         close()
-        // Midnight's band wilts the slowest.
+        // Midnight's band takes the longest to go.
         if wasOpen {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + max(0.8, Midnight.closingDuration + 0.1)) { [weak self] in
                 MainActor.assumeIsolated { self?.rest() }
             }
         } else {
@@ -1105,7 +1105,8 @@ final class NotchController {
     }
 
     /// The panel, as big as the tallest page could be now, which grows with the timers: grown at
-    /// once, and shrunk once the page has, so it's never cut off mid-animation.
+    /// once, and shrunk once the page has (or Midnight's band has folded away), so it's never cut
+    /// off mid-animation.
     private func fitPanel(now: Bool = false) {
         guard let screen else { return }
         let size = state.windowSize
@@ -1125,7 +1126,7 @@ final class NotchController {
             }
         }
         shrinking = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + max(0.8, Midnight.closingDuration + 0.1), execute: work)
     }
 
     /// Whether a fullscreen app is in front: then the notch's tabs move down a row, and the
@@ -1172,8 +1173,8 @@ final class NotchController {
         gestures.hovering = false
         close()
         panel.ignoresMouseEvents = true
-        // Once it's closed, so it's not in the picture.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+        // Once it's closed, so it's not in the picture (Midnight's band, once it's folded away).
+        DispatchQueue.main.asyncAfter(deadline: .now() + (state.theme == .midnight ? Midnight.closingDuration : 0.35)) { [weak self] in
             MainActor.assumeIsolated {
                 IdeaPictures.take { shot in
                     guard let self else { return }
