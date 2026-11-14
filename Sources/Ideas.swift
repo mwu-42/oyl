@@ -395,7 +395,8 @@ struct IdeasPage: View {
 
     var body: some View {
         IdeasLayout(tod: tod, draft: state.ideaDraft, pictures: state.ideaPictures, editing: state.isEditing,
-                    listHeight: state.ideaListHeight, resign: state.resignKeyboard, takeShot: state.takeIdeaShot)
+                    listHeight: state.ideaListHeight, resign: state.resignKeyboard, takeShot: state.takeIdeaShot,
+                    projects: Feature.projectsPage.isOn ? state.projects : nil)
     }
 }
 
@@ -410,6 +411,9 @@ struct IdeasLayout: View {
     let listHeight: CGFloat
     let resign: () -> Void
     var takeShot: () -> Void = {}
+    /// Your projects, if they're on: an idea tagged with one's #name goes into it, and any idea
+    /// can be made a project of its own.
+    var projects: ProjectStore?
     @StateObject private var focus = LocalState(0)
     @Environment(\.notchTheme) private var theme
 
@@ -508,7 +512,7 @@ struct IdeasLayout: View {
                 ForEach(Array(rows.filter { $0.kind == kind }.enumerated()), id: \.element.id) { offset, row in
                     let picture = pictures.url(for: row.id).flatMap { url in pictures.thumbnail(for: row.id).map { (url, $0) } }
                     IdeaRow(row: row, picture: picture, done: { tod.toggle(row.id) }, putOff: { tod.putOff(row.id, by: $0) },
-                            keep: { tod.keep(row.id) })
+                            keep: { tod.keep(row.id) }, makeProject: projects.map { projects in { makeProject(row, in: projects) } })
                         .modifier(IdeaDrift(order: index * 3 + offset + 1, on: theme == .midnight))
                 }
             }
@@ -518,6 +522,13 @@ struct IdeasLayout: View {
     private func submit() {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        // "#oyl …", with Oyl one of your projects: into it, not tod's brain dump.
+        if let projects, let tag = ProjectQuick.parse(text, idea: true).tag, projects.project(for: tag) != nil,
+           projects.ideaForProject(text, shot: draft.handOver()) != nil {
+            Haptics.perform(.alignment)
+            draft.text = ""
+            return
+        }
         if let idea = tod.addIdea(text) {
             if let shot = draft.handOver() { pictures.keep(shot, for: idea.id) }
             Haptics.perform(.alignment)
@@ -530,6 +541,16 @@ struct IdeasLayout: View {
         draft.text = ""
         draft.drop()
         resign()
+    }
+
+    /// The idea a project of its own (its screenshot with it), and checked off in tod's brain dump.
+    private func makeProject(_ row: IdeaBoard.Row, in projects: ProjectStore) {
+        let project = projects.newProject(named: row.title)
+        if let url = pictures.url(for: row.id), let kept = projects.keep(url, for: project.id) {
+            projects.edit(project.id) { $0.shot = kept }
+        }
+        Haptics.perform(.alignment)
+        tod.toggle(row.id)
     }
 }
 
@@ -572,6 +593,7 @@ private struct IdeaRow: View {
     let done: () -> Void
     let putOff: (Int) -> Void
     let keep: () -> Void
+    var makeProject: (() -> Void)?
     @StateObject private var hover = LocalState(false)
     @StateObject private var checked = LocalState(false)
     @Environment(\.notchTheme) private var theme
@@ -609,11 +631,14 @@ private struct IdeaRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 6)
-            if hover.value, row.kind != .due {
+            if hover.value, row.kind != .due || makeProject != nil {
                 HStack(spacing: 10) {
+                    if let makeProject { action("Project", makeProject) }
                     if row.stale { action("Keep", keep) }
-                    action(row.kind == .someday && !row.stale ? "In a week" : "+1 wk") { putOff(7) }
-                    action(row.kind == .someday && !row.stale ? "A month" : "+1 mo") { putOff(28) }
+                    if row.kind != .due {
+                        action(row.kind == .someday && !row.stale ? "In a week" : "+1 wk") { putOff(7) }
+                        action(row.kind == .someday && !row.stale ? "A month" : "+1 mo") { putOff(28) }
+                    }
                 }
                 .transition(.opacity)
             } else if !row.label.isEmpty {

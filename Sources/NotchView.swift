@@ -50,6 +50,9 @@ struct NotchView: View {
                 state.page = .settings
                 state.isRevealing = true
             }
+            if Feature.projectsPage.isOn {
+                Button("Projects…") { state.openProjects(nil) }
+            }
             Toggle("Midnight Oyl", isOn: Binding { state.theme == .midnight } set: { state.theme = $0 ? .midnight : .standard })
             Toggle("Oyl's Dock", isOn: $state.showsDock)
             Divider()
@@ -277,6 +280,9 @@ struct ExpandedNotch: View {
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
+                } else if let task = state.projects.ringing {
+                    ProjectAlert(task: task, projects: state.projects)
+                        .transition(NotchView.swap)
                 } else {
                     switch state.page {
                     case .music:
@@ -287,6 +293,9 @@ struct ExpandedNotch: View {
                             .transition(NotchView.swap)
                     case .ideas:
                         IdeasPage(tod: state.tod, state: state)
+                            .transition(NotchView.swap)
+                    case .projects:
+                        ProjectsPage(projects: state.projects, state: state)
                             .transition(NotchView.swap)
                     case .log:
                         LogPage(log: state.workLog, state: state, tod: state.tod)
@@ -338,6 +347,7 @@ struct PageTabs: View {
             if tabs.contains(.music) { tab(.music, symbol: "music.note") }
             if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
             if tabs.contains(.ideas) { tab(.ideas, symbol: "lightbulb") }
+            if tabs.contains(.projects) { tab(.projects, symbol: "list.bullet.indent") }
             if tabs.contains(.log) { tab(.log, symbol: "book.closed") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }

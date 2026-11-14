@@ -71,7 +71,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, ideas, log, awake, agents, activity, mirror
+    case music, timers, ideas, projects, log, awake, agents, activity, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -238,6 +238,13 @@ final class NotchState: ObservableObject {
     /// ideas are about.
     let ideaDraft = IdeaDraft()
     let ideaPictures = IdeaPictures()
+    /// Your projects, as an outline (see `ProjectStore`), what's being put into one from the
+    /// projects page, how to take a screenshot for it, and how to open the outline's window (at a
+    /// line, if it's given). Set by the controller.
+    let projects = ProjectStore()
+    let projectDraft = IdeaDraft()
+    var takeProjectShot: () -> Void = {}
+    var openProjects: (String?) -> Void = { _ in }
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
@@ -245,6 +252,7 @@ final class NotchState: ObservableObject {
     /// Your check-ins, filed by #tag (see `WorkLog`).
     let workLog = WorkLog()
     private var todForwarding: AnyCancellable?
+    private var projectsForwarding: AnyCancellable?
     private var logForwarding: AnyCancellable?
     private var forwarding: AnyCancellable?
     private var phoneForwarding: AnyCancellable?
@@ -281,6 +289,8 @@ final class NotchState: ObservableObject {
         phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         // The ideas page's height goes by its ideas, and the log's by what's been filed today.
         todForwarding = tod.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        // The projects page's height goes by what's pressing; a reminder opens the notch.
+        projectsForwarding = projects.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         logForwarding = workLog.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         workLog.look = theme
     }
@@ -293,10 +303,16 @@ final class NotchState: ObservableObject {
         min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
+    /// The projects page's the same: what's pressing and what's unsorted, as far as they show.
+    var projectListHeight: CGFloat {
+        min(ProjectBoard.height(of: ProjectBoard.rows(projects)),
+            CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
+    }
+
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .ideas, .log, .awake, .activity, .mirror, .settings].filter(shows)
+        [.agents, .music, .timers, .ideas, .projects, .log, .awake, .activity, .mirror, .settings].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
@@ -306,6 +322,7 @@ final class NotchState: ObservableObject {
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
         case .ideas: return Feature.ideasPage.isOn
+        case .projects: return Feature.projectsPage.isOn
         case .log: return Feature.logPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
@@ -313,8 +330,9 @@ final class NotchState: ObservableObject {
         }
     }
 
-    /// A timer's gone off, or it's two in the morning: the notch pops open to say so.
-    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding }
+    /// A timer's gone off, a task's time has come, or it's two in the morning: the notch pops open
+    /// to say so.
+    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding || projects.ringing != nil }
 
     var mode: NotchMode {
         // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
@@ -414,6 +432,7 @@ final class NotchState: ObservableObject {
             return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil && theme != .midnight ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
         case .ideas: return Layout.ideasHeight(list: ideaListHeight)
+        case .projects: return Layout.ideasHeight(list: projectListHeight)
         case .log: return Layout.logHeight(today: workLog.entries().count, suggestions: !workLog.fromTod(tod).isEmpty)
         case .awake: return Layout.awakeHeight
         case .agents:
@@ -608,6 +627,8 @@ final class NotchController {
     private var approvalCorner: ApprovalCorner?
     private var spaceLabel: SpaceLabel?
     private var pictureInPicture: PictureInPicture?
+    /// The outline of every project, once it's been opened.
+    private var projectsWindow: ProjectsWindowController?
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
@@ -650,7 +671,9 @@ final class NotchController {
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
-        state.takeIdeaShot = { [weak self] in self?.takeIdeaShot() }
+        state.takeIdeaShot = { [weak self] in self?.takeShot(for: .ideas) }
+        state.takeProjectShot = { [weak self] in self?.takeShot(for: .projects) }
+        state.openProjects = { [weak self] id in self?.openProjects(at: id) }
         state.gestures = gestures
         dock = DockController(state: state)
         approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
@@ -810,7 +833,10 @@ final class NotchController {
         state.$theme
             .removeDuplicates()
             .sink { [weak self] theme in
-                MainActor.assumeIsolated { self?.walkers.theme = theme }
+                MainActor.assumeIsolated {
+                    self?.walkers.theme = theme
+                    self?.projectsWindow?.theme = theme
+                }
             }
             .store(in: &cancellables)
         // Midnight Oyl's shader takes a moment to compile, so it's done ahead of the first bloom.
@@ -993,6 +1019,16 @@ final class NotchController {
         }
     }
 
+    /// The outline of every project, in its own window, up where you are (at the line `id`, if
+    /// it's given), in the look Oyl's in.
+    private func openProjects(at id: String?) {
+        let window = projectsWindow ?? ProjectsWindowController(store: state.projects, workLog: state.workLog)
+        projectsWindow = window
+        window.theme = state.theme
+        state.projects.weekStart = state.tod.weekStart
+        window.show(id)
+    }
+
     /// The closed notch pops out, as under the pointer, and back in; then `done`.
     private func blink(then done: @escaping @MainActor () -> Void = {}) {
         state.isPopped = true
@@ -1165,8 +1201,9 @@ final class NotchController {
     /// as ⇧⌘4 has you, then opens on the page again, the picture at the head of the field, which
     /// takes the keyboard for what the idea is. Called off with Escape, it's back to the field as
     /// it was.
-    private func takeIdeaShot() {
+    private func takeShot(for page: NotchPage) {
         guard !state.isTakingShot else { return }
+        let draft = page == .projects ? state.projectDraft : state.ideaDraft
         state.isTakingShot = true
         hoverWork?.cancel()
         pointerInside = false
@@ -1179,9 +1216,9 @@ final class NotchController {
                 IdeaPictures.take { shot in
                     guard let self else { return }
                     self.state.isTakingShot = false
-                    if let shot { self.state.ideaDraft.attach(shot) }
-                    self.state.page = .ideas
-                    self.state.ideaDraft.wantsKeyboard = true
+                    if let shot { draft.attach(shot) }
+                    self.state.page = page
+                    draft.wantsKeyboard = true
                     self.state.isRevealing = true
                     self.updatePassThrough(at: NSEvent.mouseLocation)
                     // Open while it's typed in; otherwise, as a revealed page is, for a moment.

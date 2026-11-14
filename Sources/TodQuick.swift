@@ -63,10 +63,10 @@ struct TodQuick: Equatable {
 
     /// "#" and then letters, digits, "-" or "_", with at least one letter or digit, and not inside
     /// a word or a link: "c#", "page#top" and "site/#/x" aren't tags.
-    private static let tagPattern = pattern(#"(?<![\p{L}\p{M}\p{N}_#/&])#([\p{L}\p{M}\p{N}_\-]*[\p{L}\p{N}][\p{L}\p{M}\p{N}_\-]*)"#)
+    static let tagPattern = pattern(#"(?<![\p{L}\p{M}\p{N}_#/&])#([\p{L}\p{M}\p{N}_\-]*[\p{L}\p{N}][\p{L}\p{M}\p{N}_\-]*)"#)
 
     /// A name's words, lowercased with accents dropped, and emoji and punctuation left out.
-    private static func words(_ name: String) -> [String] {
+    static func words(_ name: String) -> [String] {
         name.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: nil)
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
@@ -77,7 +77,7 @@ struct TodQuick: Equatable {
     /// tod's `parseQuick`, step for step, quirks and all (months roll over like JavaScript's, so
     /// "in 1 month" from Jan 31 is early March, and "the 5th" late in December finds nothing),
     /// since meaning what tod means is the point.
-    private static func read(_ input: String, now: Date, weekStart: Int) -> (title: String, due: String?, time: String?) {
+    static func read(_ input: String, now: Date, weekStart: Int) -> (title: String, due: String?, time: String?) {
         var s = replacing(spaceRuns, in: input, with: " ")
         var due: String?
         var time: String?

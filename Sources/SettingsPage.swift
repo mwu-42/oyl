@@ -72,6 +72,7 @@ struct SettingsPage: View {
                 feature(.songTitleOpensPlayer, "Song name opens player", "Click the song's name for Spotify or Music"),
                 feature(.timersPage, "Timers page", "Timers and reminders"),
                 feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines or rough aims, in tod's brain dump"),
+                feature(.projectsPage, "Projects page", "Areas, projects and their tasks, ideas and screenshots, as an outline in its own window; what's pressing, with reminders"),
                 feature(.logPage, "Work log page", "What you got done, a #tag for each project, filed into a log with a tab each"),
                 feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
                 feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
