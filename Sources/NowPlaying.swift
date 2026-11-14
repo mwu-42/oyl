@@ -297,7 +297,9 @@ final class NowPlaying: ObservableObject {
     private var artworkTask: Task<Void, Never>?
     private var artworkCache: [String: NSImage] = [:]
     private var lyricsTask: Task<Void, Never>?
-    private var lyricsCache: [String: Lyrics?] = [:]  // nil: looked up, and none
+    /// Each song looked up, and when: none found is asked after again an hour on (lyrics are
+    /// added to LRCLIB all the time, a new song's soon after it's out); no answer, next it plays.
+    private var lyricsCache: [String: (lyrics: Lyrics?, at: Date)] = [:]
     private var creditTask: Task<Void, Never>?
     private var creditCache: [String: String] = [:]
 
@@ -569,16 +571,23 @@ final class NowPlaying: ObservableObject {
         guard lyrics?.trackID != track.id else { return }
         lyricsTask?.cancel()
         lyrics = nil
-        if let cached = lyricsCache[track.id] {
-            lyrics = cached
+        if let cached = lyricsCache[track.id], cached.lyrics != nil || Date().timeIntervalSince(cached.at) < 3600 {
+            lyrics = cached.lyrics
             return
         }
         lyricsTask = Task {
-            let found = await Lyrics.fetch(track)
+            let lookup = await Lyrics.fetch(track)
             guard !Task.isCancelled, self.track?.id == track.id else { return }
             if lyricsCache.count > 200 { lyricsCache.removeAll() }
-            lyricsCache[track.id] = .some(found)
-            lyrics = found
+            switch lookup {
+            case .found(let found):
+                lyricsCache[track.id] = (found, Date())
+                lyrics = found
+            case .none:
+                lyricsCache[track.id] = (nil, Date())
+            case .failed:
+                break
+            }
         }
     }
 

@@ -10,42 +10,87 @@ struct Lyrics: Equatable, Sendable {
     let trackID: String
     let lines: [Line]
 
-    /// From LRCLIB, a free, open database of synced lyrics. It's sent the song's title, artist,
-    /// album and length; nil when it doesn't have the song (or it has only unsynced lyrics).
-    static func fetch(_ track: Track) async -> Lyrics? {
+    /// What looking a song up came to: its lyrics, none (LRCLIB doesn't have them, synced, yet),
+    /// or no answer at all (offline, or LRCLIB down), which isn't taken for none.
+    enum Lookup: Equatable, Sendable {
+        case found(Lyrics)
+        case none
+        case failed
+    }
+
+    /// From LRCLIB, a free, open database of synced lyrics people add to (so a song just out
+    /// often isn't in it yet). It's sent the song's title, artist, album and length; then, without
+    /// an exact match (album names differ between services), it's searched by title and artist;
+    /// then by the title without what services add to it ("(feat. …)", " - Remastered 2011").
+    static func fetch(_ track: Track) async -> Lookup {
         let fields = [("track_name", track.title), ("artist_name", track.artist), ("album_name", track.album),
                       ("duration", String(Int(track.duration.rounded())))]
-        if let lines = await lines(from: "https://lrclib.net/api/get", fields) {
-            return Lyrics(trackID: track.id, lines: lines)
+        var answered = false
+        switch await json(from: "https://lrclib.net/api/get", fields) {
+        case .some(let found):
+            answered = true
+            if let synced = (found as? [String: Any])?["syncedLyrics"] as? String, !parse(synced).isEmpty {
+                return .found(Lyrics(trackID: track.id, lines: parse(synced)))
+            }
+        case .none(let missing):
+            answered = answered || missing
         }
-        // Without an exact match (album names differ between services), search by title and
-        // artist and take the first synced result of about the same length.
-        guard let results = await json(from: "https://lrclib.net/api/search", Array(fields.prefix(2))) as? [[String: Any]]
-        else { return nil }
+        for title in Set([track.title, plainTitle(track.title)]).sorted(by: { $0.count > $1.count }) {
+            switch await json(from: "https://lrclib.net/api/search", [("track_name", title), ("artist_name", track.artist)]) {
+            case .some(let found):
+                answered = true
+                if let lines = closest(found as? [[String: Any]] ?? [], to: track.duration) {
+                    return .found(Lyrics(trackID: track.id, lines: lines))
+                }
+            case .none(let missing):
+                answered = answered || missing
+            }
+        }
+        return answered ? .none : .failed
+    }
+
+    /// The first synced result of about the same length (within 3 seconds).
+    private static func closest(_ results: [[String: Any]], to duration: Double) -> [Line]? {
         for result in results {
             guard let synced = result["syncedLyrics"] as? String,
-                  abs((result["duration"] as? Double ?? 0) - track.duration) < 3 else { continue }
+                  abs((result["duration"] as? Double ?? 0) - duration) < 3 else { continue }
             let lines = parse(synced)
-            if !lines.isEmpty { return Lyrics(trackID: track.id, lines: lines) }
+            if !lines.isEmpty { return lines }
         }
         return nil
     }
 
-    private static func lines(from url: String, _ fields: [(String, String)]) async -> [Line]? {
-        guard let synced = (await json(from: url, fields) as? [String: Any])?["syncedLyrics"] as? String else { return nil }
-        let lines = parse(synced)
-        return lines.isEmpty ? nil : lines
+    /// A title without what services add to it: a featured artist ("(feat. X)", "[with X]"),
+    /// or a version ("- Remastered 2011", "(Radio Edit)", "- From the Motion Picture …").
+    static func plainTitle(_ title: String) -> String {
+        let ns = title as NSString
+        var plain = extras.stringByReplacingMatches(in: title, range: NSRange(location: 0, length: ns.length), withTemplate: "")
+        if let dash = plain.range(of: " - ") { plain = String(plain[..<dash.lowerBound]) }
+        plain = plain.trimmingCharacters(in: .whitespaces)
+        return plain.isEmpty ? title : plain
     }
 
-    private static func json(from url: String, _ fields: [(String, String)]) async -> Any? {
-        guard var components = URLComponents(string: url) else { return nil }
+    private static let extras = try! NSRegularExpression(
+        pattern: #"\s*[\(\[](?:feat\.?|ft\.?|featuring|with|prod\.?|from|remaster(?:ed)?|\d{4} remaster(?:ed)?|radio edit|edit|single version|album version|explicit|clean|live|acoustic|mono|stereo|bonus track|sped up|slowed)\b[^\)\]]*[\)\]]"#,
+        options: [.caseInsensitive])
+
+    /// What LRCLIB said (`.some`), or nothing: `.none(true)` when it said it hasn't the song
+    /// (404), `.none(false)` when it couldn't be asked.
+    private enum Answer {
+        case some(Any)
+        case none(Bool)
+    }
+
+    private static func json(from url: String, _ fields: [(String, String)]) async -> Answer {
+        guard var components = URLComponents(string: url) else { return .none(false) }
         components.queryItems = fields.map { URLQueryItem(name: $0.0, value: $0.1) }
-        guard let address = components.url else { return nil }
-        var request = URLRequest(url: address, timeoutInterval: 8)
+        guard let address = components.url else { return .none(false) }
+        var request = URLRequest(url: address, timeoutInterval: 10)
         request.setValue("Oyl (a macOS notch app)", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return try? JSONSerialization.jsonObject(with: data)
+              let status = (response as? HTTPURLResponse)?.statusCode else { return .none(false) }
+        guard status == 200, let object = try? JSONSerialization.jsonObject(with: data) else { return .none(status == 404) }
+        return .some(object)
     }
 
     private static let stamp = try! NSRegularExpression(pattern: #"\[(\d+):(\d+(?:\.\d+)?)\]"#)
