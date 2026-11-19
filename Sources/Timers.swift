@@ -49,7 +49,8 @@ struct ExpiredTimer: Identifiable, Codable, Equatable {
 }
 
 /// Reminder timers. They survive relaunches, and one that ended while Oyl wasn't running rings
-/// as soon as it starts again.
+/// as soon as it starts again. They go off by the clock on the wall (see `WallClockAlarm`), so
+/// one that spans a night still rings on time.
 @MainActor
 final class TimerStore: ObservableObject {
     @Published private(set) var timers: [ReminderTimer] = []
@@ -60,23 +61,34 @@ final class TimerStore: ObservableObject {
 
     /// The one timer held on the closed notch, if one's been picked (remembered across launches;
     /// let go of when it's gone).
-    @Published private(set) var focused: UUID? = UserDefaults.standard.string(forKey: "timers.focused").flatMap(UUID.init)
+    @Published private(set) var focused: UUID?
 
+    private let defaults: UserDefaults
+    private let chime: () -> Void
+    private let tap: () -> Void
     private var waiting: [ReminderTimer] = []  // finished timers queued behind `ringing`
-    private var completion: Timer?
-    private var chime: Timer?
+    private lazy var alarm = WallClockAlarm { [weak self] in self?.reschedule() }
+    private var chiming: Timer?
     private var chimePlays = 0
     private static let storageKey = "timers"
     private static let historyKey = "timers.history"
 
-    init() {
-        if let data = UserDefaults.standard.data(forKey: Self.storageKey),
+    /// `chime`: the sound a ringing timer makes, every couple of seconds; `tap`, the trackpad's
+    /// with the first. (Other ones, and other defaults, for testing quietly.)
+    init(defaults: UserDefaults = .standard,
+         chime: @escaping () -> Void = { NSSound(named: NSSound.Name("Glass"))?.play() },
+         tap: @escaping () -> Void = { Haptics.perform(.levelChange, performanceTime: .now) }) {
+        self.defaults = defaults
+        self.chime = chime
+        self.tap = tap
+        focused = defaults.string(forKey: "timers.focused").flatMap(UUID.init)
+        if let data = defaults.data(forKey: Self.storageKey),
            let saved = try? JSONDecoder().decode([ReminderTimer].self, from: data) {
             // Reminders with no time on them are no more: any kept from before go.
             timers = saved.filter { $0.duration > 0 }
-            if timers.count < saved.count { UserDefaults.standard.set(try? JSONEncoder().encode(timers), forKey: Self.storageKey) }
+            if timers.count < saved.count { defaults.set(try? JSONEncoder().encode(timers), forKey: Self.storageKey) }
         }
-        if let data = UserDefaults.standard.data(forKey: Self.historyKey),
+        if let data = defaults.data(forKey: Self.historyKey),
            let saved = try? JSONDecoder().decode([ExpiredTimer].self, from: data) {
             history = Self.recent(saved)
         }
@@ -94,7 +106,7 @@ final class TimerStore: ObservableObject {
     /// Holds `id` on the notch (letting go of any other), or with nil, none.
     private func hold(_ id: UUID?) {
         focused = id
-        UserDefaults.standard.set(focused?.uuidString, forKey: "timers.focused")
+        defaults.set(focused?.uuidString, forKey: "timers.focused")
     }
 
     /// The timer the open notch's strip shows: the one held on the notch, else the next one to
@@ -192,17 +204,16 @@ final class TimerStore: ObservableObject {
 
     private func changed() {
         let data = try? JSONEncoder().encode(timers)
-        UserDefaults.standard.set(data, forKey: Self.storageKey)
+        defaults.set(data, forKey: Self.storageKey)
         if let focused, !timers.contains(where: { $0.id == focused }) {
             self.focused = nil
-            UserDefaults.standard.removeObject(forKey: "timers.focused")
+            defaults.removeObject(forKey: "timers.focused")
         }
         reschedule()
     }
 
+    /// Rings any that have finished, and sets the alarm for the next to finish.
     private func reschedule() {
-        completion?.invalidate()
-        completion = nil
         let now = Date()
         let finished = timers.filter { ($0.endDate ?? .distantFuture) <= now }
         if !finished.isEmpty {
@@ -212,12 +223,7 @@ final class TimerStore: ObservableObject {
             ring(finished)
             return
         }
-        guard let end = timers.compactMap(\.endDate).min() else { return }
-        let timer = Timer(fire: end, interval: 0, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.reschedule() }
-        }
-        RunLoop.main.add(timer, forMode: .common)
-        completion = timer
+        alarm.set(timers.compactMap(\.endDate).min())
     }
 
     /// Into the history, when each went off (a while ago, for one that ended while Oyl wasn't
@@ -225,7 +231,7 @@ final class TimerStore: ObservableObject {
     private func remember(_ finished: [ReminderTimer], at now: Date) {
         let expired = finished.map { ExpiredTimer(id: $0.id, label: $0.label, duration: $0.duration, ended: $0.endDate ?? now) }
         history = Self.recent(expired.sorted { $0.ended > $1.ended } + history)
-        UserDefaults.standard.set(try? JSONEncoder().encode(history), forKey: Self.historyKey)
+        defaults.set(try? JSONEncoder().encode(history), forKey: Self.historyKey)
     }
 
     private static func recent(_ history: [ExpiredTimer]) -> [ExpiredTimer] {
@@ -244,22 +250,104 @@ final class TimerStore: ObservableObject {
         stopChime()
         chimePlays = 0
         playChime()
-        Haptics.perform(.levelChange, performanceTime: .now)
-        chime = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        tap()
+        chiming = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.playChime() }
         }
     }
 
     private func playChime() {
         chimePlays += 1
-        NSSound(named: NSSound.Name("Glass"))?.play()
+        chime()
         // Repeat a few times like an iOS timer, then go quiet; the notch keeps showing it.
         if chimePlays >= 6 { stopChime() }
     }
 
     private func stopChime() {
-        chime?.invalidate()
-        chime = nil
+        chiming?.invalidate()
+        chiming = nil
+    }
+}
+
+/// Goes off at a time on the clock on the wall.
+///
+/// A `Timer` (like `DispatchTime`) counts only the time the Mac's been awake, so one set for 14
+/// hours goes off late by however long the Mac slept in between. That includes the seconds at a
+/// time it naps overnight, hundreds of times a night with the lid shut or the screen off, which
+/// add up to minutes. This alarm is set by the wall clock instead (a strict dispatch timer on wall
+/// time), and checked again the moment the Mac wakes or its clock is changed, and every half
+/// minute besides. So it goes off on time while the Mac's awake, and as soon as it wakes if it was
+/// asleep then.
+@MainActor
+final class WallClockAlarm {
+    /// When it's set to go off, if it is.
+    private(set) var date: Date?
+    private let action: @MainActor () -> Void
+    nonisolated(unsafe) private var source: DispatchSourceTimer?
+    nonisolated(unsafe) private var backstop: Timer?
+    nonisolated(unsafe) private var observers: [(NotificationCenter, NSObjectProtocol)] = []
+
+    init(_ action: @escaping @MainActor () -> Void) {
+        self.action = action
+        let workspace = NSWorkspace.shared.notificationCenter
+        let woken = [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification,
+                     NSWorkspace.sessionDidBecomeActiveNotification]
+        let watched = woken.map { (workspace, $0) } + [(NotificationCenter.default, .NSSystemClockDidChange)]
+        observers = watched.map { center, name in
+            (center, center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.check(rearming: true) }
+            })
+        }
+    }
+
+    deinit {
+        source?.cancel()
+        backstop?.invalidate()
+        observers.forEach { $0.0.removeObserver($0.1) }
+    }
+
+    /// Sets it to go off at `date` (at once, if that's gone by), in place of whenever it was set
+    /// for; or, with nil, not at all.
+    func set(_ date: Date?) {
+        self.date = date
+        arm()
+    }
+
+    private func arm() {
+        source?.cancel()
+        source = nil
+        guard let date else {
+            backstop?.invalidate()
+            backstop = nil
+            return
+        }
+        let timer = DispatchSource.makeTimerSource(flags: .strict, queue: .main)
+        timer.schedule(wallDeadline: .now() + max(date.timeIntervalSinceNow, 0), leeway: .milliseconds(20))
+        timer.setEventHandler { [weak self] in
+            MainActor.assumeIsolated { self?.check(rearming: true) }
+        }
+        timer.resume()
+        source = timer
+        if backstop == nil {
+            let timer = Timer(timeInterval: 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.check(rearming: false) }
+            }
+            timer.tolerance = 5
+            RunLoop.main.add(timer, forMode: .common)
+            backstop = timer
+        }
+    }
+
+    /// Goes off if its time has come. If not and `rearming`, it's set again by the clock as it is
+    /// now (for a wake, a changed clock, or a dispatch timer that fired a moment early).
+    private func check(rearming: Bool) {
+        guard let date else { return }
+        if date <= Date() {
+            set(nil)
+            action()
+        } else if rearming {
+            arm()
+        }
     }
 }
 

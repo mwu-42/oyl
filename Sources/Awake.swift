@@ -73,7 +73,8 @@ final class AwakeManager: ObservableObject {
     private var assertionKeepsDisplay = false
     /// When the assertion lets go by itself (a set time's end), if it does.
     private var assertionEnds: Date?
-    private var endTimer: Timer?
+    /// Stops a set time when it's up, by the clock on the wall (so not late after the Mac's slept).
+    private lazy var endAlarm = WallClockAlarm { [weak self] in self?.stop() }
     private var checkTimer: Timer?
     private var shutCheck: Timer?
     private var powerSource: CFRunLoopSource?
@@ -161,15 +162,7 @@ final class AwakeManager: ObservableObject {
         if case .until(let end) = mode { self.length = length ?? end.timeIntervalSinceNow.rounded() } else { self.length = nil }
         save()
         if !lidHelperInstalled { installLidHelper() }
-        endTimer?.invalidate()
-        endTimer = nil
-        if case .until(let end) = mode {
-            let timer = Timer(fire: end, interval: 0, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.stop() }
-            }
-            RunLoop.main.add(timer, forMode: .common)
-            endTimer = timer
-        }
+        if case .until(let end) = mode { endAlarm.set(end) } else { endAlarm.set(nil) }
         if checkTimer == nil {
             // And lid sleep checked: the lid could close any time.
             let timer = Timer(timeInterval: Self.checkEvery, repeats: true) { [weak self] _ in
@@ -205,8 +198,7 @@ final class AwakeManager: ObservableObject {
         length = nil
         stopped = reason.map { Stopped(reason: $0, at: Date()) }
         save()
-        endTimer?.invalidate()
-        endTimer = nil
+        endAlarm.set(nil)
         checkTimer?.invalidate()
         checkTimer = nil
         shutCheck?.invalidate()
