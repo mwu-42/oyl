@@ -120,8 +120,13 @@ final class TapWatcher {
                 if self.taps.count > before || most != nil { self.each?(most ?? self.taps.count) }
                 if let most {
                     self.actions[most]?()
-                } else {
+                } else if self.taps.count > 0 {
                     self.settleLater()
+                } else {
+                    // Nothing counted: there's nothing to settle (any wait set already would
+                    // find none), so no timer for every other modifier pressed while typing.
+                    self.settling?.invalidate()
+                    self.settling = nil
                 }
             }
         }

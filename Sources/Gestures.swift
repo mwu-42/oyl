@@ -924,14 +924,17 @@ private final class HandCamera: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         // With both hands in view, the one held up nearer the camera is the one making the gesture.
         let nearest = zip(shapes, hands).compactMap { shape, hand in shape.map { (reading: $0, certainty: hand.certainty) } }
             .max { $0.reading.size < $1.reading.size }
+        // Every joint of every hand, gesture or no, as the tracking display and the pointer have
+        // them (worked out once for both).
+        let joints = hands.map { HandTrack.hand($0.joints) }
         // And the hands as a pointer follows them, whatever shape they're in: the nearer first.
-        let poses = zip(hands, shapes).compactMap { hand, shape in
-            HandShape.pose(of: hand.joints, confidence: hand.certainty, aspect: aspect, gesture: shape?.gesture, time: now)
+        let poses = zip(zip(hands, shapes), joints).compactMap { pair, track in
+            HandShape.pose(of: pair.0.joints, confidence: pair.0.certainty, aspect: aspect, gesture: pair.1?.gesture,
+                           time: now, track: track)
         }
         .sorted { $0.size > $1.size }
         report(nearest?.reading, poses, now)
-        // And for Midnight Oyl's tracking display, every joint of every hand, gesture or no.
-        let joints = hands.map { HandTrack.hand($0.joints) }
+        // And for Midnight Oyl's tracking display.
         HandTrackFeed.shared.publish(HandTrack(hands: joints.filter { !$0.isEmpty }, gesture: nearest?.reading.gesture.name,
                                                certainty: nearest?.certainty, modelTime: took, rate: rate,
                                                aspect: aspect, time: now))
@@ -1168,8 +1171,9 @@ enum HandShape {
 
     /// The hand as a pointer follows it, whatever shape it's making (`gesture`, if it reads as
     /// one), read at `time`; nil if it's too far off, or the model's unsure of its palm.
+    /// `track`: `HandTrack.hand(joints)`, if it's been worked out already.
     static func pose(of joints: Joints, confidence: Float, aspect: CGFloat, gesture: HandGesture?,
-                     time: TimeInterval) -> HandPose? {
+                     time: TimeInterval, track: [HandTrack.Joint]? = nil) -> HandPose? {
         guard confidence > 0.4 else { return nil }
         func point(_ name: VNHumanHandPoseObservation.JointName, sure: Float = 0.3) -> CGPoint? {
             guard let joint = joints[name], joint.confidence > sure else { return nil }
@@ -1229,7 +1233,7 @@ enum HandShape {
         let tips = indexTip.flatMap { index in middleTip.map { shown(CGPoint(x: (index.x + $0.x) / 2, y: (index.y + $0.y) / 2)) } }
         return HandPose(time: time, aspect: aspect, anchor: anchor, tip: indexTip.map(shown), size: palm,
                         gesture: gesture, pinch: pinch, middlePinch: middlePinch, middleAhead: middleAhead, reach: reach, middleReach: middleReach, uncurled: uncurled, together: together,
-                        tips: tips, fistLike: fistLike, joints: HandTrack.hand(joints))
+                        tips: tips, fistLike: fistLike, joints: track ?? HandTrack.hand(joints))
     }
 }
 

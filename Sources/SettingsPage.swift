@@ -12,12 +12,27 @@ enum SettingsSection: String, CaseIterable {
 struct SettingItem: Identifiable {
     let id: String
     let title: String
-    let hint: String
+    /// What it does, said as it's pointed at; worked out only as it's shown, not each time the
+    /// items are counted (which is on every move of the pointer, for the page's height, and the
+    /// phone remote's asks the network for the Mac's addresses).
+    var hint: String { says() }
+    private let says: () -> String
     var isOn = false
     var action: () -> Void
     /// A button (Quit, Turn off…), not a switch.
     var isButton = false
     var remove: (() -> Void)?
+
+    init(id: String, title: String, hint: @autoclosure @escaping () -> String, isOn: Bool = false,
+         action: @escaping () -> Void, isButton: Bool = false, remove: (() -> Void)? = nil) {
+        self.id = id
+        self.title = title
+        says = hint
+        self.isOn = isOn
+        self.action = action
+        self.isButton = isButton
+        self.remove = remove
+    }
 }
 
 /// Every setting there is, a section at a time, two to a row (each says what it does when

@@ -65,6 +65,19 @@ struct ProjectNode: Identifiable, Equatable {
     /// When it's due: at its time, or the end of its day.
     var dueDate: Date? { Self.moment(due, time) }
 
+    /// Every line under it, however deep.
+    var idsUnder: Set<String> {
+        var found = Set<String>()
+        func add(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                found.insert(node.id)
+                add(node.children)
+            }
+        }
+        add(children)
+        return found
+    }
+
     static func moment(_ due: String?, _ time: String?, calendar: Calendar = .current) -> Date? {
         let day = (due ?? "").split(separator: "-").compactMap { Int($0) }
         guard day.count == 3 else { return nil }
@@ -208,9 +221,10 @@ private extension Array where Element == ProjectNode {
 
     /// The node holding `id` (`parent`, at this level) and where it is among its siblings.
     func place(of id: String, parent: String? = nil) -> (parent: String?, index: Int)? {
-        for (index, node) in enumerated() {
-            if node.id == id { return (parent, index) }
-            if let found = node.children.place(of: id, parent: node.id) { return found }
+        // By index: `enumerated()` copies out each node, children and all, to look at it.
+        for index in indices {
+            if self[index].id == id { return (parent, index) }
+            if let found = self[index].children.place(of: id, parent: self[index].id) { return found }
         }
         return nil
     }
@@ -245,12 +259,20 @@ private extension Array where Element == ProjectNode {
         return edit(parent) { $0.children.insert(node, at: Swift.min(Swift.max(index ?? $0.children.count, 0), $0.children.count)) }
     }
 
-    /// Every node, depth first, with the nodes over it.
+    /// Every node, depth first, with the nodes over it. (One path, grown and cut back as it goes
+    /// down and up, not a new one made for every node.)
     func walk(_ path: [ProjectNode] = [], _ visit: (ProjectNode, [ProjectNode]) -> Void) {
-        for node in self {
-            visit(node, path)
-            node.children.walk(path + [node], visit)
+        var path = path
+        func go(_ nodes: [ProjectNode]) {
+            for node in nodes {
+                visit(node, path)
+                guard !node.children.isEmpty else { continue }
+                path.append(node)
+                go(node.children)
+                path.removeLast()
+            }
         }
+        go(self)
     }
 }
 
@@ -372,11 +394,16 @@ final class ProjectStore: ObservableObject {
     /// off to someday, only if asked for.
     func projects(includingResting: Bool = false) -> [(node: ProjectNode, depth: Int)] {
         var found: [(node: ProjectNode, depth: Int)] = []
-        items.walk { node, path in
-            guard node.kind.isProject, path.allSatisfy(\.kind.isProject) else { return }
-            if !includingResting, node.done || node.someday || path.contains(where: { $0.done || $0.someday }) { return }
-            found.append((node, path.count))
+        // Only down through areas and projects: nothing under a task or a note is one. `resting`:
+        // done or put off to someday, or under one that is.
+        func look(_ nodes: [ProjectNode], depth: Int, resting: Bool) {
+            for node in nodes where node.kind.isProject {
+                let rests = resting || node.done || node.someday
+                if includingResting || !rests { found.append((node, depth)) }
+                look(node.children, depth: depth + 1, resting: rests)
+            }
         }
+        look(items, depth: 0, resting: false)
         return found
     }
 

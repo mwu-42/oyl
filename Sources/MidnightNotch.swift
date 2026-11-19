@@ -315,8 +315,10 @@ private struct ChartLabels: View, Animatable {
                 glyph.opacity = shown
                 glyph.translateBy(x: at.x, y: at.y)
                 glyph.rotate(by: .radians(angle + .pi / 2))
-                glyph.draw(Text(Self.hours[index % 12]).font(Midnight.smallCaps(6)).tracking(0.4)
-                    .foregroundStyle(Midnight.white.opacity(0.7)), at: .zero, anchor: .center)
+                let hour = SetWords.shared.word(Self.hours[index % 12], kind: "hour", size: 6, bound: .zero, in: context) {
+                    Text($0).font(Midnight.smallCaps(6)).tracking(0.4).foregroundStyle(Midnight.white.opacity(0.7))
+                }
+                glyph.draw(hour.text, at: .zero, anchor: .center)
             }
             let cygnus = min(max((bloom - 0.6) / 0.4, 0), 1)
             if cygnus > 0 {

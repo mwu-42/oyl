@@ -495,7 +495,13 @@ fileprivate struct MoylLook {
                 spin = hat != nil ? 12 : 24
             }
         case .duty(let duty):
-            tone = .pale(duty.skin(at: date) ?? Oyl.white)
+            if case .timer(let timer) = duty {
+                // Deepening in 5% steps (each is drawn anew); not its color as it is this moment,
+                // which would be a new tone, worked out, every frame.
+                tone = .pale(Oyl.timer(((1 - timer.fractionLeft(at: date)) * 20).rounded() / 20))
+            } else {
+                tone = .pale(duty.skin(at: date) ?? Oyl.white)
+            }
             switch duty {
             case .music(_, .reading):
                 // An audiobook: no beat to swell with, its rings still, a pale moon going slowly
@@ -512,8 +518,6 @@ fileprivate struct MoylLook {
                 spin = 9
             case .timer(let timer):
                 let left = timer.fractionLeft(at: date)
-                // Deepening in 5% steps (each is drawn anew).
-                tone = .pale(Oyl.timer(((1 - left) * 20).rounded() / 20))
                 surface = .icy
                 moon = .timer(gone: 1 - left, running: timer.isRunning)
                 if !timer.isRunning {
@@ -908,10 +912,16 @@ final class MoylSprite {
                 Gradient(stops: [.init(color: Tone.ink.color(0), location: (radius - 8) / reach),
                                  .init(color: Tone.ink.color(0.5), location: radius / reach), .init(color: Tone.ink.color(0), location: 1)]),
                 center: center, startRadius: 0, endRadius: reach))
+            // Each letter at each size set the once: fitting a long ring tries size after size, then
+            // shorter and shorter, every letter again each time.
+            var known: [CGFloat: [Character: (glyph: GraphicsContext.ResolvedText, width: CGFloat)]] = [:]
             func letters(of words: String, size: CGFloat) -> [(glyph: GraphicsContext.ResolvedText, width: CGFloat)] {
                 words.map { letter in
+                    if let set = known[size]?[letter] { return set }
                     let glyph = context.resolve(Text(String(letter)).font(Midnight.smallCaps(size)).foregroundStyle(Midnight.silver))
-                    return (glyph, glyph.measure(in: CGSize(width: 60, height: 60)).width)
+                    let set = (glyph: glyph, width: glyph.measure(in: CGSize(width: 60, height: 60)).width)
+                    known[size, default: [:]][letter] = set
+                    return set
                 }
             }
             func length(_ letters: [(glyph: GraphicsContext.ResolvedText, width: CGFloat)]) -> CGFloat {
@@ -956,13 +966,33 @@ final class MoylSprite {
     /// tall: far enough out for all of it, once, but no less than just past its moon's orbit,
     /// and no more than the room under the bar allows.
     static func ringRadius(for text: String, height: CGFloat) -> CGFloat {
+        // Asked every frame while a moyl's ring shows, so kept for what it's been asked of.
+        ringRadii.lock.lock()
+        if let known = ringRadii.known[RingKey(text: text, height: height)] {
+            ringRadii.lock.unlock()
+            return known
+        }
+        ringRadii.lock.unlock()
         // Letter by letter, each rounded up, as the ring measures them.
-        let font = NSFont(name: "Copperplate", size: ringFont) ?? .systemFont(ofSize: ringFont)
         let letters = Array(text + ringSeparator)
-        let length = letters.reduce(0) { $0 + (String($1) as NSString).size(withAttributes: [.font: font]).width.rounded(.up) }
+        let length = letters.reduce(0) { $0 + (String($1) as NSString).size(withAttributes: [.font: ringMeasure]).width.rounded(.up) }
             + ringSpacing * CGFloat(letters.count)
-        return min(max(length / (2 * .pi) + 1, Walker.ringRadius(height: height)), (height + WalkerOverlay.below) / 2 - 8)
+        let radius = min(max(length / (2 * .pi) + 1, Walker.ringRadius(height: height)), (height + WalkerOverlay.below) / 2 - 8)
+        ringRadii.lock.lock()
+        // A timer's words change every second: let them go now and then.
+        if ringRadii.known.count > 64 { ringRadii.known.removeAll() }
+        ringRadii.known[RingKey(text: text, height: height)] = radius
+        ringRadii.lock.unlock()
+        return radius
     }
+
+    private struct RingKey: Hashable { let text: String, height: CGFloat }
+    private final class RingRadii: @unchecked Sendable {
+        let lock = NSLock()
+        var known: [RingKey: CGFloat] = [:]
+    }
+    nonisolated private static let ringRadii = RingRadii()
+    nonisolated(unsafe) private static let ringMeasure = NSFont(name: "Copperplate", size: ringFont) ?? .systemFont(ofSize: ringFont)
 
     /// `view` as a picture for a layer, at the bar's scale: drawn straight into a bitmap laid out
     /// as Core Animation shows one (`ImageRenderer`'s own pictures cost it more to show).

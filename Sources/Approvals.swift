@@ -80,10 +80,13 @@ extension AgentInbox {
         try? files.setAttributes([.posixPermissions: 0o755], ofItemAtPath: permissionHook.path)
     }
 
+    /// (Asked every few seconds: only written, or taken away, if it isn't so already, and put
+    /// back if anything else has taken it away.)
     static func setAway(_ off: Bool) {
+        let there = FileManager.default.fileExists(atPath: away.path)
         if off {
-            FileManager.default.createFile(atPath: away.path, contents: nil)
-        } else {
+            if !there { FileManager.default.createFile(atPath: away.path, contents: nil) }
+        } else if there {
             try? FileManager.default.removeItem(at: away)
         }
     }

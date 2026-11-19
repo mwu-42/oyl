@@ -298,17 +298,39 @@ final class NotchState: ObservableObject {
 
     /// The ideas' rows as tall as they stand (each kind under its heading), and as much of that as
     /// shows before they scroll; with none, room for the hint.
-    var ideaRowsHeight: CGFloat { IdeaBoard.height(of: IdeaBoard.rows(tod.ideas)) }
+    ///
+    /// It's asked on every move of the pointer while the notch is open (for where it reaches), and
+    /// making the rows to measure them (their dates said, sorted) takes about a millisecond with a
+    /// couple of hundred ideas. So it's kept till tod's lists or ideas change, or the day does
+    /// (which is all that sorts them into coming up and later).
+    var ideaRowsHeight: CGFloat {
+        let day = IdeaQuick.calendar.startOfDay(for: Date())
+        if let kept = ideaHeight, kept.day == day, kept.tasks == tod.tasks, kept.lists == tod.lists { return kept.height }
+        let height = IdeaBoard.height(of: IdeaBoard.rows(tod.ideas))
+        ideaHeight = (tod.tasks, tod.lists, day, height)
+        return height
+    }
+    private var ideaHeight: (tasks: [TodStore.Task], lists: [TodStore.List], day: Date, height: CGFloat)?
 
     var ideaListHeight: CGFloat {
         min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
     /// The projects page's the same: what's pressing and what's unsorted, as far as they show.
+    /// (Kept the same way, till the outline or Unsorted changes, or the day, which is all that
+    /// brings a task into the week that's pressing.)
     var projectListHeight: CGFloat {
-        min(ProjectBoard.height(of: ProjectBoard.rows(projects)),
-            CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
+        let day = Calendar.current.startOfDay(for: Date())
+        let rows: CGFloat
+        if let kept = projectHeight, kept.day == day, kept.items == projects.items, kept.inbox == projects.inbox {
+            rows = kept.height
+        } else {
+            rows = ProjectBoard.height(of: ProjectBoard.rows(projects))
+            projectHeight = (projects.items, projects.inbox, day, rows)
+        }
+        return min(rows, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
+    private var projectHeight: (items: [ProjectNode], inbox: [ProjectNode], day: Date, height: CGFloat)?
 
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
@@ -359,9 +381,12 @@ final class NotchState: ObservableObject {
     /// How far down Midnight Oyl's band reaches for what it's showing, in points from the top of
     /// the screen: the page, and some sky under it, so a short page makes a shallow band and a
     /// tall one a deep one; and further, while the lyrics float in that sky. Never past `bloomSize`.
-    var bloomReach: CGFloat {
+    var bloomReach: CGFloat { bloomReach(page: headerHeight + contentHeight) }
+
+    /// `bloomReach`, with the page's height (`headerHeight + contentHeight`) already worked out.
+    func bloomReach(page height: CGFloat) -> CGFloat {
         let sky = Midnight.sky + (floatsLyrics ? Midnight.lyricsSky : 0)
-        return min(max(headerHeight + contentHeight + sky, Midnight.shallowest), bloomSize.height)
+        return min(max(height + sky, Midnight.shallowest), bloomSize.height)
     }
 
     /// Open for a timer that's done (or bedtime), rather than for the pointer.
@@ -1021,6 +1046,11 @@ final class NotchController {
         }
     }
 
+    /// As Oyl quits: the projects saved now, not the moment after an edit they'd otherwise wait.
+    func quitting() {
+        state.projects.flush()
+    }
+
     /// The outline of every project, in its own window, up where you are (at the line `id`, if
     /// it's given), in the look Oyl's in.
     private func openProjects(at id: String?) {
@@ -1324,10 +1354,11 @@ final class NotchController {
     /// were in.
     private func close() {
         guard !pointerInside else { return }
-        state.isPopped = false
+        // Only what's changing: each set re-renders the notch and runs everything watching it.
+        if state.isPopped { state.isPopped = false }
         if state.isEditing { resignKeyboard() }
-        state.isHovering = false
-        state.isRevealing = false
+        if state.isHovering { state.isHovering = false }
+        if state.isRevealing { state.isRevealing = false }
     }
 
     /// Opens the notch to the page of an Oyl clicked on the menu bar (a timer's, picked out on
@@ -1401,13 +1432,14 @@ final class NotchController {
     private func isOverBand(_ location: NSPoint) -> Bool {
         guard let screen else { return false }
         let top = screen.frame.maxY
-        let height = state.headerHeight + state.contentHeight
+        // (Each worked out the once: this is asked on every move of the pointer while it's open.)
+        let height = state.headerHeight + state.contentHeight, width = state.openWidth
         let side = NotchState.topRadius(.expanded) + Self.bandMargin
-        let page = NSRect(x: state.metrics.centerX - state.openWidth / 2 - side, y: top - height - Self.bandMargin,
-                          width: state.openWidth + 2 * side, height: height + Self.bandMargin + 1)
+        let page = NSRect(x: state.metrics.centerX - width / 2 - side, y: top - height - Self.bandMargin,
+                          width: width + 2 * side, height: height + Self.bandMargin + 1)
         if page.contains(location) { return true }
         let size = state.bloomSize
-        let moon = MidnightBackdrop.moon(in: size, reach: state.bloomReach)
+        let moon = MidnightBackdrop.moon(in: size, reach: state.bloomReach(page: height))
         let center = NSPoint(x: state.metrics.centerX - size.width / 2 + moon.center.x, y: top - moon.center.y)
         let radius = moon.radius + 12
         if hypot(location.x - center.x, location.y - center.y) <= radius { return true }

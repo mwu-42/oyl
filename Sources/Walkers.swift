@@ -87,7 +87,9 @@ final class WalkerOverlay {
     /// has to see the pointer leave to slide back up. (Clicks on them still count; see
     /// `clickedThrough(at:)`.)
     var inFullscreen = false {
-        didSet { if inFullscreen { panel.ignoresMouseEvents = true } }
+        // (Set only if it isn't: setting it costs as much even when it's already so, and this is
+        // set each time anything changes.)
+        didSet { if inFullscreen, !panel.ignoresMouseEvents { panel.ignoresMouseEvents = true } }
     }
     /// Along the bar from its left, what they keep off besides: the desktop's name, at the top
     /// left (see `SpaceLabel`). One standing there as it comes moves out of the way.

@@ -183,7 +183,12 @@ final class CoworkTasks: @unchecked Sendable {
         }
     }
 
+    /// When it was last written, asked of the file system each time. (A URL's resource values
+    /// are kept on it, and off the main thread never let go of: a transcript's, read through the
+    /// URL kept with its task's record, stayed as it first was. This is quicker besides.)
     private static func modified(_ url: URL) -> Date? {
-        (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
     }
 }

@@ -1127,14 +1127,18 @@ private struct ProjectMenu: View {
             }
         }
         Menu("Move To") {
-            if store.place(of: node.id)?.parent != ProjectStore.inbox {
+            let parent = store.place(of: node.id)?.parent
+            if parent != ProjectStore.inbox {
                 Button("Unsorted") { store.move(node.id, to: ProjectStore.inbox) }
             }
-            if node.kind.isProject, store.place(of: node.id)?.parent != nil {
+            if node.kind.isProject, parent != nil {
                 Button("The Top") { store.move(node.id, to: nil) }
             }
             Divider()
-            ForEach(store.projects().filter { $0.node.id != node.id && !store.path(to: $0.node.id).contains { $0.id == node.id } },
+            // Anywhere but itself and what's under it (gathered once, not each project's path
+            // looked up through the whole outline).
+            let under = store.node(node.id)?.idsUnder ?? []
+            ForEach(store.projects().filter { $0.node.id != node.id && !under.contains($0.node.id) },
                     id: \.node.id) { entry in
                 Button(String(repeating: "    ", count: entry.depth) + (entry.node.title.isEmpty ? "Untitled" : entry.node.title)) {
                     store.move(node.id, to: entry.node.id)
@@ -1298,3 +1302,4 @@ final class OutlineTextField: NSTextField {
         return became
     }
 }
+

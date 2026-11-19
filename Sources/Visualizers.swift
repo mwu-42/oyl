@@ -192,7 +192,7 @@ final class CurveLayers: NSView {
         // A new song's galaxy fades in over the last.
         CATransaction.begin()
         Self.configureTransaction(galaxy.contents == nil || resized ? nil : Self.colorFade)
-        galaxy.contents = Galaxy.picture(wide, colors: colors, scale: scale, seed: seed)
+        galaxy.contents = Galaxy.kept(wide, colors: colors, scale: scale, seed: seed)
         CATransaction.commit()
     }
 
@@ -236,6 +236,20 @@ final class CurveLayers: NSView {
 /// stars; and over it, little four-pointed stars twinkling on their own rounds. Where things go is
 /// seeded by the colors, so a song's galaxy is the same each time it's shown.
 enum Galaxy {
+    /// `picture`, kept for the last couple asked for: the music page is made anew each time the
+    /// notch opens on it, and drawing the galaxy took several milliseconds of its opening. The
+    /// same colors at the same size and scale (and seed) always make the same picture.
+    @MainActor
+    static func kept(_ size: CGSize, colors: [NSColor], scale: CGFloat, seed: UInt64) -> CGImage? {
+        if let found = drawn.first(where: { $0.colors == colors && $0.size == size && $0.scale == scale && $0.seed == seed }) {
+            return found.image
+        }
+        let image = picture(size, colors: colors, scale: scale, seed: seed)
+        drawn = [(colors, size, scale, seed, image)] + drawn.prefix(1)
+        return image
+    }
+    @MainActor private static var drawn: [(colors: [NSColor], size: CGSize, scale: CGFloat, seed: UInt64, image: CGImage?)] = []
+
     static func seed(_ colors: [NSColor]) -> UInt64 {
         colors.reduce(0x9E37_79B9_7F4A_7C15) { seed, color in
             let color = color.usingColorSpace(.sRGB) ?? color

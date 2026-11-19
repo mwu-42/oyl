@@ -150,13 +150,20 @@ final class WebAgents: @unchecked Sendable {
 
     private func check() {
         var found: [String: Agent] = [:]
+        // Each tab's address read the once a look, not again for every site and every pass.
+        var hosts: [String: String?] = [:]
+        func on(_ site: Site, _ address: String) -> Bool {
+            let host: String?
+            if let known = hosts[address] { host = known } else { host = Self.host(of: address); hosts[address] = .some(host) }
+            return Self.isOn(site, host: host)
+        }
         for browser in Self.browsers {
             guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: browser.id).first,
                   Date().timeIntervalSince(refused[browser.id] ?? .distantPast) > 60,
                   let windows = tabs(in: browser) else { continue }
             for site in sites {
-                let showing = windows.filter { Self.isOn(site, $0.showing) }
-                guard !showing.isEmpty || windows.contains(where: { $0.all.contains { Self.isOn(site, $0) } }) else { continue }
+                let showing = windows.filter { on(site, $0.showing) }
+                guard !showing.isEmpty || windows.contains(where: { $0.all.contains { on(site, $0) } }) else { continue }
                 let key = "\(browser.id) \(site.host)"
                 if !showing.isEmpty {
                     for page in read(site, in: app.processIdentifier, titled: showing.map(\.title)) {
@@ -177,7 +184,7 @@ final class WebAgents: @unchecked Sendable {
                     }
                 }
                 // Pages no longer open anywhere are forgotten.
-                let pages = Set(windows.flatMap(\.all).filter { Self.isOn(site, $0) }.map(Self.page))
+                let pages = Set(windows.flatMap(\.all).filter { on(site, $0) }.map(Self.page))
                 workingSince = workingSince.filter { pages.contains($0.key) }
                 said = said.filter { pages.contains($0.key) }
                 askingPages = askingPages.filter { pages.contains($0) }
@@ -243,7 +250,13 @@ final class WebAgents: @unchecked Sendable {
     }
 
     private static func isOn(_ site: Site, _ address: String) -> Bool {
-        guard let host = URL(string: address)?.host?.lowercased() else { return false }
+        isOn(site, host: host(of: address))
+    }
+
+    private static func host(of address: String) -> String? { URL(string: address)?.host?.lowercased() }
+
+    private static func isOn(_ site: Site, host: String?) -> Bool {
+        guard let host else { return false }
         return host == site.host || host.hasSuffix("." + site.host)
     }
 
@@ -258,8 +271,8 @@ final class WebAgents: @unchecked Sendable {
             let title = Self.text(window, kAXTitleAttribute) ?? ""
             guard titles.contains(where: { !$0.isEmpty && title.hasPrefix($0) }) else { continue }
             var budget = 600
-            guard let area = Self.find(in: window, budget: &budget, where: {
-                Self.text($0, kAXRoleAttribute) == "AXWebArea" && Self.isOn(site, Self.address(of: $0))
+            guard let area = ButtonReader.find(in: window, budget: &budget, where: { element, role in
+                role == "AXWebArea" && Self.isOn(site, Self.address(of: element))
             }) else { continue }
             let working = Self.working.contains { !Self.buttons(in: area, matching: $0).isEmpty }
             let asking = Self.asking.contains { !Self.buttons(in: area, matching: $0).isEmpty }
@@ -277,8 +290,9 @@ final class WebAgents: @unchecked Sendable {
         func walk(_ element: AXUIElement) {
             guard budget > 0 else { return }
             budget -= 1
-            if text(element, kAXRoleAttribute) == kAXStaticTextRole { hasher.combine(text(element, kAXValueAttribute)) }
-            for child in elements(element, kAXChildrenAttribute).reversed() where budget > 0 { walk(child) }
+            let (role, children) = ButtonReader.roleAndChildren(element)
+            if role == kAXStaticTextRole { hasher.combine(text(element, kAXValueAttribute)) }
+            for child in children.reversed() where budget > 0 { walk(child) }
         }
         walk(area)
         return hasher.finalize()
@@ -307,27 +321,9 @@ final class WebAgents: @unchecked Sendable {
             .compactMap { $0 }.first { !$0.isEmpty } ?? ""
     }
 
-    /// Depth first, visiting at most `budget` elements.
-    private static func find(in element: AXUIElement, budget: inout Int, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
-        guard budget > 0 else { return nil }
-        budget -= 1
-        if matches(element) { return element }
-        for child in elements(element, kAXChildrenAttribute) {
-            if let found = find(in: child, budget: &budget, where: matches) { return found }
-            if budget <= 0 { return nil }
-        }
-        return nil
-    }
-
     private static func text(_ element: AXUIElement, _ attribute: String) -> String? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
         return value as? String
-    }
-
-    private static func elements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return [] }
-        return value as? [AXUIElement] ?? []
     }
 }

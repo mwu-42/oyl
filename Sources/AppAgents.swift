@@ -151,8 +151,8 @@ final class ButtonReader {
         if Date().timeIntervalSince(walked[key]?.at ?? .distantPast) > 4 {
             var labels: [String] = []
             var budget = 2500
-            _ = Self.find(in: window, budget: &budget) { element in
-                if Self.text(element, kAXRoleAttribute) == kAXButtonRole as String { labels.append(Self.label(of: element)) }
+            _ = Self.find(in: window, budget: &budget) { element, role in
+                if role == kAXButtonRole as String { labels.append(Self.label(of: element)) }
                 return false
             }
             walked[key] = (Date(), labels)
@@ -172,7 +172,7 @@ final class ButtonReader {
 
     private func webArea(in window: AXUIElement) -> AXUIElement? {
         var budget = 400
-        return Self.find(in: window, budget: &budget) { Self.text($0, kAXRoleAttribute) == "AXWebArea" }
+        return Self.find(in: window, budget: &budget) { _, role in role == "AXWebArea" }
     }
 
     /// `label` says `word` as a word (or words) of its own, any case.
@@ -188,16 +188,35 @@ final class ButtonReader {
             .compactMap { $0 }.first { !$0.isEmpty } ?? ""
     }
 
-    /// Depth first, visiting at most `budget` elements.
-    static func find(in element: AXUIElement, budget: inout Int, where matches: (AXUIElement) -> Bool) -> AXUIElement? {
+    /// Depth first, visiting at most `budget` elements, each told with its role (asked for with
+    /// its children, in the one round trip to the app).
+    static func find(in element: AXUIElement, budget: inout Int, where matches: (AXUIElement, String?) -> Bool) -> AXUIElement? {
         guard budget > 0 else { return nil }
         budget -= 1
-        if matches(element) { return element }
-        for child in elements(element, kAXChildrenAttribute) {
+        let (role, children) = roleAndChildren(element)
+        if matches(element, role) { return element }
+        for child in children {
             if let found = find(in: child, budget: &budget, where: matches) { return found }
             if budget <= 0 { return nil }
         }
         return nil
+    }
+
+    private static let roleAndChildrenNames = [kAXRoleAttribute, kAXChildrenAttribute] as CFArray
+
+    /// An element's role and its children, asked of its app together: each a round trip (most of
+    /// what walking an app's windows costs, on both sides), and a walk asks both of every element.
+    /// If the app won't answer the two at once, they're asked one at a time, as they always were.
+    static func roleAndChildren(_ element: AXUIElement) -> (role: String?, children: [AXUIElement]) {
+        var values: CFArray?
+        let asked = AXUIElementCopyMultipleAttributeValues(element, roleAndChildrenNames, AXCopyMultipleAttributeOptions(rawValue: 0), &values)
+        if asked == .success, let both = values as? [AnyObject], both.count == 2 {
+            // (One it hasn't comes back as an error in its place: no role, no children.)
+            return (both[0] as? String, both[1] as? [AXUIElement] ?? [])
+        }
+        // Gone: it has neither, however it's asked.
+        if asked == .invalidUIElement { return (nil, []) }
+        return (text(element, kAXRoleAttribute), elements(element, kAXChildrenAttribute))
     }
 
     static func text(_ element: AXUIElement, _ attribute: String) -> String? {

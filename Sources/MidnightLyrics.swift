@@ -82,10 +82,12 @@ struct LyricsSkyFrame: View {
             guard slot > -1.9, slot < 1.95 else { continue }
             let near = 1 - min(abs(slot), 1)
             let words = Self.words(lines[line].text)
-            let resolved = words.map {
-                context.resolve(Text($0).font(Midnight.flourish(Self.type)).foregroundStyle(Midnight.white))
+            let set = words.map {
+                SetWords.shared.word($0, kind: "lyric", size: Self.type, bound: CGSize(width: 2000, height: 200), in: context) {
+                    Text($0).font(Midnight.flourish(Self.type)).foregroundStyle(Midnight.white)
+                }
             }
-            let widths = resolved.map { $0.measure(in: CGSize(width: 2000, height: 200)).width }
+            let resolved = set.map(\.text), widths = set.map(\.width)
             // Leaving, its words drift apart.
             let space = Self.type * 0.32 + (slot < 0 ? CGFloat(-slot) * 6 : 0)
             let breaking = words.isEmpty

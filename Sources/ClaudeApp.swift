@@ -302,8 +302,8 @@ final class ClaudeAppChats: @unchecked Sendable {
             var found: [(element: AXUIElement, label: String)] = []
             var budget = 3000
             for area in areas {
-                _ = Self.find(in: area, budget: &budget) { element in
-                    if Self.isButton(element) { found.append((element, Self.label(of: element))) }
+                _ = ButtonReader.find(in: area, budget: &budget) { element, role in
+                    if role == kAXButtonRole as String { found.append((element, Self.label(of: element))) }
                     return false
                 }
             }
@@ -320,8 +320,8 @@ final class ClaudeAppChats: @unchecked Sendable {
         }
         var budget = 600
         var areas: [AXUIElement] = []
-        _ = Self.find(in: window, budget: &budget) { element in
-            if Self.text(element, kAXRoleAttribute) == "AXWebArea" { areas.append(element) }
+        _ = ButtonReader.find(in: window, budget: &budget) { element, role in
+            if role == "AXWebArea" { areas.append(element) }
             return false
         }
         webAreas.removeAll { CFEqual($0.window, window) }
@@ -336,19 +336,6 @@ final class ClaudeAppChats: @unchecked Sendable {
     private static func label(of element: AXUIElement) -> String {
         [text(element, kAXDescriptionAttribute), text(element, kAXTitleAttribute)]
             .compactMap { $0 }.first { !$0.isEmpty } ?? ""
-    }
-
-    /// Depth first, visiting at most `budget` elements.
-    private static func find(in element: AXUIElement, budget: inout Int,
-                             where matches: (AXUIElement) -> Bool) -> AXUIElement? {
-        guard budget > 0 else { return nil }
-        budget -= 1
-        if matches(element) { return element }
-        for child in elements(element, kAXChildrenAttribute) {
-            if let found = find(in: child, budget: &budget, where: matches) { return found }
-            if budget <= 0 { return nil }
-        }
-        return nil
     }
 
     /// "Planning a trip - Claude" → "Planning a trip"; just "Claude" → "Chat".

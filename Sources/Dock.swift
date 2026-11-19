@@ -99,23 +99,26 @@ final class DockApps: ObservableObject {
 
     private func updateRunning() {
         let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
+        let opened = running.map(Opened.init)
         let front = NSWorkspace.shared.frontmostApplication
         // However many of an app are open (another instance of it, say), it's one icon: lit if any
         // is in front, dimmed only if they're all hidden.
         var shown = kept.map { item -> Item in
             var item = item
-            let open = running.filter { Self.matches($0, item) }
+            let url = item.url.standardizedFileURL
+            let open = opened.filter { $0.matches(id: item.id, url: url) }.map(\.app)
             item.isRunning = !open.isEmpty
             item.isActive = front.map(open.contains) ?? false
             item.isHidden = !open.isEmpty && open.allSatisfy(\.isHidden)
             return item
         }
         let keptIDs = Set(kept.map(\.id)), keptURLs = Set(kept.map { $0.url.standardizedFileURL })
-        let extra = running
+        let extra = opened
             .filter { app in
-                guard let url = app.bundleURL else { return false }
-                return !keptIDs.contains(app.bundleIdentifier ?? "") && !keptURLs.contains(url.standardizedFileURL)
+                guard let url = app.url else { return false }
+                return !keptIDs.contains(app.id ?? "") && !keptURLs.contains(url)
             }
+            .map(\.app)
             .sorted { ($0.launchDate ?? .distantPast) < ($1.launchDate ?? .distantPast) }
         for app in extra {
             guard let url = app.bundleURL else { continue }
@@ -130,9 +133,10 @@ final class DockApps: ObservableObject {
         // Each icon's its own (SwiftUI lays them out by id): one kept in the Dock twice is shown once.
         shown = Self.arranged(Self.unique(shown), by: order)
         if shown != apps { apps = shown }
-        let id = { (app: NSRunningApplication) in shown.first { Self.matches(app, $0) }?.id }
-        openApps = running.compactMap { app in id(app).map { (app.processIdentifier, $0) } }
-        frontID = front.flatMap(id)
+        let shownURLs = shown.map { $0.url.standardizedFileURL }
+        let id = { (app: Opened) in shown.indices.first { app.matches(id: shown[$0].id, url: shownURLs[$0]) }.map { shown[$0].id } }
+        openApps = opened.compactMap { app in id(app).map { (app.app.processIdentifier, $0) } }
+        frontID = front.map(Opened.init).flatMap(id)
         if !asking.isEmpty { checkAttention() }
         liftGlyphs()
         let up = Set(shown.filter(\.isRunning).map(\.id))
@@ -290,6 +294,23 @@ final class DockApps: ObservableObject {
 
     private static func matches(_ app: NSRunningApplication, _ item: Item) -> Bool {
         app.bundleIdentifier == item.id || app.bundleURL?.standardizedFileURL == item.url.standardizedFileURL
+    }
+
+    /// An open app as `matches` sees it, read the once: standardizing a URL takes microseconds,
+    /// and keeping the icons up to date compares every icon with every open app at each switch.
+    private struct Opened {
+        let app: NSRunningApplication
+        let id: String?
+        let url: URL?
+
+        init(_ app: NSRunningApplication) {
+            self.app = app
+            id = app.bundleIdentifier
+            url = app.bundleURL?.standardizedFileURL
+        }
+
+        /// `matches`, for an icon of `id` at `url` (standardized).
+        func matches(id itemID: String, url itemURL: URL) -> Bool { id == itemID || url == itemURL }
     }
 
     /// Each item once, the first of any with the same id.

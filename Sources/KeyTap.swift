@@ -40,11 +40,13 @@ final class KeyTap {
         self.emoji = emoji
         self.pictureInPicture = pictureInPicture
         install()
-        // Until Accessibility's allowed.
-        retrying = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.tap == nil else { return }
-                self.install()
+        // Until Accessibility's allowed (and not once it's in, for it's never taken out).
+        if tap == nil {
+            retrying = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.tap == nil else { return }
+                    self.install()
+                }
             }
         }
     }
@@ -57,6 +59,9 @@ final class KeyTap {
         else { return nil }
         return code == right
     }
+
+    /// The modifiers that count for these keys (not fn, or the keypad's mark the arrows carry).
+    nonisolated static let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift]
 
     /// Whether a key pressed is Command-period: its period wherever the keyboard's layout has it,
     /// with Command and nothing else held.
@@ -95,6 +100,8 @@ final class KeyTap {
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else { return }
         CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
         self.tap = tap
+        retrying?.invalidate()
+        retrying = nil
     }
 
     /// What goes on to the app in front: nil, for what's taken.
@@ -114,12 +121,14 @@ final class KeyTap {
             } else if let forward = Self.direction(code: code, flags: event.flags), skip(forward) {
                 taken = code
                 return nil
-            } else if event.flags.contains(.maskCommand),
-                      Self.isEmojiKey(NSEvent(cgEvent: event)?.charactersIgnoringModifiers, flags: event.flags), emoji() {
+            // Which character a key makes is asked of an NSEvent made from it, ~20 µs: only once
+            // it could be one of these (the right modifiers, alone; the picker wanted now).
+            } else if event.flags.intersection(Self.modifiers) == .maskCommand, emoji(),
+                      Self.isEmojiKey(NSEvent(cgEvent: event)?.charactersIgnoringModifiers, flags: event.flags) {
                 taken = code
                 Self.pickEmoji()
                 return nil
-            } else if event.flags.contains([.maskControl, .maskAlternate]),
+            } else if event.flags.intersection(Self.modifiers) == [.maskControl, .maskAlternate],
                       Self.isPictureInPictureKey(NSEvent(cgEvent: event)?.charactersIgnoringModifiers, flags: event.flags),
                       pictureInPicture() {
                 taken = code

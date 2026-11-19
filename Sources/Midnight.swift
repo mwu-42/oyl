@@ -220,9 +220,9 @@ extension Midnight {
 
     /// Font weights in order, lightest first (they don't compare by themselves).
     static func rank(_ weight: Font.Weight) -> Int {
-        [Font.Weight.ultraLight, .thin, .light, .regular, .medium, .semibold, .bold, .heavy, .black]
-            .firstIndex(of: weight) ?? 3
+        weights.firstIndex(of: weight) ?? 3
     }
+    private static let weights: [Font.Weight] = [.ultraLight, .thin, .light, .regular, .medium, .semibold, .bold, .heavy, .black]
 
     // MARK: Accents
 
@@ -469,5 +469,51 @@ enum MidnightMetal {
 
     enum MidnightError: Error {
         case noGPU
+    }
+}
+
+/// Words as Midnight sets them, kept from frame to frame. Resolving a `Text` and measuring it (a
+/// layout in Core Text) for every word of every line, 30 times a second, was most of what drawing
+/// the lyrics cost, and the same word in the same type on the same screen comes out the same each
+/// time. Only for type whose look never changes (`style` is always the same for a `kind`).
+final class SetWords: @unchecked Sendable {
+    static let shared = SetWords()
+    /// Off, every word's resolved afresh, as before (for checking it makes no difference).
+    var isOn = true
+
+    private struct Key: Hashable {
+        let kind: String, word: String, size: CGFloat, scale: CGFloat, bound: CGSize
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(kind); hasher.combine(word); hasher.combine(size); hasher.combine(scale)
+            hasher.combine(bound.width); hasher.combine(bound.height)
+        }
+    }
+    private let lock = NSLock()
+    private var kept: [Key: (text: GraphicsContext.ResolvedText, width: CGFloat)] = [:]
+
+    /// `word` set as `style` has it (`kind` naming that style), resolved in `context`, and how
+    /// wide it is measured in `bound`.
+    func word(_ word: String, kind: String, size: CGFloat, bound: CGSize, in context: GraphicsContext,
+              style: (String) -> Text) -> (text: GraphicsContext.ResolvedText, width: CGFloat) {
+        func make() -> (text: GraphicsContext.ResolvedText, width: CGFloat) {
+            let text = context.resolve(style(word))
+            return (text: text, width: text.measure(in: bound).width)
+        }
+        guard isOn else { return make() }
+        let key = Key(kind: kind, word: word, size: size, scale: context.environment.displayScale, bound: bound)
+        lock.lock()
+        if let found = kept[key] {
+            lock.unlock()
+            return found
+        }
+        lock.unlock()
+        let made = make()
+        lock.lock()
+        // A song's worth of words and more, then start again.
+        if kept.count > 800 { kept.removeAll(keepingCapacity: true) }
+        kept[key] = made
+        lock.unlock()
+        return made
     }
 }

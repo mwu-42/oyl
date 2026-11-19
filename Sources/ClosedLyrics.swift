@@ -286,10 +286,13 @@ struct ClosedLyricsFrame: View {
 
     static func lay(_ text: String, size: CGFloat, room: CGFloat, in context: GraphicsContext) -> Laid {
         var laid = Laid()
-        laid.words = LyricsSkyFrame.words(text).map {
-            context.resolve(Text($0).font(Midnight.flourish(size)).foregroundStyle(Midnight.white))
+        let set = LyricsSkyFrame.words(text).map {
+            SetWords.shared.word($0, kind: "lyric", size: size, bound: CGSize(width: 4000, height: 200), in: context) {
+                Text($0).font(Midnight.flourish(size)).foregroundStyle(Midnight.white)
+            }
         }
-        laid.widths = laid.words.map { $0.measure(in: CGSize(width: 4000, height: 200)).width }
+        laid.words = set.map(\.text)
+        laid.widths = set.map(\.width)
         laid.space = size * 0.3
         let full = laid.widths.reduce(0, +) + laid.space * CGFloat(max(laid.words.count - 1, 0))
         laid.scale = max(min(1, room / max(full, 1)), smallest)

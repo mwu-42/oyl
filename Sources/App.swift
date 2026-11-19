@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        controller?.quitting()
         awake?.pause()
         MacDock.quitting(forGood: !backSoon)
     }

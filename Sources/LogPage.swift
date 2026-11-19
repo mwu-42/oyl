@@ -33,11 +33,17 @@ extension WorkLog {
     @MainActor
     func fromTod(_ tod: TodStore, at now: Date = Date()) -> [(id: String, text: String)] {
         guard tod.isAvailable else { return [] }
-        let today = day(of: now)
+        // Done the same day as now is done in the same day's span, a test far quicker than working
+        // out the start of each one's day (this goes over every task tod has, and it's asked as
+        // the pointer moves over the open notch).
+        guard let today = calendar.dateInterval(of: .day, for: now.addingTimeInterval(-Self.turn)) else { return [] }
         let lists = Dictionary(tod.lists.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         let filed = Set(entries(on: now).map(\.text))
         return tod.tasks
-            .filter { $0.done && ($0.doneAt.map { day(of: $0) == today } ?? false) }
+            .filter { task in
+                guard task.done, let done = task.doneAt?.addingTimeInterval(-Self.turn) else { return false }
+                return done >= today.start && done < today.end
+            }
             .sorted { ($0.doneAt ?? now) > ($1.doneAt ?? now) }
             .compactMap { task in
                 let title = task.title.trimmingCharacters(in: .whitespacesAndNewlines)
