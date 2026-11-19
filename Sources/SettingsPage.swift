@@ -365,6 +365,19 @@ struct SettingRow: View {
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
+        if item.id == "midnight" {
+            // Unlike the others, for it changes the whole look.
+            HStack(spacing: 0) {
+                ThemeSwitch(midnight: item.isOn, title: item.title, flip: item.action)
+                    .help(item.hint)
+                Spacer(minLength: 0)
+            }
+        } else {
+            row
+        }
+    }
+
+    private var row: some View {
         HStack(spacing: 5) {
             Button(action: item.action) {
                 HStack(spacing: 5) {

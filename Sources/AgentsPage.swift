@@ -51,7 +51,9 @@ struct OylsPage: View {
                 }
             }
             HStack(spacing: 16) {
-                option("Midnight Oyl", isOn: midnight) { state.theme = midnight ? .standard : .midnight }
+                // Unlike the others, for it changes the whole look.
+                ThemeSwitch(midnight: midnight) { state.theme = midnight ? .standard : .midnight }
+                    .help("Midnight Oyl: a celestial atlas, for looking at")
                 // Staying open on display (as clicking its moon does): Midnight Oyl's alone.
                 if midnight {
                     option("Stay open", isOn: state.isPinned) { state.isPinned.toggle() }
