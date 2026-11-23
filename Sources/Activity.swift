@@ -191,6 +191,8 @@ private final class Sampler: @unchecked Sendable {
 struct ActivityPage: View {
     @ObservedObject var stats: SystemStats
     @ObservedObject var usage = TokenUsage.shared
+    /// (For GitHub's grid, turned on or off.)
+    @ObservedObject private var features = Features.shared
 
     /// The page's pink, for every meter, graph and figure on it.
     static let tint = Color(red: 1, green: 0.42, blue: 0.74)
@@ -202,6 +204,8 @@ struct ActivityPage: View {
         VStack(alignment: .leading, spacing: 8) {
             system
             ClaudeUsageRows(totals: usage.totals)
+            // (The page is taller by it, so it's always at the foot: see `Layout.githubHeight`.)
+            if features.isOn(.githubGrid) { GitHubRow() }
         }
         .padding(.horizontal, 24)
         .padding(.top, 6)

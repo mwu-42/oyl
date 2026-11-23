@@ -91,6 +91,7 @@ struct SettingsPage: View {
                 feature(.logPage, "Work log page", "What you got done, a #tag for each project, filed into a log with a tab each"),
                 feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
                 feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
+                feature(.githubGrid, "GitHub grid", "Your GitHub contributions this past year, on the Activity page, read with GitHub's gh tool"),
             ]
             if !midnight {
                 items.append(SettingItem(id: "mirror", title: "Mirror", hint: "The camera, for a look at yourself before a call",
