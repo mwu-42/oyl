@@ -8,7 +8,7 @@ import SwiftUI
 /// defaults, which any thread may ask.
 enum Feature: String, CaseIterable, Sendable {
     // The notch's pages (the Oyls' is always there: the settings are on it).
-    case musicPage, timersPage, awakePage, activityPage, ideasPage, projectsPage, logPage
+    case musicPage, timersPage, awakePage, activityPage, ideasPage, inboxPage, projectsPage
     /// GitHub's grid of your contributions, on the Activity page.
     case githubGrid
     /// With toyl installed (its list made), Oyl's to-dos, ideas, timers and projects are toyl's.

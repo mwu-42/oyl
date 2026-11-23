@@ -63,8 +63,6 @@ final class OutlineModel: ObservableObject {
     /// The line being typed in, if any.
     var focused: String?
     let store: ProjectStore
-    /// A project's last few check-ins from the work log, by its #tag: the day, and what was said.
-    var logged: (String) -> [(day: String, text: String)] = { _ in [] }
     /// Takes a screenshot (the window out of the way meanwhile) for the line `id`, or a new one under `parent`.
     var shoot: (_ id: String?, _ parent: String?) -> Void = { _, _ in }
     private var token = 0
@@ -219,20 +217,12 @@ final class OutlineModel: ObservableObject {
 final class ProjectsWindowController: NSObject, NSWindowDelegate {
     let model: OutlineModel
     private let store: ProjectStore
-    private let workLog: WorkLog
     private var window: ProjectsWindow?
 
-    init(store: ProjectStore, workLog: WorkLog) {
+    init(store: ProjectStore) {
         self.store = store
-        self.workLog = workLog
         model = OutlineModel(store: store)
         super.init()
-        model.logged = { [weak workLog] handle in
-            guard let workLog, !handle.isEmpty else { return [] }
-            return workLog.saved.entries.filter { $0.tag == handle }.sorted { $0.day > $1.day }.prefix(5).map {
-                (WorkLogDoc.dayTitle($0.day, calendar: workLog.calendar), $0.text)
-            }
-        }
         model.shoot = { [weak self] id, parent in self?.shoot(into: id, under: parent) }
     }
 
@@ -634,7 +624,6 @@ private struct OutlinePage: View {
                         .buttonStyle(PressableStyle())
                     }
                     .padding(.top, 8)
-                    if let node { logged(node) }
                 }
                 .padding(.leading, midnight ? 44 : 32)
                 .padding(.trailing, midnight ? 60 : 32)
@@ -757,31 +746,6 @@ private struct OutlinePage: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableStyle())
-    }
-
-    @ViewBuilder private func logged(_ node: ProjectNode) -> some View {
-        let entries = model.logged(node.handle)
-        if !entries.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("LOGGED  #\(node.handle)")
-                    .notchFont(size: 9.5, weight: .semibold, role: model.theme == .midnight ? .label : nil)
-                    .tracking(model.theme == .midnight ? 0 : 0.8)
-                    .foregroundStyle(.white.opacity(0.42))
-                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
-                    HStack(alignment: .firstTextBaseline, spacing: 10) {
-                        Text(entry.day)
-                            .notchFont(size: 10.5, digits: true)
-                            .foregroundStyle(.white.opacity(0.4))
-                            .frame(width: 92, alignment: .leading)
-                        Text(entry.text)
-                            .notchFont(size: 12)
-                            .foregroundStyle(.white.opacity(0.7))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-            .padding(.top, 26)
-        }
     }
 
     /// The pictures among what was dropped (files, or images dragged straight from a browser,

@@ -75,7 +75,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, ideas, projects, log, awake, agents, activity, mirror
+    case music, timers, ideas, inbox, awake, agents, activity, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -193,7 +193,6 @@ final class NotchState: ObservableObject {
     @Published var theme = NotchTheme(rawValue: UserDefaults.standard.string(forKey: "notch.theme") ?? "") ?? .standard {
         didSet {
             UserDefaults.standard.set(theme.rawValue, forKey: "notch.theme")
-            workLog.look = theme
             if theme != .midnight { isPinned = false }
             // Midnight Oyl has no camera page: it shows the hands, always, and no picture.
             if theme == .midnight, page == .mirror { page = .music }
@@ -238,28 +237,21 @@ final class NotchState: ObservableObject {
     /// ideas are about.
     let ideaDraft = IdeaDraft()
     let ideaPictures = IdeaPictures()
-    /// Your projects, as an outline (see `ProjectStore`), what's being put into one from the
-    /// projects page, how to take a screenshot for it, and how to open the outline's window (at a
-    /// line, if it's given). Set by the controller.
+    /// Your projects, as an outline (see `ProjectStore`), in a window of its own (right-click the
+    /// notch: Projects…), and how to open it (at a line, if it's given). Set by the controller.
     let projects = ProjectStore()
-    let projectDraft = IdeaDraft()
-    var takeProjectShot: () -> Void = {}
     var openProjects: (String?) -> Void = { _ in }
+    /// What's being typed into the inbox page, kept while the notch is closed.
+    let inboxDraft = LocalState("")
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
     /// tod's lists and tasks (its brain dump's the ideas page), shared with tod; or, with toyl
     /// here and its setting on, toyl's (see `TodStore.source`).
     let tod = TodStore()
-    /// Reminders for toyl's tasks with a time, while it's toyl's list (see `ToylReminders`).
-    private(set) lazy var toylReminders = ToylReminders(tod: tod)
-    /// Your check-ins, filed by #tag (see `WorkLog`).
-    let workLog = WorkLog()
     private var todForwarding: AnyCancellable?
     private var timerMirroring: AnyCancellable?
-    private var remindersForwarding: AnyCancellable?
     private var sourceSwitch: AnyCancellable?
     private var projectsForwarding: AnyCancellable?
-    private var logForwarding: AnyCancellable?
     private var forwarding: AnyCancellable?
     private var phoneForwarding: AnyCancellable?
 
@@ -300,7 +292,7 @@ final class NotchState: ObservableObject {
                     if !self.shows(self.page) { self.page = .agents }
                 }
             }
-        // toyl's list come or gone: the projects page goes or comes back.
+        // toyl's list come or gone: the outline goes or comes back.
         sourceSwitch = tod.$source.dropFirst().removeDuplicates().sink { [weak self] _ in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -310,14 +302,13 @@ final class NotchState: ObservableObject {
                 }
             }
         }
-        remindersForwarding = toylReminders.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
 
     /// toyl's list is the one in use (toyl's here, with its setting on): it stands in for Oyl's
     /// own projects outline, timers and to-dos.
     var usesToyl: Bool { tod.source == .toyl }
 
-    /// The projects page, its outline and their reminders: Oyl's own, so not while it's toyl's.
+    /// The projects outline (its window, and its reminders): Oyl's own, so not while it's toyl's.
     var showsProjects: Bool { Feature.projectsPage.isOn && !usesToyl }
 
     /// Told when the list in use changes (to put away the outline's window). Set by the controller.
@@ -328,12 +319,10 @@ final class NotchState: ObservableObject {
     /// Starts the phone remote, if it's on, and redraws the settings as it changes.
     func startPhone() {
         phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        // The ideas page's height goes by its ideas, and the log's by what's been filed today.
+        // The ideas and inbox pages' heights go by what's on them.
         todForwarding = tod.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        // The projects page's height goes by what's pressing; a reminder opens the notch.
+        // An outline reminder opens the notch.
         projectsForwarding = projects.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        logForwarding = workLog.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        workLog.look = theme
     }
 
     /// The ideas' rows as tall as they stand (each kind under its heading), and as much of that as
@@ -356,26 +345,15 @@ final class NotchState: ObservableObject {
         min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
-    /// The projects page's the same: what's pressing and what's unsorted, as far as they show.
-    /// (Kept the same way, till the outline or Unsorted changes, or the day, which is all that
-    /// brings a task into the week that's pressing.)
-    var projectListHeight: CGFloat {
-        let day = Calendar.current.startOfDay(for: Date())
-        let rows: CGFloat
-        if let kept = projectHeight, kept.day == day, kept.items == projects.items, kept.inbox == projects.inbox {
-            rows = kept.height
-        } else {
-            rows = ProjectBoard.height(of: ProjectBoard.rows(projects))
-            projectHeight = (projects.items, projects.inbox, day, rows)
-        }
-        return min(rows, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
+    /// The inbox page's list: its open tasks, as far as they show before they scroll.
+    var inboxListHeight: CGFloat {
+        min(InboxLayout.height(rows: tod.inbox.count), CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight)
     }
-    private var projectHeight: (items: [ProjectNode], inbox: [ProjectNode], day: Date, height: CGFloat)?
 
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .ideas, .projects, .log, .awake, .activity, .mirror, .settings].filter(shows)
+        [.agents, .music, .timers, .ideas, .inbox, .awake, .activity, .mirror, .settings].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
@@ -385,8 +363,7 @@ final class NotchState: ObservableObject {
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
         case .ideas: return Feature.ideasPage.isOn
-        case .projects: return showsProjects
-        case .log: return Feature.logPage.isOn
+        case .inbox: return Feature.inboxPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
         case .mirror: return showsMirrorTab
@@ -396,7 +373,7 @@ final class NotchState: ObservableObject {
     /// A timer's gone off, a task's time has come, or it's two in the morning: the notch pops open
     /// to say so.
     var isAlerting: Bool {
-        timers.ringing != nil || bedtime.reminding || toylReminders.ringing != nil || (showsProjects && projects.ringing != nil)
+        timers.ringing != nil || bedtime.reminding || (showsProjects && projects.ringing != nil)
     }
 
     var mode: NotchMode {
@@ -503,8 +480,7 @@ final class NotchState: ObservableObject {
             return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil && theme != .midnight ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
         case .ideas: return Layout.ideasHeight(list: ideaListHeight)
-        case .projects: return Layout.ideasHeight(list: projectListHeight)
-        case .log: return Layout.logHeight(today: workLog.entries().count, suggestions: !workLog.fromTod(tod).isEmpty)
+        case .inbox: return Layout.ideasHeight(list: inboxListHeight)
         case .awake: return Layout.awakeHeight
         case .agents:
             // The settings go under them all.
@@ -743,7 +719,6 @@ final class NotchController {
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
         state.takeIdeaShot = { [weak self] in self?.takeShot(for: .ideas) }
-        state.takeProjectShot = { [weak self] in self?.takeShot(for: .projects) }
         state.openProjects = { [weak self] id in self?.openProjects(at: id) }
         // toyl's list in use: the outline's window goes (and can't be opened) till it isn't.
         state.onSourceChange = { [weak self] in
@@ -1089,7 +1064,7 @@ final class NotchController {
     /// it's given), in the look Oyl's in.
     private func openProjects(at id: String?) {
         guard state.showsProjects else { return }
-        let window = projectsWindow ?? ProjectsWindowController(store: state.projects, workLog: state.workLog)
+        let window = projectsWindow ?? ProjectsWindowController(store: state.projects)
         projectsWindow = window
         window.theme = state.theme
         state.projects.weekStart = state.tod.weekStart
@@ -1269,7 +1244,7 @@ final class NotchController {
     /// it was.
     private func takeShot(for page: NotchPage) {
         guard !state.isTakingShot else { return }
-        let draft = page == .projects ? state.projectDraft : state.ideaDraft
+        let draft = state.ideaDraft
         state.isTakingShot = true
         hoverWork?.cancel()
         pointerInside = false

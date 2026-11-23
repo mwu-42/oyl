@@ -91,15 +91,18 @@ struct SettingsPage: View {
                 items.append(feature(.useToyl, "toyl", "With toyl installed, Oyl's to-dos, ideas, timers and projects are toyl's"))
             }
             if state.usesToyl {
-                items.append(feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines: toyl's ideas"))
+                items += [
+                    feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines: toyl's ideas"),
+                    feature(.inboxPage, "Inbox page", "Put a task in toyl's inbox, read as toyl reads it, and see what's there"),
+                ]
             } else {
                 items += [
                     feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines or rough aims, in tod's brain dump"),
-                    feature(.projectsPage, "Projects page", "Areas, projects and their tasks, ideas and screenshots, as an outline in its own window; what's pressing, with reminders"),
+                    feature(.inboxPage, "Inbox page", "Put a task in tod's inbox (“#name” for a list), and see what's there"),
+                    feature(.projectsPage, "Projects outline", "Areas, projects and their tasks, ideas and screenshots, as an outline in its own window (right-click the notch: Projects…), with reminders"),
                 ]
             }
             items += [
-                feature(.logPage, "Work log page", "What you got done, a #tag for each project, filed into a log with a tab each"),
                 feature(.awakePage, "Keep-awake page", "Keeping the Mac awake"),
                 feature(.activityPage, "Activity page", "The processor, memory and Claude Code's tokens"),
                 feature(.githubGrid, "GitHub grid", "Your GitHub contributions this past year, on the Activity page, read with GitHub's gh tool"),

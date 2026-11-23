@@ -113,8 +113,6 @@ final class IdeaDraft: ObservableObject {
     @Published private(set) var shot: URL?
     private(set) var shotImage: NSImage?
     @Published var wantsKeyboard = false
-    /// The projects page's: an idea, rather than a task.
-    @Published var asIdea = false
 
     /// `url` is the screenshot the idea's about (in place of any before it).
     func attach(_ url: URL) {

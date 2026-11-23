@@ -280,9 +280,6 @@ struct ExpandedNotch: View {
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
-                } else if let ringing = state.toylReminders.ringing {
-                    ToylReminderAlert(ringing: ringing, reminders: state.toylReminders)
-                        .transition(NotchView.swap)
                 } else if state.showsProjects, let task = state.projects.ringing {
                     ProjectAlert(task: task, projects: state.projects)
                         .transition(NotchView.swap)
@@ -297,11 +294,8 @@ struct ExpandedNotch: View {
                     case .ideas:
                         IdeasPage(tod: state.tod, state: state)
                             .transition(NotchView.swap)
-                    case .projects:
-                        ProjectsPage(projects: state.projects, state: state)
-                            .transition(NotchView.swap)
-                    case .log:
-                        LogPage(log: state.workLog, state: state, tod: state.tod)
+                    case .inbox:
+                        InboxPage(tod: state.tod, state: state)
                             .transition(NotchView.swap)
                     case .awake:
                         AwakePage(awake: awake, state: state)
@@ -350,8 +344,7 @@ struct PageTabs: View {
             if tabs.contains(.music) { tab(.music, symbol: "music.note") }
             if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
             if tabs.contains(.ideas) { tab(.ideas, symbol: "lightbulb") }
-            if tabs.contains(.projects) { tab(.projects, symbol: "list.bullet.indent") }
-            if tabs.contains(.log) { tab(.log, symbol: "book.closed") }
+            if tabs.contains(.inbox) { tab(.inbox, symbol: "tray.and.arrow.down") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
             if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }
