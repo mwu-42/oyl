@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 /// has AirDrop, a way to convert it and a way off the shelf; right-clicked, the rest (copy, show in Finder,
 /// the Trash). Click one to pick it out, shift-click another to pick out everything between, ⌘-click
 /// to pick out one more (or one fewer): they drag out together, and what's done to one of them is
-/// done to them all. Files dropped on the card or the tile, or chosen with its +, are kept.
+/// done to them all. ⌘-dragged, it's sent off: used wherever it's dropped, then into the Trash (see
+/// `SendOff`). Files dropped on the card or the tile, or chosen with its +, are kept.
 struct ShelfCard: View {
     @ObservedObject var shelf: Shelf
     let width: CGFloat
@@ -29,7 +30,7 @@ struct ShelfCard: View {
                 Text(Shelf.title)
                     .notchFont(size: 11, weight: .semibold, role: .label)
                     .foregroundStyle(.white.opacity(0.6))
-                    .help("Drag one out, or drop a file to convert")
+                    .help("Drag one out (⌘-drag to use it once, then it goes in the Trash), or drop a file to convert")
                 Spacer(minLength: 8)
                 if taking {
                     Text("Let go to keep it here")
@@ -272,8 +273,10 @@ struct ShelfTile: View {
                         .aspectRatio(contentMode: .fit)
                         .padding(3)
                 }
-                DragHandle(files: dragged, hovered: { hover.value = $0 }, pick: { shelf.pick(item, $0) },
+                DragHandle(files: dragged, midnight: midnight, hovered: { hover.value = $0 }, pick: { shelf.pick(item, $0) },
                            isAmongOthers: { shelf.acting(on: item).count > 1 }, open: { shelf.open(item) }, menu: { menu(true) })
+                    .help(item.kind == .photo ? "Drag it out, or ⌘-drag to use it once and take it off the shelf"
+                                              : "Drag it out, or ⌘-drag to use it once, then it goes in the Trash")
                 badge
                 if converting != nil || failure != nil {
                     shape.fill(Color.black.opacity(0.6))
@@ -346,9 +349,12 @@ struct ShelfTile: View {
     }
 
     /// What dragging it takes out: it, then the rest picked out with it, each with its picture.
-    private func dragged() -> [(url: URL, image: NSImage?)] {
+    /// ⌘-dragged (`sendingOff`), copies of them set aside, the originals to go once they've landed.
+    private func dragged(sendingOff: Bool) -> ShelfDrag.Outgoing {
         let rest = shelf.acting(on: item).filter { $0.url != item.url }
-        return ([item] + rest).map { ($0.url, shelf.thumbnails[$0.url]) }
+        let items = [item] + rest
+        guard sendingOff else { return ShelfDrag.Outgoing(files: items.map { ($0.url, shelf.thumbnails[$0.url]) }) }
+        return shelf.sendOff(items)
     }
 
     /// The format, low left; a recording's, a converted file's or one from Photos' mark beside it.
@@ -441,11 +447,13 @@ struct ShelfTile: View {
 
 /// Over a shelf item's picture: clicked, it's picked out (shift-clicked, everything between; ⌘,
 /// one more or fewer); dragged, it's the file itself (and the rest picked out with it), going out
-/// to whatever it's dropped on; double-clicked, it opens; right-clicked, its menu. (AppKit's own
-/// drag, so the notch can follow it out; see `ShelfDrag`.)
-private struct DragHandle: NSViewRepresentable {
-    /// What a drag takes out, the one pressed first.
-    let files: () -> [(url: URL, image: NSImage?)]
+/// to whatever it's dropped on; ⌘-dragged, the same, sent off (into the Trash once it's landed,
+/// its picture marked so); double-clicked, it opens; right-clicked, its menu. (AppKit's own drag,
+/// so the notch can follow it out; see `ShelfDrag`.)
+struct DragHandle: NSViewRepresentable {
+    /// What a drag takes out, the one pressed first: sent off (true), or not.
+    let files: (Bool) -> ShelfDrag.Outgoing
+    var midnight = false
     let hovered: (Bool) -> Void
     let pick: (Shelf.Picking) -> Void
     /// It's picked out, with others.
@@ -457,6 +465,7 @@ private struct DragHandle: NSViewRepresentable {
 
     func updateNSView(_ view: HandleView, context: Context) {
         view.files = files
+        view.midnight = midnight
         view.hovered = hovered
         view.pick = pick
         view.isAmongOthers = isAmongOthers
@@ -465,7 +474,8 @@ private struct DragHandle: NSViewRepresentable {
     }
 
     final class HandleView: NSView {
-        var files: () -> [(url: URL, image: NSImage?)] = { [] }
+        var files: (Bool) -> ShelfDrag.Outgoing = { _ in ShelfDrag.Outgoing(files: []) }
+        var midnight = false
         var hovered: (Bool) -> Void = { _ in }
         var pick: (Shelf.Picking) -> Void = { _ in }
         var isAmongOthers: () -> Bool = { false }
@@ -475,6 +485,9 @@ private struct DragHandle: NSViewRepresentable {
         /// Pressed plainly on one picked out with others: it's picked out alone only once it's let
         /// go without a drag, so they can all be dragged out together.
         private var pickOnRelease = false
+        /// ⌘-pressed: picked out (or not) only once it's let go without a drag, since a ⌘-drag
+        /// sends it off instead.
+        private var toggleOnRelease = false
 
         // The panel's rarely key, so the first press has to start the drag.
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -492,11 +505,12 @@ private struct DragHandle: NSViewRepresentable {
         override func mouseDown(with event: NSEvent) {
             pressed = event
             pickOnRelease = false
+            toggleOnRelease = false
             let keys = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             if keys.contains(.shift) {
                 pick(.through)
             } else if keys.contains(.command) {
-                pick(.toggle)
+                toggleOnRelease = true
             } else if event.clickCount == 2 {
                 pressed = nil
                 open()
@@ -513,24 +527,39 @@ private struct DragHandle: NSViewRepresentable {
             guard hypot(to.x - from.x, to.y - from.y) > 3 else { return }
             self.pressed = nil
             pickOnRelease = false
-            let files = files()
-            guard !files.isEmpty else { return }
-            // Each its own picture, piled a little behind the one pressed.
-            let items = files.enumerated().map { index, file in
+            toggleOnRelease = false
+            // ⌘ held as it was pressed: it's sent off.
+            let sendingOff = pressed.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command)
+            let outgoing = files(sendingOff)
+            guard !outgoing.files.isEmpty else {
+                outgoing.after?(false)
+                return
+            }
+            // Each its own picture, piled a little behind the one pressed (marked, on top, if
+            // they're being sent off).
+            let items = outgoing.files.enumerated().map { index, file in
                 let picture = file.image ?? NSWorkspace.shared.icon(forFile: file.url.path)
                 let item = NSDraggingItem(pasteboardWriter: file.url as NSURL)
                 let step = CGFloat(min(index, 3)) * 4
-                item.setDraggingFrame(fitted(picture.size).offsetBy(dx: step, dy: -step), contents: picture)
+                let frame = fitted(picture.size).offsetBy(dx: step, dy: -step)
+                let shown = outgoing.after != nil && index == 0 ? SendOff.marked(picture, size: frame.size, midnight: midnight) : picture
+                item.setDraggingFrame(frame, contents: shown)
                 return item
             }
+            ShelfDrag.shared.sendingOff(outgoing.after)
             let session = beginDraggingSession(with: items, event: pressed, source: ShelfDrag.shared)
             if items.count > 1 { session.draggingFormation = .pile }
         }
 
         override func mouseUp(with event: NSEvent) {
-            if pickOnRelease { pick(.only) }
+            if toggleOnRelease {
+                pick(.toggle)
+            } else if pickOnRelease {
+                pick(.only)
+            }
             pressed = nil
             pickOnRelease = false
+            toggleOnRelease = false
         }
 
         override func rightMouseDown(with event: NSEvent) {

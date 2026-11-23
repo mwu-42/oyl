@@ -39,6 +39,10 @@ final class DockController {
         model.toggleShelf = { [weak self] in self?.toggleShelf() }
         ShelfDrag.shared.moved = { [weak self] point in self?.shelfDragMoved(to: point) }
         ShelfDrag.shared.ended = { [weak self] point in self?.shelfDragEnded(at: point) }
+        ShelfDrag.shared.isOnShelf = { [weak self] point in
+            guard let self, self.model.isShelving else { return false }
+            return self.cardRect().contains(point)
+        }
 
         state.$theme.sink { [weak self] theme in
             self?.model.theme = theme

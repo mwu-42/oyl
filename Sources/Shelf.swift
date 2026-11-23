@@ -141,6 +141,8 @@ final class Shelf: ObservableObject {
         ClaudeFiles.shared.changed = { [weak self] in self?.refresh() }
         if defaults.bool(forKey: Self.key("watching")), isOn { watch(asking: false) }
         refresh()
+        // Copies of what was sent off, a day or more ago (see `SendOff`).
+        DispatchQueue.global(qos: .utility).async { SendOff.sweep() }
     }
 
     /// Where its settings are kept: the screenshots' shelf's, as they always were.
@@ -611,6 +613,45 @@ final class Shelf: ObservableObject {
         remove(item)
     }
 
+    // MARK: Sending off
+
+    /// ⌘-dragged out (see `SendOff`): what's dragged, copies of them set aside, and what's done
+    /// once it's let go. If it landed somewhere, the originals go into the Trash (one out of
+    /// Photos is only taken off the shelf, as its Trash button does). If it landed nowhere, the
+    /// copies go and everything's as it was. One that can't be set aside goes out as an ordinary
+    /// drag and stays, and says so.
+    func sendOff(_ items: [Item]) -> ShelfDrag.Outgoing {
+        DispatchQueue.global(qos: .utility).async { SendOff.sweep() }
+        var files: [(url: URL, image: NSImage?)] = [], going: [Item] = [], copies: [URL] = []
+        for item in items {
+            let image = thumbnails[item.url]
+            // Oyl's own copy out of Photos: it isn't deleted, so it goes as it is.
+            if item.kind == .photo {
+                files.append((item.url, image))
+                going.append(item)
+                continue
+            }
+            guard let copy = SendOff.setAside(item.url) else {
+                fail(item.url, "Couldn't set it aside to send off, so it's kept")
+                files.append((item.url, image))
+                continue
+            }
+            files.append((copy, image))
+            going.append(item)
+            copies.append(copy)
+        }
+        return ShelfDrag.Outgoing(files: files) { [weak self] landed in
+            guard landed else {
+                copies.forEach { SendOff.discard($0) }
+                return
+            }
+            self?.trash(going)
+            if !copies.isEmpty { SendOff.chime() }
+            // And the copies go a day on, even if nothing more is sent off before then.
+            DispatchQueue.global(qos: .utility).asyncAfter(wallDeadline: .now() + SendOff.kept + 60) { SendOff.sweep() }
+        }
+    }
+
     private func saveKept() {
         let entries: [[String: Any]] = kept.map { ["path": $0.url.path, "kind": $0.kind.rawValue, "date": $0.date] }
         UserDefaults.standard.set(entries, forKey: key("kept"))
@@ -744,12 +785,39 @@ final class ShelfDrag: NSObject, NSDraggingSource {
     var moved: (NSPoint) -> Void = { _ in }
     /// Where it was let go.
     var ended: (NSPoint) -> Void = { _ in }
+    /// Whether a point on the screen is on the shelf's own card, where nothing it drags lands.
+    var isOnShelf: (NSPoint) -> Bool = { _ in false }
     private(set) var isDragging = false
+    /// For a drag that sends what's dragged off (see `SendOff`): what's done once it's let go,
+    /// told whether it landed anywhere.
+    private var after: (@MainActor (Bool) -> Void)?
+
+    /// What a drag out takes: the files, each with its picture, and, if it's sending them off,
+    /// what's done once it's let go.
+    struct Outgoing {
+        var files: [(url: URL, image: NSImage?)]
+        var after: (@MainActor (Bool) -> Void)?
+    }
+
+    /// The drag about to begin sends what it takes off, `after` done once it's let go.
+    func sendingOff(_ after: (@MainActor (Bool) -> Void)?) { self.after = after }
+
+    /// The drag's over: whatever it was sending off is seen to, once.
+    func finish(landed: Bool) {
+        let after = self.after
+        self.after = nil
+        after?(landed)
+    }
 
     func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
         // Into Oyl's own Dock too: onto an app there.
         context == .outsideApplication ? [.copy, .generic] : .copy
     }
+
+    /// ⌘ is how a drag that sends things off began, and it's likely held still. Held at the drop,
+    /// it would otherwise narrow what the drag can do to a "generic" drop, which some apps
+    /// (Oyl's own Dock among them) won't take.
+    func ignoreModifierKeys(for session: NSDraggingSession) -> Bool { after != nil }
 
     func draggingSession(_ session: NSDraggingSession, willBeginAt screenPoint: NSPoint) {
         isDragging = true
@@ -762,6 +830,7 @@ final class ShelfDrag: NSObject, NSDraggingSource {
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         isDragging = false
         ended(screenPoint)
+        finish(landed: operation != [] && !isOnShelf(screenPoint))
     }
 }
 
