@@ -14,6 +14,9 @@ struct CurrentSpace: Equatable {
     /// case, as names Oyl gives are (one you type is kept as you type it).
     let standard: String
     let isFullscreen: Bool
+    /// The window server's number for it, and (a fullscreen app's) its app.
+    var id = 0
+    var pid: pid_t?
 }
 
 enum Spaces {
@@ -28,18 +31,32 @@ enum Spaces {
     /// The one showing, from a display's list (see `FullscreenSpace.display(for:)`): `boot` is when
     /// the Mac started, as window numbers only last till then; `appName` an app's name, by pid.
     static func current(in display: [String: Any], boot: Int, appName: (pid_t) -> String?) -> CurrentSpace? {
-        guard let space = display["Current Space"] as? [String: Any], let id = number(space["ManagedSpaceID"]) else { return nil }
+        guard let space = display["Current Space"] as? [String: Any] else { return nil }
+        return self.space(space, in: display, boot: boot, appName: appName)
+    }
+
+    /// All of a display's Spaces, in order (as ⌃← and ⌃→ go between them), and which is showing.
+    static func all(in display: [String: Any], boot: Int, appName: (pid_t) -> String?) -> (spaces: [CurrentSpace], current: Int?) {
+        let spaces = (display["Spaces"] as? [[String: Any]] ?? []).compactMap { space($0, in: display, boot: boot, appName: appName) }
+        let showing = (display["Current Space"] as? [String: Any]).flatMap { number($0["ManagedSpaceID"]) }
+        return (spaces, spaces.firstIndex { $0.id == showing })
+    }
+
+    /// One of a display's Spaces, as it's named and kept.
+    private static func space(_ space: [String: Any], in display: [String: Any], boot: Int, appName: (pid_t) -> String?) -> CurrentSpace? {
+        guard let id = number(space["ManagedSpaceID"]) else { return nil }
         let uuid = (space["uuid"] as? String).flatMap { $0.isEmpty ? nil : $0 }
         let key = "space:" + (uuid ?? "id\(id)")
         if number(space["type"]) == FullscreenSpace.fullscreenType {
             let window = number(space["fs_wid"]).map { "window:\(boot)-\($0)" }
-            let name = number(space["pid"]).flatMap { appName(pid_t($0)) } ?? "Full Screen"
-            return CurrentSpace(key: key, window: window, standard: name.lowercased(), isFullscreen: true)
+            let pid = number(space["pid"]).map { pid_t($0) }
+            let name = pid.flatMap(appName) ?? "Full Screen"
+            return CurrentSpace(key: key, window: window, standard: name.lowercased(), isFullscreen: true, id: id, pid: pid)
         }
         let desktops = (display["Spaces"] as? [[String: Any]] ?? []).filter { number($0["type"]) != FullscreenSpace.fullscreenType }
         let index = desktops.firstIndex { number($0["ManagedSpaceID"]) == id }
         return CurrentSpace(key: key, window: nil, standard: (index.map { "Desktop \($0 + 1)" } ?? "Desktop").lowercased(),
-                            isFullscreen: false)
+                            isFullscreen: false, id: id)
     }
 
     private static func number(_ value: Any?) -> Int? { (value as? NSNumber)?.intValue }

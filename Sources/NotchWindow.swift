@@ -675,6 +675,8 @@ final class NotchController {
     private var approvalCorner: ApprovalCorner?
     private var spaceLabel: SpaceLabel?
     private var pictureInPicture: PictureInPicture?
+    /// Three fingers up: the desktops and their windows (see `DesktopsViewer`), while it's on.
+    private var desktops: DesktopsViewer?
     /// The outline of every project, once it's been opened.
     private var projectsWindow: ProjectsWindowController?
     private var controlTaps: TapWatcher?
@@ -731,6 +733,8 @@ final class NotchController {
         spaceLabel = SpaceLabel(state: state)
         spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
         pictureInPicture = PictureInPicture(state: state)
+        Features.shared.follow(.desktopsView) { [weak self] on in self?.followDesktops(on) }
+            .store(in: &cancellables)
 
         let center = NotificationCenter.default
         center.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -887,6 +891,7 @@ final class NotchController {
                 MainActor.assumeIsolated {
                     self?.walkers.theme = theme
                     self?.projectsWindow?.theme = theme
+                    self?.desktops?.theme = theme
                 }
             }
             .store(in: &cancellables)
@@ -1001,6 +1006,26 @@ final class NotchController {
         castOyls()
     }
 
+    /// Three fingers up for the desktops, or not: the trackpads read and the desktops' pictures
+    /// kept only while it's on.
+    private func followDesktops(_ on: Bool) {
+        guard on else {
+            desktops?.stop()
+            desktops = nil
+            return
+        }
+        guard desktops == nil else { return }
+        let viewer = DesktopsViewer()
+        viewer.theme = state.theme
+        viewer.isResting = state.isResting
+        viewer.isAllowed = { [weak self] in
+            guard let self else { return false }
+            return !self.state.isOff && !self.state.isResting
+        }
+        viewer.start()
+        desktops = viewer
+    }
+
     /// Stops drawing the notch and the Oyls, watching the camera, reading your voice, analyzing
     /// the music and asking the player about it so often, or starts again: while the lid's shut
     /// with no other screen on, or Oyl's switched off.
@@ -1016,6 +1041,7 @@ final class NotchController {
             close()
         }
         walkers.isResting = resting
+        desktops?.isResting = resting
         gestures.isSuspended = resting
         state.nowPlaying.resting = resting
         state.dictation.resting = resting

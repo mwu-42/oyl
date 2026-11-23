@@ -192,6 +192,15 @@ struct SettingsPage: View {
                 feature(.pictureInPicture, "⌃⌥P Picture in picture", "The window in front, kept up small over every desktop and fullscreen app (or right-click an app in Oyl's Dock); again to put it away"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
+                SettingItem(id: Feature.desktopsView.rawValue, title: "Three fingers up: desktops",
+                            hint: MissionControlSwipe.isTheSystems()
+                                ? "Your desktops and this one's windows, Oyl's way. First set Mission Control's swipe to four fingers or off, in System Settings › Trackpad › More Gestures (turning this on opens it)"
+                                : "Your desktops and this one's windows, Oyl's way, instead of Mission Control; three fingers down, Escape or a click puts them away",
+                            isOn: Feature.desktopsView.isOn) {
+                    Features.shared.toggle(.desktopsView)
+                    // macOS still answering three fingers up itself: where to change that.
+                    if Feature.desktopsView.isOn, MissionControlSwipe.isTheSystems() { MissionControlSwipe.openSettings() }
+                },
             ]
         case .dock:
             return [

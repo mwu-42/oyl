@@ -56,6 +56,8 @@ enum Feature: String, CaseIterable, Sendable {
     case spaceLabel
     /// Picture in picture for any window, over every desktop: ⌃⌥P, or from Oyl's Dock.
     case pictureInPicture
+    /// Three fingers up: Oyl's own view of the desktops and the windows, for Mission Control's.
+    case desktopsView
 
     case openAtLogin
 
