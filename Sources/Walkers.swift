@@ -18,22 +18,17 @@ import SwiftUI
 /// With the dimming setting on, the menu bar goes 80% black behind them, in a fullscreen app as
 /// well, so they stand out from its text.
 ///
-/// Right of the notch is the calendar bar (unless it's turned off): events sliding in from the
-/// right and off to the left as the time passes (long empty stretches squeezed, so what's next is
-/// always on it), with an Oyl (unless that's turned off) standing at now doing whatever the event
-/// on now is, or, with nothing else on today, peering ahead with a magnifying glass.
-///
 /// In Midnight Oyl they're moyls, little planets (see `Moyl`), and float rather than walk: easing
 /// off and drifting to a stop, each circling slowly round where it's got to as an orrery's planet
 /// does, swinging side to side and dipping nearer and back, and bobbing as it goes. Past the notch
 /// they go behind it, as a planet passes behind another. What they say is set in Midnight's type
 /// on a soft patch of night, with no edge to it; a moyl whose work is done flares like a nova
 /// before it drifts off. While Midnight's band is open it covers the whole bar, and they fade away
-/// under it (and aren't drawn) until it's gone. The calendar bar is Gargoyle's alone.
+/// under it (and aren't drawn) until it's gone.
 ///
 /// They all get a see-through window of their own along the top of the screen, above the menu
 /// bar and under the notch, reaching a little below the bar for what they say. It takes the
-/// pointer only while it's over an Oyl or the calendar.
+/// pointer only while it's over an Oyl.
 @MainActor
 final class WalkerOverlay {
     nonisolated static let speed: CGFloat = 46                // points a second
@@ -42,8 +37,6 @@ final class WalkerOverlay {
     nonisolated static let floating: CGFloat = 0.6
     static let floatingStay: ClosedRange<TimeInterval> = 14...30
     nonisolated static let cheer: TimeInterval = 1.8          // jumping for joy, before walking off
-    /// How much of the calendar bar has gone by.
-    nonisolated static let past: CGFloat = 0.2
     /// How long walking across the notch takes.
     nonisolated static let crossing: TimeInterval = 0.5
     /// Room under the menu bar for speech bubbles.
@@ -61,15 +54,13 @@ final class WalkerOverlay {
     var onSelfie: (URL) -> Void = { _ in }
     /// An Oyl with a page of its own in the notch was clicked: the song's, a timer's.
     var onOpen: (Walker.Job) -> Void = { _ in }
-    /// The calendar bar was clicked.
-    var onCalendar: () -> Void = {}
     /// What an Oyl would say it's doing.
     var describe: (Walker.Job) -> String = { _ in "" } {
         didSet { walkers.describe = describe }
     }
 
     private let panel: NSPanel
-    /// Where the closed notch is along the bar (the calendar goes right of it), and how much of
+    /// Where the closed notch is along the bar, and how much of
     /// the bar the notch covers now: more while it's open. That's what Oyls skip across, fade
     /// out under, and don't stop at.
     private var notch: ClosedRange<CGFloat> = 0...0
@@ -94,7 +85,7 @@ final class WalkerOverlay {
     /// Along the bar from its left, what they keep off besides: the desktop's name, at the top
     /// left (see `SpaceLabel`). One standing there as it comes moves out of the way.
     var keepClear: ClosedRange<CGFloat>? {
-        didSet { if keepClear != oldValue { layOutCalendar() } }
+        didSet { if keepClear != oldValue { layOutBar() } }
     }
     /// The menu bar goes dark behind them whenever they're out.
     var dimsBar = false {
@@ -123,14 +114,6 @@ final class WalkerOverlay {
     var showsCountdowns = true {
         didSet { if showsCountdowns != walkers.allCountdowns { walkers.allCountdowns = showsCountdowns } }
     }
-    /// The calendar bar's out at all.
-    var showsCalendar = true {
-        didSet {
-            guard showsCalendar != oldValue else { return }
-            layOutCalendar()
-            show()
-        }
-    }
     /// Which look they're in: Oyls in Gargoyle, moyls in Midnight Oyl. Those on their way when it
     /// changes carry on from where they are, at the new look's pace.
     var theme = NotchTheme.standard {
@@ -150,7 +133,7 @@ final class WalkerOverlay {
                 move(&walkers.list[index], to: walker.to, at: now, speed: dashing ? walker.speed : walker.leaving ? leavingSpeed : nil,
                      stay: stay)
             }
-            layOutCalendar()
+            layOutBar()
             show()
         }
     }
@@ -250,7 +233,7 @@ final class WalkerOverlay {
         let notch = (notch.lowerBound - screen.frame.minX)...(notch.upperBound - screen.frame.minX)
         if notch != self.notch {
             self.notch = notch
-            layOutCalendar()
+            layOutBar()
         }
         let covered = (covered.lowerBound - screen.frame.minX)...(covered.upperBound - screen.frame.minX)
         if covered != self.covered {
@@ -305,22 +288,13 @@ final class WalkerOverlay {
         show()
     }
 
-    /// Today's events, for the calendar bar; `note` says why there are none, if there's a reason.
-    func showCalendar(_ events: [DayEvent], note: String?) {
-        if events != walkers.events { walkers.events = events }
-        if note != walkers.calendarNote { walkers.calendarNote = note }
-        layOutCalendar()
-        show()
-    }
-
     /// Shows them all (they come out again once cast: from the right if they were flung off
-    /// there), or flings them all off to the right, calendar fading with them, and then hides.
+    /// there), or flings them all off to the right, and then hides.
     func setShown(_ shown: Bool) {
         guard shown != isShown else { return }
         isShown = shown
         updateDim()
         linedUpUntil = .distantPast
-        walkers.away = !shown
         if shown {
             returningFromRight = true
             show()
@@ -517,7 +491,7 @@ final class WalkerOverlay {
             let group = walkers.list[index].job.group
             if let last, last != group { x += 14 }
             last = group
-            // Round the notch and the calendar rather than lining up behind them.
+            // Round the notch and the clock rather than lining up behind them.
             for range in blocked.sorted(by: { $0.lowerBound < $1.lowerBound }) where range.overlaps((x - reach.left - 6)...(x + reach.right + 6)) {
                 x = range.upperBound + reach.left + 6
             }
@@ -540,17 +514,7 @@ final class WalkerOverlay {
         updateLively(at: now)
     }
 
-    /// The open notch reaches to `right` (screen coordinates), or nil when it's closed: the
-    /// calendar bar slides clear of it meanwhile.
-    func notchOpen(to right: CGFloat?) {
-        var nudge: CGFloat = 0
-        if let right, let strip = walkers.calendar {
-            nudge = max(0, min(right - panel.frame.minX + 8 - strip.minX, panel.frame.width - 4 - strip.maxX))
-        }
-        if nudge != walkers.calendarNudge { walkers.calendarNudge = nudge }
-    }
-
-    /// Takes the pointer only while it's over an Oyl or the calendar, so the menu bar works
+    /// Takes the pointer only while it's over an Oyl, so the menu bar works
     /// everywhere else.
     func pointerMoved(to location: NSPoint) {
         // The very top row counts too: there the pointer's right on the panel's top edge.
@@ -564,7 +528,7 @@ final class WalkerOverlay {
         guard !inFullscreen else { return }
         let point = CGPoint(x: location.x - panel.frame.minX, y: panel.frame.maxY - location.y)
         let hit = walker(at: point)
-        let over = hit != nil || walkers.calendarFrame?.contains(point) == true
+        let over = hit != nil
         if panel.ignoresMouseEvents == over { panel.ignoresMouseEvents = !over }
         // Up in the band's sky, the one under the pointer shows its ring of words.
         let hovered = isUnderBand ? hit?.id : nil
@@ -572,7 +536,7 @@ final class WalkerOverlay {
     }
 
     /// A click seen on its way to another app: in a fullscreen app, where the Oyls don't take the
-    /// pointer, one on an Oyl or the calendar still counts. It reaches what's under them too,
+    /// pointer, one on an Oyl still counts. It reaches what's under them too,
     /// usually the black band by the notch (or the menu bar, if it's slid down).
     func clickedThrough(at location: NSPoint) {
         let frame = panel.frame
@@ -582,7 +546,7 @@ final class WalkerOverlay {
     }
 
     private func show() {
-        guard isShown, !isResting, !walkers.list.isEmpty || walkers.calendar != nil else { return }
+        guard isShown, !isResting, !walkers.list.isEmpty else { return }
         if !panel.isVisible { showPanel() }
         if planner == nil {
             planner = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
@@ -605,22 +569,16 @@ final class WalkerOverlay {
         if panel.frame != frame { panel.setFrame(frame, display: false) }
     }
 
-    /// The calendar bar: right of the notch, up to the menu bar's icons, as room allows. And the
-    /// clock, last of the icons, which Oyls keep off.
-    private func layOutCalendar() {
+    /// The clock, last of the menu bar's icons, which Oyls keep off, and any Oyl the notch or the
+    /// clock has come over moved out of the way.
+    private func layOutBar() {
         guard panel.frame.width > 0 else { return }
         let items = Self.menuBarIcons(on: panel.frame).map {
             (name: $0.name, span: ($0.span.lowerBound - panel.frame.minX)...($0.span.upperBound - panel.frame.minX))
         }
-        let left = notch.upperBound + 10
-        let room = (items.map(\.span.lowerBound).filter { $0 > left }.min() ?? .greatestFiniteMagnitude) - 10 - left
-        // Turned off, in Midnight Oyl (it's Gargoyle's), or too little room left of the icons: no
-        // bar, rather than one over them.
-        let frame = showsCalendar && !floats && room >= 120 ? CGRect(x: left, y: 0, width: min(room, 420), height: bar) : nil
-        if frame != walkers.calendar { walkers.calendar = frame }
         // By name if the system says, else the last one: the clock always is.
         clock = (items.first(where: { $0.name == "Clock" }) ?? items.last)?.span
-        // One the notch, the bar or the clock has come over moves out of the way.
+        // One the notch or the clock has come over moves out of the way.
         let now = Date()
         for index in walkers.list.indices where !walkers.list[index].leaving && !isClear(walkers.list[index].to) {
             plan(&walkers.list[index], at: now, among: walkers.list)
@@ -668,10 +626,10 @@ final class WalkerOverlay {
         pointerMoved(to: NSEvent.mouseLocation)
         // Menu bar icons come and go.
         ticks += 1
-        if ticks % 20 == 0 { layOutCalendar() }
+        if ticks % 20 == 0 { layOutBar() }
         updatePause()
         updateLively(at: now)
-        guard list.isEmpty, walkers.calendar == nil || !isShown else {
+        guard list.isEmpty else {
             // Taken down from outside while they're out: back up.
             if isShown, !isResting, !panel.isVisible { showPanel() }
             return
@@ -855,19 +813,19 @@ final class WalkerOverlay {
     }
 
     /// Where Oyls don't stop: the notch, with the stretch beside it where they'd still be partly
-    /// faded (so none is left standing there half see-through), the calendar and the clock. Each
+    /// faded (so none is left standing there half see-through), and the clock. Each
     /// is kept clear of an Oyl's whole reach, its things and label and all.
     private var blocked: [ClosedRange<CGFloat>] {
         let reach = self.reach, gap = self.gap
         // As far as an Oyl's reach goes either side of a middle that's just faded all the way in.
         let notch = min(covered.lowerBound, gap.lowerBound - Walker.fade + reach.right + 6)
             ... max(covered.upperBound, gap.upperBound + Walker.fade - reach.left - 6)
-        return [notch] + (walkers.calendar.map { [$0.minX...$0.maxX] } ?? []) + (clock.map { [$0] } ?? [])
+        return [notch] + (clock.map { [$0] } ?? [])
             + (keepClear.map { [$0] } ?? [])
     }
 
     /// Whether an Oyl at its job at `x` would be in the clear: on screen, its things and label
-    /// clear of the notch, the calendar and the clock.
+    /// clear of the notch and the clock.
     private func isClear(_ x: CGFloat) -> Bool {
         let reach = self.reach
         guard x >= reach.left + 4, x <= panel.frame.width - reach.right - 4 else { return false }
@@ -876,7 +834,7 @@ final class WalkerOverlay {
     }
 
     /// Somewhere along the bar with room for it, its things and its label: clear of the notch,
-    /// the calendar, the clock and the edges, and never where another is (or is headed). Picked at random
+    /// the clock and the edges, and never where another is (or is headed). Picked at random
     /// from all such places; if there are none, the one with the most room.
     private func spot(for walker: Walker, among others: [Walker]) -> CGFloat {
         let width = panel.frame.width, reach = self.reach
@@ -936,8 +894,6 @@ final class WalkerOverlay {
             } else {
                 plan(&walkers.list[index], at: now, among: walkers.list, after: 0.7)
             }
-        } else if let strip = walkers.calendarFrame, strip.contains(point) {
-            onCalendar()
         }
     }
 }
@@ -1451,17 +1407,6 @@ final class Walkers: ObservableObject {
     @Published var dimmed = false
     /// Countdowns beside them all the time, not just in their last three minutes.
     @Published var allCountdowns = true
-    /// How far the calendar bar has slid right, clear of the open notch.
-    @Published var calendarNudge: CGFloat = 0
-
-    /// Where the calendar bar is now, nudge and all.
-    var calendarFrame: CGRect? { calendar?.offsetBy(dx: calendarNudge, dy: 0) }
-    /// Sent off: the calendar fades away as they go.
-    @Published var away = false
-    /// The calendar bar, in the panel, and the events for it.
-    @Published var calendar: CGRect?
-    @Published var events: [DayEvent] = []
-    @Published var calendarNote: String?
     /// Pictures of their countdowns, as they're drawn.
     let labels = LabelPictures()
     /// Their window's off screen (resting, hidden, or with nothing out), or they've faded away
@@ -1492,8 +1437,6 @@ final class Walkers: ObservableObject {
         return Saying(text: "♪ " + (lyricLine(date) ?? "…"), image: nil, from: date, until: date.addingTimeInterval(1))
     }
 
-    func current(at date: Date) -> DayEvent? { events.current(at: date) }
-    func next(after date: Date) -> DayEvent? { events.next(after: date) }
 }
 
 /// Midnight's band, open, as moyls floating in its sky see it: how big it is and how deep it
@@ -1711,8 +1654,7 @@ final class FirstClickHostingView<Content: View>: NSHostingView<Content> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// The calendar bar underneath (redrawn now and then; it only creeps along), the Oyls on top,
-/// each in a canvas of its own so only the little bits that move get redrawn, and what they're
+/// The Oyls, each in a canvas of its own so only the little bits that move get redrawn, and what they're
 /// saying below the bar. In Midnight Oyl, only the bar's dimming: `MoylsView`, over this, has
 /// the moyls (but this still takes their clicks).
 private struct WalkersView: View {
@@ -1724,14 +1666,6 @@ private struct WalkersView: View {
             dim
                 .opacity(walkers.dimmed ? 1 : 0)
                 .animation(.easeOut(duration: 0.2), value: walkers.dimmed)
-            if let strip = walkers.calendar {
-                CalendarBar(events: walkers.events, note: walkers.calendarNote)
-                    .frame(width: strip.width, height: strip.height)
-                    .offset(x: strip.minX + walkers.calendarNudge, y: strip.minY)
-                    .opacity(walkers.away ? 0 : 1)
-                    .animation(.easeOut(duration: 0.6), value: walkers.away)
-                    .animation(NotchView.open, value: walkers.calendarNudge)
-            }
             if walkers.theme != .midnight {
                 // 10 a second: smooth enough for a little walk, and easy on the CPU; while one's
                 // going (cheering, waving, hopping off), 30.
@@ -1822,7 +1756,7 @@ private struct WalkersView: View {
         }
     }
 
-    /// Who's saying something now, and where each is: the calendar's Oyl, and every Oyl.
+    /// Who's saying something now, and where each is.
     private func speakers(at date: Date, height: CGFloat) -> [Speaker] {
         var speakers: [Speaker] = []
         for walker in walkers.list {
@@ -2364,177 +2298,5 @@ private struct MoylSaying: View {
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Midnight.ink.opacity(0.8)).padding(2).blur(radius: 5))
         .padding(Self.margin)
         .fixedSize()
-    }
-}
-
-/// Today along a line: what's gone by on the left fifth, dimmed, what's coming up to the right,
-/// each event in its calendar's color with its name and time; all-day and multi-day events as a
-/// ribbon along its edge, named on outlined tags in the gaps between the rest.
-private struct CalendarBar: View {
-    let events: [DayEvent]
-    let note: String?
-
-    private static let time: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "h:mm"
-        return formatter
-    }()
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 10)) { context in
-            Canvas { canvas, size in
-                draw(in: canvas, size: size, at: context.date)
-            }
-        }
-    }
-
-    private func draw(in canvas: GraphicsContext, size: CGSize, at date: Date) {
-        let bounds = CGRect(origin: .zero, size: size).insetBy(dx: 0, dy: 2)
-        let shape = Path(roundedRect: bounds, cornerRadius: bounds.height / 2)
-        canvas.fill(shape, with: .color(.black.opacity(0.35)))
-        var inside = canvas
-        inside.clip(to: shape)
-        let timeline = Timeline(events: events, at: date)
-        let now = bounds.minX + bounds.width * WalkerOverlay.past
-        // Six hours along the bar where nothing's squeezed.
-        let perSecond = bounds.width / CGFloat(6 * 3600)
-        func x(_ moment: Date) -> CGFloat { now + CGFloat(timeline.offset(to: moment)) * perSecond }
-
-        // A tick for each hour, top and bottom (bunched up where time's squeezed), and at
-        // midnight a taller one with the day's name.
-        if var hour = Calendar.current.dateInterval(of: .hour, for: date.addingTimeInterval(-2 * 3600))?.start {
-            var hours = 0
-            while x(hour) < bounds.maxX, hours < 24 * 8 {
-                let tick = x(hour)
-                if Calendar.current.component(.hour, from: hour) == 0 {
-                    inside.fill(Path(CGRect(x: tick - 0.5, y: bounds.minY, width: 1, height: bounds.height)), with: .color(.white.opacity(0.3)))
-                    let day = inside.resolve(Text(hour.formatted(.dateTime.weekday(.abbreviated)))
-                        .font(.system(size: 7.5, weight: .semibold)).foregroundColor(.white.opacity(0.5)))
-                    inside.draw(day, at: CGPoint(x: tick + 3, y: bounds.minY + 1), anchor: .topLeading)
-                } else {
-                    for y in [bounds.minY, bounds.maxY - 3] {
-                        inside.fill(Path(CGRect(x: tick - 0.5, y: y, width: 1, height: 3)), with: .color(.white.opacity(0.25)))
-                    }
-                }
-                hour.addTimeInterval(3600)
-                hours += 1
-            }
-        }
-
-        // Names start just past the line at now.
-        let oylReach: CGFloat = 5
-
-        // All-day and multi-day events, unlike the rest: a ribbon in their color along the top
-        // edge for as long as they last (one on at the same time as another goes along the
-        // bottom), and their names on tags further down.
-        let allDay = events.filter(\.isBackground).sorted { $0.start < $1.start }
-        var laneEnds: [Date] = []
-        for event in allDay {
-            let lane = laneEnds.firstIndex { $0 <= event.start } ?? laneEnds.count
-            if lane == laneEnds.count { laneEnds.append(event.end) } else { laneEnds[lane] = event.end }
-            let left = max(x(event.start), bounds.minX), right = min(x(event.end), bounds.maxX)
-            guard right > left else { continue }
-            let ribbon = CGRect(x: left, y: lane % 2 == 0 ? bounds.minY : bounds.maxY - 2.5, width: right - left, height: 2.5)
-            inside.fill(Path(ribbon), with: .color(event.color))
-        }
-
-        // The events. The one on now has its name past the Oyl and its things.
-        for event in events where !event.isBackground {
-            let left = x(event.start), right = x(event.end)
-            guard right > bounds.minX, left < bounds.maxX else { continue }
-            let block = CGRect(x: left + 1, y: bounds.minY + 3, width: max(right - left - 2, 2), height: bounds.height - 6)
-            let rounded = Path(roundedRect: block, cornerRadius: 5)
-            inside.fill(rounded, with: .color(event.color.opacity(0.85)))
-            var label = inside
-            label.clip(to: rounded)
-            let textX = event.isOn(at: date) ? max(block.minX + 5, now + oylReach) : block.minX + 5
-            let title = label.resolve(Text(event.title).font(.system(size: 10, weight: .semibold)).foregroundColor(.white))
-            let time = label.resolve(Text(Self.time.string(from: event.start))
-                .font(.system(size: 8.5, weight: .medium).monospacedDigit())
-                .foregroundColor(.white.opacity(0.8)))
-            label.draw(title, at: CGPoint(x: textX, y: block.minY + 1.5), anchor: .topLeading)
-            label.draw(time, at: CGPoint(x: textX, y: block.maxY - 1), anchor: .bottomLeading)
-        }
-
-        // Each all-day event's name on a tag outlined in its color, in the first gap between
-        // events past the Oyl while it's on: two to a gap, one above the other, or one on its own
-        // in the middle (and none, where there's no room).
-        let blocks = events.filter { !$0.isBackground }.map { x($0.start)...x($0.end) }
-        var tags: [(event: DayEvent, name: GraphicsContext.ResolvedText, span: ClosedRange<CGFloat>, row: Int)] = []
-        for event in allDay {
-            let title = event.title.count > 22 ? String(event.title.prefix(21)) + "…" : event.title
-            let name = inside.resolve(Text(title).font(.system(size: 7.5, weight: .semibold)).foregroundColor(.white.opacity(0.9)))
-            let width = name.measure(in: size).width + 10
-            let spots = (0...1).map { row in
-                var spot = max(x(event.start), now + oylReach)
-                let taken = blocks + tags.filter { $0.row == row }.map(\.span)
-                for range in taken.sorted(by: { $0.lowerBound < $1.lowerBound }) where range.overlaps(spot...(spot + width)) {
-                    spot = range.upperBound + 4
-                }
-                return spot
-            }
-            let row = spots[1] < spots[0] ? 1 : 0
-            guard spots[row] + width <= min(x(event.end), bounds.maxX - bounds.height / 2) else { continue }
-            tags.append((event, name, spots[row]...(spots[row] + width), row))
-        }
-        for tag in tags {
-            let paired = tags.contains { $0.row != tag.row && $0.span.overlaps(tag.span) }
-            let middle = bounds.midY + (paired ? (tag.row == 0 ? -6.5 : 6.5) : 0)
-            let box = CGRect(x: tag.span.lowerBound, y: middle - 6, width: tag.span.upperBound - tag.span.lowerBound, height: 12)
-            let outline = Path(roundedRect: box, cornerRadius: 6)
-            inside.fill(outline, with: .color(tag.event.color.opacity(0.3)))
-            inside.stroke(outline, with: .color(tag.event.color), lineWidth: 1)
-            inside.draw(tag.name, at: CGPoint(x: box.midX, y: box.midY), anchor: .center)
-        }
-
-        // What's gone by, dimmed, and the line at now.
-        inside.fill(Path(CGRect(x: bounds.minX, y: bounds.minY, width: now - bounds.minX, height: bounds.height)),
-                    with: .color(.black.opacity(0.35)))
-        inside.fill(Path(CGRect(x: now - 0.5, y: bounds.minY, width: 1, height: bounds.height)), with: .color(.white.opacity(0.6)))
-
-        if let note {
-            let text = inside.resolve(Text(note).font(.system(size: 10, weight: .medium)).foregroundColor(.white.opacity(0.6)))
-            inside.draw(text, at: CGPoint(x: now + oylReach + 4, y: bounds.midY), anchor: .leading)
-        }
-    }
-}
-
-/// Where moments go along the calendar bar, as time from now. The hour before each event and
-/// the event itself run at full speed; the empty stretches between are squeezed to a seventh
-/// (more when the next thing's far off, so it's never more than a couple of hours' worth of bar
-/// away), and it slides in from the right, quicker as it nears. What's gone by isn't squeezed.
-struct Timeline {
-    static let leadIn: TimeInterval = 3600
-    static let farthest: TimeInterval = 2.5 * 3600
-
-    let now: Date
-    /// Where time runs at full speed: merged, in order.
-    private let full: [(start: Date, end: Date)]
-    private let squeeze: Double
-
-    init(events: [DayEvent], at now: Date) {
-        self.now = now
-        var merged: [(start: Date, end: Date)] = []
-        for event in events.filter({ !$0.isBackground && $0.end > now }).sorted(by: { $0.start < $1.start }) {
-            let span = (start: event.start.addingTimeInterval(-Self.leadIn), end: event.end)
-            if let last = merged.last, span.start <= last.end {
-                merged[merged.count - 1].end = max(last.end, span.end)
-            } else {
-                merged.append(span)
-            }
-        }
-        full = merged
-        let wait = merged.first.map { $0.start.timeIntervalSince(now) } ?? 0
-        squeeze = wait > 0 ? min(0.15, Self.farthest / wait) : 0.15
-    }
-
-    /// Seconds along the bar from now to `moment`.
-    func offset(to moment: Date) -> TimeInterval {
-        let elapsed = moment.timeIntervalSince(now)
-        guard elapsed > 0 else { return elapsed }
-        let unsqueezed = full.reduce(0.0) { total, span in
-            total + max(0, min(span.end, moment).timeIntervalSince(max(span.start, now)))
-        }
-        return elapsed * squeeze + unsqueezed * (1 - squeeze)
     }
 }

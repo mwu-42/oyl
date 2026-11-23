@@ -313,6 +313,8 @@ final class ProjectStore: ObservableObject {
     var weekStart = 1
     /// Played as a reminder goes off.
     var chime: () -> Void = { NSSound(named: NSSound.Name("Glass"))?.play() }
+    /// Whether its reminders ring at all now (not while toyl's list stands in for it).
+    var isReminding: () -> Bool = { true }
     /// Where a deleted line's screenshot goes: the Trash. (A test gives its own.)
     var discard: (URL) -> Void = { try? FileManager.default.trashItem(at: $0, resultingItemURL: nil) }
 
@@ -674,7 +676,7 @@ final class ProjectStore: ObservableObject {
     /// A task with a time that's come (in the last 12 hours, so a long-gone one doesn't go off
     /// on its own) rings, one at a time.
     func checkReminders(now: Date = Date()) {
-        guard ringing == nil else { return }
+        guard ringing == nil, isReminding() else { return }
         var due: (node: ProjectNode, when: Date)?
         func look(_ nodes: [ProjectNode]) {
             nodes.walk { node, path in

@@ -66,7 +66,7 @@ extension WorkLog {
 /// The work log's page: what you got done today, typed as you'd say it, a #tag starting each
 /// project's part ("#oyl shipped the dock delay. #cs229 finished pset 3"), filed into the log
 /// with Return (⌥↩ for a new line; Tab finishes a tag). Under it, your projects' tags (click one
-/// to start its part; right-click to open its tab of the log), what tod has had done today, and
+/// to start its part; right-click to open its tab of the log), what tod (or toyl) has had done today, and
 /// what's been filed today (× takes one back out). Then the way to the document. In Midnight Oyl
 /// it's engraved, without a box, and drifts in.
 struct LogPage: View {
@@ -75,15 +75,17 @@ struct LogPage: View {
     @ObservedObject var tod: TodStore
 
     var body: some View {
-        LogLayout(log: log, suggestions: log.fromTod(tod), editing: state.isEditing, resign: state.resignKeyboard)
+        LogLayout(log: log, suggestions: log.fromTod(tod), from: tod.source == .toyl ? "toyl" : "tod", editing: state.isEditing,
+                  resign: state.resignKeyboard)
     }
 }
 
-/// The log page itself, given what tod's had done today, whether its field has the keyboard, and
-/// how to give it back.
+/// The log page itself, given what tod's (or toyl's) had done today, which of them it is, whether
+/// its field has the keyboard, and how to give it back.
 struct LogLayout: View {
     @ObservedObject var log: WorkLog
     let suggestions: [(id: String, text: String)]
+    var from = "tod"
     let editing: Bool
     let resign: () -> Void
     @StateObject private var draft = LocalState("")
@@ -221,14 +223,16 @@ struct LogLayout: View {
     }
 
     private func fromTod(_ suggestions: [(id: String, text: String)]) -> some View {
-        HStack(spacing: 6) {
-            Text(theme == .midnight ? "from tod" : "FROM TOD")
+        // Whichever list it is: toyl's, with toyl here, else tod's.
+        let app = from
+        return HStack(spacing: 6) {
+            Text(theme == .midnight ? "from \(app)" : "FROM \(app.uppercased())")
                 .notchFont(size: 9, weight: .semibold, role: theme == .midnight ? .label : nil)
                 .foregroundStyle(.white.opacity(0.42))
             sideways {
                 ForEach(suggestions, id: \.id) { suggestion in
                     chip("✓ " + suggestion.text, count: nil) { add(suggestion.text + ".") }
-                        .help("Done in tod today: add it to the check-in")
+                        .help("Done in \(app) today: add it to the check-in")
                 }
             }
         }

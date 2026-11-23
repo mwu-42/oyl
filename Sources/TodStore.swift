@@ -3,7 +3,12 @@ import Foundation
 import SwiftUI
 
 /// tod's lists and tasks, shared with tod (the owner's own to-do app): a task added from the
-/// notch is in tod too, and one checked off in tod is done here. It works on tod's own
+/// notch is in tod too, and one checked off in tod is done here. Once toyl (tod's successor, its
+/// own Mac app) has a list, and toyl's setting is on (`Feature.useToyl`), it's toyl's instead:
+/// `toyl.json` in toyl's folder (`~/Library/Application Support/toyl`, or `TOYL_HOME`) is tod's
+/// format grown, worked on the same way, under the same lock (toyl's own timers come too, to show
+/// on the notch: see `toylTimers`). Which one it is goes by `source`, and follows toyl's file
+/// appearing or going, and the setting. It works on tod's own
 /// `data/state.json` and keeps every field it doesn't use (tod's layout, settings, subtasks…) just
 /// as it found it. Each change is made on the latest copy of the file, then saved through tod's
 /// server when that's running (so tod's backup, and its check for saves it hasn't seen, apply) or
@@ -19,6 +24,8 @@ final class TodStore: ObservableObject {
         let isDump: Bool
         /// Its first lane (the brain dump's "Unsorted" folder), where new tasks go.
         let firstColumn: String
+        /// Put away in toyl: its tasks aren't shown, or reminded of.
+        var isArchived = false
     }
 
     struct Task: Identifiable, Equatable {
@@ -41,6 +48,23 @@ final class TodStore: ObservableObject {
         var repeats: TodRepeat?
         /// Which of its list's lanes it's in, 0 for the first.
         fileprivate(set) var lane: Int
+        /// toyl's own, read only: put off for someday (toyl shows it among its ideas), tied to a
+        /// calendar event (so it's the calendar's, not reminded of here), where it came from
+        /// (toyl's `source`: "email" for one pulled from mail, "canvas" for an assignment brought
+        /// in from Canvas), and an assignment's course.
+        var someday = false
+        var hasEvent = false
+        var source: String?
+        var course: String?
+
+        /// Pulled into toyl from an email.
+        var isEmail: Bool { source == "email" }
+        /// An assignment toyl brought in from Canvas.
+        var isCanvas: Bool { source == "canvas" }
+
+        /// The mark it carries where it's listed, if it came from somewhere with one: ✉ for an
+        /// email, 🎓 for a Canvas assignment (as SF Symbols).
+        var mark: String? { isEmail ? "envelope" : isCanvas ? "graduationcap" : nil }
 
         /// When it's due, as a moment (end of the day if no time), for sorting and "what's next".
         var dueDate: Date? {
@@ -63,9 +87,15 @@ final class TodStore: ObservableObject {
     @Published private(set) var lists: [List] = []     // as laid out on tod's canvas, the brain dump last
     @Published private(set) var tasks: [Task] = []     // all of them, done too, by list, lane and order
     @Published private(set) var isAvailable = false    // tod found, and its data read
+    /// Whose list it is: toyl's, tod's, or nobody's (neither found).
+    enum Source: Equatable { case toyl, tod, none }
+    @Published private(set) var source = Source.none
     /// What's wrong, if tod's data can't be read or a change couldn't be saved.
     @Published private(set) var trouble: String?
-    /// Told of each change Oyl makes to a task once it's saved (for the calendar to follow).
+    /// toyl's countdowns (running or paused), for the notch to show and ring (see
+    /// `TimerStore.mirror`). None with tod, which has no timers.
+    @Published private(set) var toylTimers: [TimerStore.Mirrored] = []
+    /// Told of each change Oyl makes to a task once it's saved.
     var onChange: ((Change) -> Void)?
 
     /// tod's first day of the week (0 Sunday, 1 Monday), for reading "next week" and "next fri".
@@ -77,7 +107,12 @@ final class TodStore: ObservableObject {
 
     private let givenRoot: URL?
     private let givenPort: Int?
+    /// A toyl folder to use instead of looking for one (for testing on a scratch list).
+    private let givenToyl: URL?
     private var disk: Disk?
+    /// Counts each time the data's found again (toyl's turning up, say): a save sent to the old
+    /// file that comes back after that isn't news.
+    private var generation = 0
     private var boards: Boards?       // tod's data as last read or saved, with changes being saved on top
     private var rev = ""              // which save of the file that is
     private var saving = 0            // changes sent to the disk and not yet saved
@@ -94,6 +129,18 @@ final class TodStore: ObservableObject {
     init(root: URL? = nil, port: Int? = nil) {
         givenRoot = root
         givenPort = port
+        givenToyl = nil
+        find()
+        // In case the folder's watch misses something (a file written over in place, the folder
+        // made again), or tod or toyl turns up later.
+        poll = Self.timer(after: 3, repeats: true) { [weak self] in self?.check() }
+    }
+
+    /// toyl's list in `toyl`, a folder of toyl's (`toyl.json` in it), whatever the setting says.
+    init(toyl: URL) {
+        givenRoot = nil
+        givenPort = nil
+        givenToyl = toyl
         find()
         // In case the folder's watch misses something (a file written over in place, the folder
         // made again), or tod turns up later.
@@ -191,6 +238,28 @@ final class TodStore: ObservableObject {
         change { $0.remove(id) }
     }
 
+    /// A countdown started on the notch (or the phone), kept in toyl's file, so toyl's the one
+    /// timer system while it's here: tied to the open task with the same name, if there is one,
+    /// held on the notch with `pin`, and marked as Oyl's to ring. It's shown here as toyl's other
+    /// timers are (see `toylTimers`). Its id, or nil if it isn't toyl's list (or there's no time).
+    @discardableResult
+    func startToylTimer(duration: TimeInterval, label: String, pin: Bool, now: Date = Date()) -> UUID? {
+        guard source == .toyl, boards?.isToyl == true, duration > 0 else { return nil }
+        let id = UUID()
+        let wanted = label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let task = wanted.isEmpty ? nil : open.first { $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == wanted }?.id
+        change { $0.startTimer(id, label: label, duration: duration, pin: pin, task: task, at: now) }
+        return id
+    }
+
+    /// What's been done on the notch to one of toyl's timers, saved in toyl's file (so toyl, its
+    /// command line and its agents see it too).
+    func saveToylTimer(_ what: TimerStore.MirroredChange) {
+        guard boards?.isToyl == true else { return }
+        let now = Date()
+        change { $0.apply(what, at: now) }
+    }
+
     // MARK: - changes
 
     /// Just what changed, so a field tod changed meanwhile isn't put back.
@@ -227,9 +296,16 @@ final class TodStore: ObservableObject {
         self.boards = boards
         show()
         saving += 1
+        let generation = self.generation
         disk.queue.async { [weak self] in
             let saved = disk.save(edit)
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.saved(saved) } }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    // Saved to a list that's since been swapped for another: not this one's news.
+                    guard self?.generation == generation else { return }
+                    self?.saved(saved)
+                }
+            }
         }
     }
 
@@ -277,16 +353,68 @@ final class TodStore: ObservableObject {
 
     // MARK: - reading
 
-    /// Finds tod's data and reads it.
+    /// Finds the data (toyl's, if it's there and wanted, else tod's) and reads it.
     private func find() {
-        guard let (root, port) = givenRoot.map({ ($0, givenPort) }) ?? Self.installed() else {
-            return loaded(.trouble("Can't find tod"))
+        let disk: Disk
+        if let toyl = wantedToyl() {
+            disk = Disk(folder: toyl, file: toyl.appendingPathComponent("toyl.json"),
+                        backup: toyl.appendingPathComponent("toyl.backup.json"), port: nil, app: "toyl")
+        } else {
+            guard let (root, port) = givenRoot.map({ ($0, givenPort) }) ?? Self.installed() else {
+                if source != .none { source = .none }
+                return loaded(.trouble(givenToyl != nil ? "Can't find toyl's data" : "Can't find tod"))
+            }
+            disk = Disk(root: root, port: port)
         }
-        let disk = Disk(root: root, port: port)
         self.disk = disk
+        let source: Source = disk.app == "toyl" ? .toyl : .tod
+        if source != self.source { self.source = source }
         watch()
         seen = disk.signature()
         loaded(disk.read())
+    }
+
+    /// The toyl folder to use now, if any: the one it was given, else toyl's own (with its list
+    /// in it), when toyl's setting is on and it isn't tod's folder it was given.
+    private func wantedToyl() -> URL? {
+        if let givenToyl { return givenToyl }
+        guard givenRoot == nil, Feature.useToyl.isOn else { return nil }
+        return Self.toylFolder()
+    }
+
+    /// toyl's folder, once toyl's made its list there: `TOYL_HOME`, else its place in
+    /// Application Support.
+    nonisolated static func toylFolder(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL? {
+        let folder = environment["TOYL_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("toyl", isDirectory: true)
+        return FileManager.default.fileExists(atPath: folder.appendingPathComponent("toyl.json").path) ? folder : nil
+    }
+
+    /// toyl's installed, with a list (whatever its setting says): for showing that setting at all.
+    nonisolated static var hasToyl: Bool { toylFolder() != nil }
+
+    /// Where toyl's list is, while it's toyl's (for toyl's own command, run on the same list).
+    var toylFolder: URL? { source == .toyl ? disk?.folder : nil }
+
+    /// Looks again for which list to use (toyl's setting changed, or toyl's file came or went):
+    /// if it's another, everything's read afresh from it.
+    func lookAgain() {
+        guard needsLookingAgain else { return }
+        watcher?.cancel()
+        watcher = nil
+        soon?.invalidate()
+        soon = nil
+        later?.invalidate()
+        later = nil
+        generation += 1
+        disk = nil
+        boards = nil
+        rev = ""
+        saving = 0
+        stuck = nil
+        seen = []
+        find()
     }
 
     /// tod's folder and its server's port, from the tod app.
@@ -302,8 +430,18 @@ final class TodStore: ObservableObject {
         return nil
     }
 
+    /// Nothing found yet (tod or toyl may have turned up since), or toyl's list is wanted where
+    /// another is being used, or the other way round.
+    private var needsLookingAgain: Bool {
+        guard let disk else { return true }
+        let using = disk.app == "toyl" ? disk.folder.standardizedFileURL.path : nil
+        return wantedToyl()?.standardizedFileURL.path != using
+    }
+
     private func check() {
-        guard let disk else { return find() }
+        // toyl's list came or went (or tod turned up).
+        if needsLookingAgain { return lookAgain() }
+        guard let disk else { return }
         if watcher == nil { watch() }
         if disk.signature() != seen { reload() }
     }
@@ -335,10 +473,24 @@ final class TodStore: ObservableObject {
     private func reload() {
         guard let disk else { return }
         seen = disk.signature()
+        let generation = self.generation
         disk.queue.async { [weak self] in
             let loaded = disk.read()
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.loaded(loaded) } }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard self?.generation == generation else { return }
+                    self?.loaded(loaded)
+                }
+            }
         }
+    }
+
+    /// Read now, on this thread (just after toyl's command has changed the file, to see what it
+    /// did at once). Not while a change of Oyl's is on its way: that brings it anyway.
+    func readNow() {
+        guard let disk, saving == 0 else { return reload() }
+        seen = disk.signature()
+        loaded(disk.read())
     }
 
     private func loaded(_ loaded: Loaded) {
@@ -370,6 +522,8 @@ final class TodStore: ObservableObject {
         }
         if lists != self.lists { self.lists = lists }
         if tasks != self.tasks { self.tasks = tasks }
+        let timers = boards?.toylTimers ?? []
+        if timers != toylTimers { toylTimers = timers }
         if isAvailable != (boards != nil) { isAvailable = boards != nil }
     }
 
@@ -419,6 +573,83 @@ final class TodStore: ObservableObject {
 
         var weekStart: Int { ((json["settings"] as? [String: Any])?["weekStart"] as? NSNumber)?.intValue ?? 1 }
 
+        /// toyl's file (tod's format, grown), not tod's.
+        var isToyl: Bool { json["toyl"] != nil }
+
+        /// toyl's countdowns, running or paused (its stopwatches aren't the notch's kind of timer).
+        var toylTimers: [TimerStore.Mirrored] {
+            (json["timers"] as? [Any] ?? []).compactMap { item in
+                guard let timer = item as? [String: Any], timer["kind"] as? String ?? "countdown" == "countdown",
+                      let id = (timer["id"] as? String).flatMap(UUID.init(uuidString:)),
+                      let duration = (timer["duration"] as? NSNumber)?.doubleValue, duration > 0 else { return nil }
+                return TimerStore.Mirrored(id: id, label: timer["label"] as? String ?? "", duration: duration,
+                                           endDate: Self.moment(timer["endsAt"]),
+                                           pausedRemaining: (timer["pausedLeft"] as? NSNumber)?.doubleValue,
+                                           pin: timer["pin"] as? Bool ?? false, shown: timer["oyl"] as? Bool ?? false)
+            }
+        }
+
+        /// A change made on the notch to one of toyl's timers, as toyl makes it: paused, carried
+        /// on, given more time or renamed; stopped or gone off (its time then goes on its task,
+        /// if it ran half a minute, and into toyl's log, the latest fifty kept); or marked as
+        /// showing here (so toyl leaves the ringing to Oyl).
+        mutating func apply(_ change: TimerStore.MirroredChange, at now: Date) {
+            var timers = json["timers"] as? [Any] ?? []
+            func index(of id: UUID) -> Int? {
+                timers.firstIndex { (($0 as? [String: Any])?["id"] as? String).flatMap(UUID.init(uuidString:)) == id }
+            }
+            switch change {
+            case .shown(let id):
+                guard let at = index(of: id), var timer = timers[at] as? [String: Any], timer["oyl"] as? Bool != true else { return }
+                timer["oyl"] = true
+                timers[at] = timer
+            case .changed(let changed):
+                guard let at = index(of: changed.id), var timer = timers[at] as? [String: Any] else { return }
+                timer["label"] = changed.label
+                timer["duration"] = changed.duration
+                timer["endsAt"] = changed.endDate.map { Self.ms($0) }
+                timer["pausedLeft"] = changed.pausedRemaining
+                timers[at] = timer
+            case .stopped(let id, let worked):
+                guard let at = index(of: id), let timer = timers[at] as? [String: Any] else { return }
+                timers.remove(at: at)
+                log(timer, worked: worked, at: now)
+            }
+            json["timers"] = timers
+        }
+
+        /// A countdown of Oyl's own making, as toyl writes one: running from `now`, marked as
+        /// shown here (so Oyl rings it), on its task if it has one. (Once only, however often the
+        /// change is made again on a newer copy of the file.)
+        mutating func startTimer(_ id: UUID, label: String, duration: TimeInterval, pin: Bool, task: String?, at now: Date) {
+            var timers = json["timers"] as? [Any] ?? []
+            guard !timers.contains(where: { (($0 as? [String: Any])?["id"] as? String) == id.uuidString }) else { return }
+            let ms = Self.ms(now)
+            let seconds: Any = duration == duration.rounded() ? Int(duration) : duration
+            var timer: [String: Any] = ["id": id.uuidString, "label": label, "kind": "countdown", "duration": seconds,
+                                        "endsAt": ms + Int((duration * 1000).rounded()), "startedAt": ms, "elapsed": 0,
+                                        "pin": pin, "oyl": true]
+            if let task { timer["task"] = task }
+            timers.append(timer)
+            json["timers"] = timers
+        }
+
+        private mutating func log(_ timer: [String: Any], worked: TimeInterval, at now: Date) {
+            let ms = Self.ms(now)
+            if worked >= 30, let task = timer["task"] as? String, var entry = self[task: task] {
+                entry["spent"] = ((entry["spent"] as? NSNumber)?.intValue ?? 0) + Int(worked.rounded())
+                entry["updatedAt"] = ms
+                self[task: task] = entry
+            }
+            guard worked >= 1 else { return }
+            var logged: [String: Any] = ["id": timer["id"] ?? UUID().uuidString, "label": timer["label"] ?? "", "seconds": worked.rounded(),
+                                         "ended": ms, "kind": "countdown"]
+            if let task = timer["task"] { logged["task"] = task }
+            var log = json["timerLog"] as? [Any] ?? []
+            log.insert(logged, at: 0)
+            json["timerLog"] = Array(log.prefix(50))
+        }
+
         // MARK: reading
 
         private var listEntries: [[String: Any]] { (json["lists"] as? [Any] ?? []).compactMap { $0 as? [String: Any] } }
@@ -453,7 +684,8 @@ final class TodStore: ObservableObject {
                 let place: [Double] = isDump ? [2, 0, 0] : (x != nil && y != nil ? [0, y!, x!] : [1, 0, 0])
                 let color = isDump ? "#8c8c8c" : (Self.hex(entry["color"]) ?? Self.palette[0])
                 let first = ((entry["columns"] as? [Any])?.first as? [String: Any])?["id"] as? String ?? ""
-                let list = List(id: id, name: entry["name"] as? String ?? "", color: Self.color(color), isDump: isDump, firstColumn: first)
+                let list = List(id: id, name: entry["name"] as? String ?? "", color: Self.color(color), isDump: isDump, firstColumn: first,
+                                isArchived: entry["archived"] as? Bool ?? false)
                 return (list, place + [Double(index)])
             }
             return placed.sorted { $0.1.lexicographicallyPrecedes($1.1) }.map(\.0)
@@ -476,7 +708,9 @@ final class TodStore: ObservableObject {
                         done: entry["done"] as? Bool ?? false,
                         doneAt: moment(entry["doneAt"]), createdAt: moment(entry["createdAt"]) ?? .distantPast,
                         order: (entry["order"] as? NSNumber)?.doubleValue ?? 0,
-                        repeats: (entry["repeat"] as? String).flatMap(TodRepeat.init(rawValue:)), lane: lane)
+                        repeats: (entry["repeat"] as? String).flatMap(TodRepeat.init(rawValue:)), lane: lane,
+                        someday: entry["someday"] as? Bool ?? false, hasEvent: entry["event"] is [String: Any],
+                        source: text(entry["source"]), course: text((entry["canvas"] as? [String: Any])?["course"]))
         }
 
         /// Repeating tasks that are done and haven't come back yet, and when they were done.
@@ -512,6 +746,11 @@ final class TodStore: ObservableObject {
                 "order": topOrder(in: lane),
             ]
             if let repeats { task["repeat"] = repeats.rawValue }
+            // toyl notes where each came from, and when each last changed.
+            if isToyl {
+                task["source"] = "oyl"
+                task["updatedAt"] = ms
+            }
             self[task: id] = task
         }
 
@@ -524,7 +763,10 @@ final class TodStore: ObservableObject {
                 task["listId"] = list
                 task["columnId"] = lane
                 task["order"] = topOrder(in: lane, except: id)
+                // A toyl project belongs to its list: moved out of it, the task's out of it too.
+                if isToyl { task["project"] = nil }
             }
+            if isToyl { task["updatedAt"] = ms }
             self[task: id] = task
             if let done = patch.done {
                 setDone(id, done, at: ms)
@@ -570,11 +812,18 @@ final class TodStore: ObservableObject {
                 subtask["done"] = false
                 return subtask
             }
-            self[task: newId] = [
+            var copy: [String: Any] = [
                 "id": newId, "listId": list, "columnId": lane, "title": task["title"] ?? "", "notes": task["notes"] ?? "",
                 "due": next, "time": task["time"] ?? NSNull(), "subtasks": subtasks, "done": false, "doneAt": NSNull(),
                 "createdAt": ms, "order": topOrder(in: lane), "repeat": repeats.rawValue, "repeatOf": id,
             ]
+            // toyl's too, as toyl brings one back: its tags, its length and its pin.
+            if isToyl {
+                for key in ["tags", "duration", "pinned"] { if let value = task[key] { copy[key] = value } }
+                copy["source"] = task["source"] ?? "oyl"
+                copy["updatedAt"] = ms
+            }
+            self[task: newId] = copy
         }
 
         private subscript(task id: String) -> [String: Any]? {
@@ -596,7 +845,8 @@ final class TodStore: ObservableObject {
             // As tod's createList makes one; tod gives it a spot on the canvas when it loads it.
             let used = Set(listEntries.compactMap { Self.hex($0["color"]) })
             let color = Self.palette.first { !used.contains($0) } ?? Self.palette[listEntries.count % Self.palette.count]
-            let columns = ["To do", "In progress", "Done"].map { ["id": Self.uid(), "name": $0] }
+            // toyl's lists are lists, with one section to start; tod's are boards, with three lanes.
+            let columns = (isToyl ? ["to do"] : ["To do", "In progress", "Done"]).map { ["id": Self.uid(), "name": $0] }
             json["lists"] = (json["lists"] as? [Any] ?? []) + [["id": newList.id, "name": newList.name, "color": color,
                                                                   "columns": columns, "createdAt": ms] as [String: Any]]
             if let order = json["order"] as? [Any] { json["order"] = order + [newList.id] }
@@ -668,7 +918,7 @@ final class TodStore: ObservableObject {
             (value as? String).flatMap { $0.isEmpty ? nil : $0 }
         }
 
-        private static func moment(_ value: Any?) -> Date? {
+        static func moment(_ value: Any?) -> Date? {
             (value as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
         }
 
@@ -708,13 +958,23 @@ final class TodStore: ObservableObject {
         let file: URL
         let backup: URL
         let port: Int?
+        /// Whose data it is, for saying what's wrong: tod's or toyl's.
+        let app: String
         let queue = DispatchQueue(label: "Oyl.tod", qos: .userInitiated)
         private let session: URLSession
 
-        init(root: URL, port: Int?) {
-            folder = root.appendingPathComponent("data", isDirectory: true)
-            file = folder.appendingPathComponent("state.json")
-            backup = folder.appendingPathComponent("state.backup.json")
+        convenience init(root: URL, port: Int?) {
+            let folder = root.appendingPathComponent("data", isDirectory: true)
+            self.init(folder: folder, file: folder.appendingPathComponent("state.json"),
+                      backup: folder.appendingPathComponent("state.backup.json"), port: port, app: "tod")
+        }
+
+        /// A file of its own (toyl's), saved straight to the file: there's no server.
+        init(folder: URL, file: URL, backup: URL, port: Int?, app: String) {
+            self.folder = folder
+            self.file = file
+            self.backup = backup
+            self.app = app
             self.port = port
             let configuration = URLSessionConfiguration.ephemeral
             configuration.timeoutIntervalForRequest = 3
@@ -730,8 +990,8 @@ final class TodStore: ObservableObject {
         }
 
         func read() -> Loaded {
-            guard let raw = try? Data(contentsOf: file) else { return .trouble("Can't find tod's data") }
-            guard let boards = Boards(raw) else { return .trouble("tod's data can't be read") }
+            guard let raw = try? Data(contentsOf: file) else { return .trouble("Can't find \(app)'s data") }
+            guard let boards = Boards(raw) else { return .trouble("\(app)'s data can't be read") }
             return .found(boards, rev: Self.rev(raw))
         }
 
@@ -741,7 +1001,7 @@ final class TodStore: ObservableObject {
         /// the same, so two can't keep colliding).
         func save(_ edit: (inout Boards) -> Void) -> Saved {
             let lock = Darwin.open(folder.path, O_RDONLY)
-            guard lock >= 0 else { return Saved(rev: "", trouble: "Can't find tod's data") }
+            guard lock >= 0 else { return Saved(rev: "", trouble: "Can't find \(app)'s data") }
             defer { close(lock) }    // which unlocks it
             flock(lock, LOCK_EX)
             var rev = ""
@@ -749,13 +1009,13 @@ final class TodStore: ObservableObject {
             let deadline = Date().addingTimeInterval(15)
             for attempt in 0..<12 {
                 if attempt > 0 { Thread.sleep(forTimeInterval: min(0.01 * pow(2, Double(attempt - 1)), 0.25) * .random(in: 0.5...1.5)) }
-                guard let raw = try? Data(contentsOf: file) else { return Saved(rev: "", trouble: "Can't find tod's data") }
+                guard let raw = try? Data(contentsOf: file) else { return Saved(rev: "", trouble: "Can't find \(app)'s data") }
                 rev = Self.rev(raw)
-                guard var boards = Boards(raw) else { return Saved(rev: rev, trouble: "tod's data can't be read") }
+                guard var boards = Boards(raw) else { return Saved(rev: rev, trouble: "\(app)'s data can't be read") }
                 let before = boards
                 edit(&boards)
                 guard !boards.isSame(as: before) else { return Saved(boards: boards, rev: rev) }
-                switch boards.data(laidOut: false).map({ send($0, base: rev) }) ?? .failed("Couldn't save to tod") {
+                switch boards.data(laidOut: false).map({ send($0, base: rev) }) ?? .failed("Couldn't save to \(app)") {
                 case .saved(let saved):
                     return Saved(boards: boards, rev: saved, changes: before.changes(to: boards))
                 case .conflict:
@@ -764,23 +1024,23 @@ final class TodStore: ObservableObject {
                     // It may be in the middle of a save of tod's that would land on top of a
                     // write here, or still make this one: ask it again rather than write the file.
                     if Date() < deadline { continue }
-                    return Saved(rev: rev, trouble: "Couldn't save to tod: its server isn't answering")
+                    return Saved(rev: rev, trouble: "Couldn't save to \(app): its server isn't answering")
                 case .failed(let trouble):
                     return Saved(rev: rev, trouble: trouble)
                 case .noServer:
                     // Only on the file the change was made on: it may have moved on while the
                     // server was asked.
                     guard (try? Data(contentsOf: file)) == raw else { continue }
-                    guard let body = boards.data(laidOut: true) else { return Saved(rev: rev, trouble: "Couldn't save to tod") }
+                    guard let body = boards.data(laidOut: true) else { return Saved(rev: rev, trouble: "Couldn't save to \(app)") }
                     do {
                         try write(body, replacing: raw)
                     } catch {
-                        return Saved(rev: rev, trouble: "Couldn't save to tod: \(error.localizedDescription)")
+                        return Saved(rev: rev, trouble: "Couldn't save to \(app): \(error.localizedDescription)")
                     }
                     return Saved(boards: boards, rev: Self.rev(body), changes: before.changes(to: boards))
                 }
             }
-            return Saved(rev: rev, trouble: "Couldn't save to tod: it kept changing")
+            return Saved(rev: rev, trouble: "Couldn't save to \(app): it kept changing")
         }
 
         private enum Sent {

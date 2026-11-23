@@ -121,7 +121,8 @@ struct TimersPage: View {
 
     private func submit() {
         let parsed = ReminderParser.parse(draft.value)
-        guard let duration = parsed.duration else {
+        // With no time said: toyl's usual half hour, while it's toyl's (else it needs one).
+        guard let duration = parsed.duration ?? (parsed.label.isEmpty ? nil : timers.usualLength()) else {
             NSSound.beep()
             return
         }

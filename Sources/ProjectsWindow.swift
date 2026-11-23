@@ -241,6 +241,11 @@ final class ProjectsWindowController: NSObject, NSWindowDelegate {
         set { if model.theme != newValue { model.theme = newValue } }
     }
 
+    /// Put away (toyl's list stands in for the outline now), if it's up.
+    func close() {
+        window?.close()
+    }
+
     /// Up, in front, where you are (over a fullscreen app too), with `id` open if it's given.
     func show(_ id: String? = nil) {
         let window = self.window ?? make()

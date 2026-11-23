@@ -11,6 +11,8 @@ enum Feature: String, CaseIterable, Sendable {
     case musicPage, timersPage, awakePage, activityPage, ideasPage, projectsPage, logPage
     /// GitHub's grid of your contributions, on the Activity page.
     case githubGrid
+    /// With toyl installed (its list made), Oyl's to-dos, ideas, timers and projects are toyl's.
+    case useToyl
     /// The trackpad's tap as the notch pops, opens, and takes a gesture.
     case haptics
     /// Wispr Flow's listening, in the closed notch, and its button.

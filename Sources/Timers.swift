@@ -63,6 +63,40 @@ final class TimerStore: ObservableObject {
     /// let go of when it's gone).
     @Published private(set) var focused: UUID?
 
+    /// One of toyl's countdowns, as toyl's file has it (see `TodStore.toylTimers`).
+    struct Mirrored: Equatable {
+        let id: UUID
+        let label: String
+        let duration: TimeInterval
+        let endDate: Date?
+        let pausedRemaining: TimeInterval?
+        /// toyl asks for it to be held on the notch.
+        let pin: Bool
+        /// Already marked as showing here.
+        let shown: Bool
+    }
+
+    /// What's been done here to one of toyl's timers, for toyl's file.
+    enum MirroredChange {
+        case shown(UUID)
+        case changed(ReminderTimer)
+        /// Stopped or gone off, after running this long.
+        case stopped(UUID, worked: TimeInterval)
+    }
+
+    /// Told what's done here to one of toyl's timers.
+    var onMirroredChange: ((MirroredChange) -> Void)?
+    /// Starts a new timer somewhere else (toyl, while it's here: one timer system), its id if it
+    /// did; nil, and it's started here.
+    var startsElsewhere: ((_ duration: TimeInterval, _ label: String, _ pin: Bool) -> UUID?)?
+    /// How long a timer runs when it's not said (toyl's half hour, while it's toyl's); nil, and a
+    /// time has to be said.
+    var usualLength: () -> TimeInterval? = { nil }
+    /// Which of `timers` are toyl's (kept in toyl's file, not here), and which of those have gone
+    /// off here and wait for toyl's file to let go of them.
+    private var mirrored: Set<UUID> = []
+    private var rangMirrored: Set<UUID> = []
+
     private let defaults: UserDefaults
     private let chime: () -> Void
     private let tap: () -> Void
@@ -126,9 +160,11 @@ final class TimerStore: ObservableObject {
         .map(\.element)
     }
 
-    /// Started, and with `pin`, held on the notch (in place of any other).
+    /// Started, and with `pin`, held on the notch (in place of any other). With toyl, in toyl (see
+    /// `startsElsewhere`): it shows here once toyl's file has it, which is at once.
     func start(duration: TimeInterval, label: String, pin: Bool = false) {
         guard duration > 0 else { return }
+        if let startsElsewhere, startsElsewhere(min(duration, ReminderParser.longest), label, pin) != nil { return }
         let timer = ReminderTimer(id: UUID(), label: label, duration: duration,
                                   endDate: Date().addingTimeInterval(duration), pausedRemaining: nil)
         timers.append(timer)
@@ -146,7 +182,53 @@ final class TimerStore: ObservableObject {
             timers[index].endDate = now.addingTimeInterval(timers[index].remaining(at: now))
             timers[index].pausedRemaining = nil
         }
+        tellToyl(timers[index])
         changed()
+    }
+
+    /// toyl's countdowns, shown and rung here as Oyl's own are: each one toyl has is added or
+    /// brought up to date, and one toyl no longer has goes. (One held by toyl is held on the
+    /// notch the first time it's seen.) What's done to them here goes back to toyl's file.
+    func mirror(_ incoming: [Mirrored]) {
+        let ids = Set(incoming.map(\.id))
+        var changedAny = false
+        let gone = timers.filter { mirrored.contains($0.id) && !ids.contains($0.id) }
+        if !gone.isEmpty {
+            timers.removeAll { gone.contains($0) }
+            changedAny = true
+        }
+        mirrored.formIntersection(ids)
+        rangMirrored.formIntersection(ids)
+        var unmarked: [UUID] = []
+        for item in incoming where !rangMirrored.contains(item.id) {
+            let timer = ReminderTimer(id: item.id, label: item.label, duration: item.duration, endDate: item.endDate,
+                                      pausedRemaining: item.endDate == nil ? (item.pausedRemaining ?? item.duration) : nil)
+            if let index = timers.firstIndex(where: { $0.id == item.id }) {
+                if timers[index] != timer {
+                    timers[index] = timer
+                    changedAny = true
+                }
+            } else {
+                timers.append(timer)
+                mirrored.insert(item.id)
+                changedAny = true
+                if item.pin { hold(item.id) }
+            }
+            if !item.shown { unmarked.append(item.id) }
+        }
+        if changedAny { changed() }
+        // After this pass, not in the middle of it (saving it changes what comes in).
+        if !unmarked.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                MainActor.assumeIsolated { for id in unmarked { self?.onMirroredChange?(.shown(id)) } }
+            }
+        }
+    }
+
+    /// toyl's file told of a change made here to one of its timers.
+    private func tellToyl(_ timer: ReminderTimer) {
+        guard mirrored.contains(timer.id) else { return }
+        onMirroredChange?(.changed(timer))
     }
 
     /// Changes a timer to what's been typed for it: its label, and its time unless that's still
@@ -166,6 +248,7 @@ final class TimerStore: ObservableObject {
         }
         timers[index] = timer
         if parsed.pin { hold(id) }
+        tellToyl(timer)
         changed()
     }
 
@@ -183,10 +266,15 @@ final class TimerStore: ObservableObject {
         } else {
             timers[index].pausedRemaining = left + added
         }
+        tellToyl(timers[index])
         changed()
     }
 
     func cancel(_ id: UUID) {
+        if mirrored.contains(id), let timer = timers.first(where: { $0.id == id }) {
+            mirrored.remove(id)
+            onMirroredChange?(.stopped(id, worked: max(timer.duration - timer.remaining(at: Date()), 0)))
+        }
         timers.removeAll { $0.id == id }
         changed()
     }
@@ -203,7 +291,8 @@ final class TimerStore: ObservableObject {
     }
 
     private func changed() {
-        let data = try? JSONEncoder().encode(timers)
+        // toyl's are kept in toyl's file, and come back from there.
+        let data = try? JSONEncoder().encode(timers.filter { !mirrored.contains($0.id) })
         defaults.set(data, forKey: Self.storageKey)
         if let focused, !timers.contains(where: { $0.id == focused }) {
             self.focused = nil
@@ -217,6 +306,10 @@ final class TimerStore: ObservableObject {
         let now = Date()
         let finished = timers.filter { ($0.endDate ?? .distantFuture) <= now }
         if !finished.isEmpty {
+            for timer in finished where mirrored.contains(timer.id) {
+                rangMirrored.insert(timer.id)
+                onMirroredChange?(.stopped(timer.id, worked: timer.duration))
+            }
             timers.removeAll { finished.contains($0) }
             remember(finished, at: now)
             changed()

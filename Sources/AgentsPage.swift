@@ -3,7 +3,7 @@ import SwiftUI
 /// Every Oyl out on the menu bar and what it's up to, then agents taking a break and timers that
 /// have gone off, resting. Click one to go to it: an agent to where it's working, the others to
 /// their page; a timer that's gone off runs again. Under them, the Oyls' settings, then the
-/// calendar bar's (Gargoyle's alone). In Midnight Oyl each is its moyl.
+/// look's. In Midnight Oyl each is its moyl.
 struct OylsPage: View {
     @ObservedObject var state: NotchState
     @Environment(\.notchTheme) private var theme
@@ -26,8 +26,7 @@ struct OylsPage: View {
         }
     }
 
-    /// The Oyls' settings, then the calendar bar's, then the notch's look: only those that do
-    /// something in this look.
+    /// The Oyls' settings, then the notch's look: only those that do something in this look.
     private var settings: some View {
         let midnight = state.theme == .midnight
         return VStack(alignment: .leading, spacing: 7) {
@@ -42,12 +41,6 @@ struct OylsPage: View {
                 option("Countdowns", isOn: state.showsCountdowns) { state.showsCountdowns.toggle() }
                 if !midnight {
                     option("Mirror", isOn: state.showsMirror) { state.showsMirror.toggle() }
-                }
-            }
-            // The calendar bar is Gargoyle's alone.
-            if !midnight {
-                HStack(spacing: 16) {
-                    option("Calendar bar", isOn: state.showsCalendar) { state.showsCalendar.toggle() }
                 }
             }
             HStack(spacing: 16) {

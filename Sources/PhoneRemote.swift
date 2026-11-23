@@ -554,7 +554,7 @@ final class NotchPhoneControls: PhoneControls {
                       left: timer.pausedRemaining, duration: timer.duration, focused: timer.id == timers.focused)
             },
             ringing: timers.ringing?.title, awake: awake,
-            ideas: IdeaBoard.rows(state.tod.ideas, now: now).map { row in
+            ideas: IdeaBoard.rows(state.tod.ideas, now: now, aims: state.tod.hasAims).map { row in
                 .init(id: row.id, title: row.title, kind: row.kind.rawValue, label: row.label, overdue: row.overdue, stale: row.stale)
             },
             log: Feature.logPage.isOn ? logged : nil)
@@ -599,7 +599,10 @@ final class NotchPhoneControls: PhoneControls {
         case let .ideaDone(id), let .keepIdea(id), let .putOff(id, _):
             guard state.tod.ideas.contains(where: { $0.id == id && !$0.done }) else { return false }
             switch action {
-            case let .putOff(_, days): state.tod.putOff(id, by: days)
+            // (toyl's ideas have no aims to put off.)
+            case let .putOff(_, days):
+                guard state.tod.hasAims else { return false }
+                state.tod.putOff(id, by: days)
             case .keepIdea: state.tod.keep(id)
             default: state.tod.toggle(id)
             }

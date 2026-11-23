@@ -39,7 +39,7 @@ enum Layout {
     static func settingsHeight(rows: Int) -> CGFloat {
         6 + settingsChipsHeight + settingsGap + settingsRows(min(rows, settingsRowsFit)) + settingsMottoHeight + 12
     }
-    /// The Oyls tab's settings: the Oyls' row, the calendar's (Gargoyle's alone), then the look's.
+    /// The Oyls tab's settings: the Oyls' row, then the look's.
     static func oylSettingsHeight(rows: Int) -> CGFloat { 22 * CGFloat(rows) }
     static let fullscreenStripHeight: CGFloat = 28       // the tabs' row, under the menu bar's band
     static let popGrowth: CGFloat = 8                    // how far the closed notch pops on hover
@@ -168,14 +168,15 @@ final class NotchState: ObservableObject {
     /// worked out as the pointer comes to the notch.
     @Published var front: RadarAgent?
     @Published var inFullscreen = false  // a fullscreen app is in front
-    /// The lyrics: under the song in the notch, and sung by the music Oyl on the menu bar, for
-    /// every song that has some, until they're turned off (a song without any in between just
+    /// The lyrics: under the song in the notch (and, with `showsLyricsClosed`, on the menu bar),
+    /// for every song that has some, until they're turned off (a song without any in between just
     /// shows none). Remembered across launches.
     @Published var showsLyrics = UserDefaults.standard.bool(forKey: "music.lyrics") {
         didSet { UserDefaults.standard.set(showsLyrics, forKey: "music.lyrics") }
     }
-    /// Midnight Oyl's lyrics while the notch is closed too, in a black bar by it (see
-    /// `ClosedLyrics`). Off at first.
+    /// The lyrics on the menu bar too, in either look: in Oyl's, sung line by line by the music
+    /// Oyl (off, it DJs instead); in Midnight Oyl's, beside the closed notch (see `ClosedLyrics`).
+    /// Off at first.
     @Published var showsLyricsClosed = UserDefaults.standard.bool(forKey: "music.lyricsClosed") {
         didSet { UserDefaults.standard.set(showsLyricsClosed, forKey: "music.lyricsClosed") }
     }
@@ -187,10 +188,6 @@ final class NotchState: ObservableObject {
     /// The menu bar goes 80% black behind the Oyls, fullscreen app or not.
     @Published var dimsMenuBar = UserDefaults.standard.bool(forKey: "oyls.dimsMenuBar") {
         didSet { UserDefaults.standard.set(dimsMenuBar, forKey: "oyls.dimsMenuBar") }
-    }
-    /// The calendar bar, right of the notch.
-    @Published var showsCalendar = UserDefaults.standard.object(forKey: "oyls.calendar") as? Bool ?? true {
-        didSet { UserDefaults.standard.set(showsCalendar, forKey: "oyls.calendar") }
     }
     /// The look: Oyl's own, or Midnight Oyl (see `Midnight`). Remembered.
     @Published var theme = NotchTheme(rawValue: UserDefaults.standard.string(forKey: "notch.theme") ?? "") ?? .standard {
@@ -224,7 +221,6 @@ final class NotchState: ObservableObject {
     let timers: TimerStore
     let awake: AwakeManager
     let agents: AgentMonitor
-    let calendar: DayCalendar
     let power: PowerWatcher
     let bedtime: Bedtime
     let dictation: Dictation
@@ -251,23 +247,28 @@ final class NotchState: ObservableObject {
     var openProjects: (String?) -> Void = { _ in }
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
     private(set) lazy var phone = PhoneRemote(controls: NotchPhoneControls(state: self))
-    /// tod's lists and tasks (its brain dump's the ideas page), shared with tod.
+    /// tod's lists and tasks (its brain dump's the ideas page), shared with tod; or, with toyl
+    /// here and its setting on, toyl's (see `TodStore.source`).
     let tod = TodStore()
+    /// Reminders for toyl's tasks with a time, while it's toyl's list (see `ToylReminders`).
+    private(set) lazy var toylReminders = ToylReminders(tod: tod)
     /// Your check-ins, filed by #tag (see `WorkLog`).
     let workLog = WorkLog()
     private var todForwarding: AnyCancellable?
+    private var timerMirroring: AnyCancellable?
+    private var remindersForwarding: AnyCancellable?
+    private var sourceSwitch: AnyCancellable?
     private var projectsForwarding: AnyCancellable?
     private var logForwarding: AnyCancellable?
     private var forwarding: AnyCancellable?
     private var phoneForwarding: AnyCancellable?
 
-    init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor, calendar: DayCalendar,
+    init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor,
          power: PowerWatcher, bedtime: Bedtime, dictation: Dictation) {
         self.nowPlaying = nowPlaying
         self.timers = timers
         self.awake = awake
         self.agents = agents
-        self.calendar = calendar
         self.power = power
         self.bedtime = bedtime
         self.dictation = dictation
@@ -276,15 +277,51 @@ final class NotchState: ObservableObject {
         forwarding = Publishers.Merge4(power.objectWillChange, dictation.objectWillChange, Features.shared.objectWillChange,
                                        AgentRadar.shared.objectWillChange.merge(with: notes.objectWillChange))
             .sink { [weak self] _ in self?.objectWillChange.send() }
-        // A page turned off while it's showing: to Oyl's own.
+        // toyl's timers on the notch too, and what's done to them here back in toyl's file.
+        timerMirroring = tod.$toylTimers.sink { [weak self] mirrored in
+            MainActor.assumeIsolated { self?.timers.mirror(mirrored) }
+        }
+        timers.onMirroredChange = { [weak self] change in self?.tod.saveToylTimer(change) }
+        // With toyl, one timer system: new ones start in toyl (a half hour if no time's said),
+        // and show here from toyl's file.
+        timers.startsElsewhere = { [weak self] duration, label, pin in
+            self?.tod.startToylTimer(duration: duration, label: label, pin: pin)
+        }
+        timers.usualLength = { [weak self] in self?.usesToyl == true ? 30 * 60 : nil }
+        // The outline's reminders are for the outline, which toyl's list stands in for.
+        projects.isReminding = { [weak self] in self?.usesToyl != true }
+        // A page turned off while it's showing: to Oyl's own. toyl's setting turned on or off:
+        // its list, or tod's.
         pageSwitch = Features.shared.changed
-            .sink { [weak self] _ in
+            .sink { [weak self] change in
                 MainActor.assumeIsolated {
-                    guard let self, !self.shows(self.page) else { return }
-                    self.page = .agents
+                    guard let self else { return }
+                    if change.0 == .useToyl { self.tod.lookAgain() }
+                    if !self.shows(self.page) { self.page = .agents }
                 }
             }
+        // toyl's list come or gone: the projects page goes or comes back.
+        sourceSwitch = tod.$source.dropFirst().removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if !self.shows(self.page) { self.page = .agents }
+                    self.onSourceChange()
+                }
+            }
+        }
+        remindersForwarding = toylReminders.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
     }
+
+    /// toyl's list is the one in use (toyl's here, with its setting on): it stands in for Oyl's
+    /// own projects outline, timers and to-dos.
+    var usesToyl: Bool { tod.source == .toyl }
+
+    /// The projects page, its outline and their reminders: Oyl's own, so not while it's toyl's.
+    var showsProjects: Bool { Feature.projectsPage.isOn && !usesToyl }
+
+    /// Told when the list in use changes (to put away the outline's window). Set by the controller.
+    var onSourceChange: () -> Void = {}
 
     private var pageSwitch: AnyCancellable?
 
@@ -309,7 +346,7 @@ final class NotchState: ObservableObject {
     var ideaRowsHeight: CGFloat {
         let day = IdeaQuick.calendar.startOfDay(for: Date())
         if let kept = ideaHeight, kept.day == day, kept.tasks == tod.tasks, kept.lists == tod.lists { return kept.height }
-        let height = IdeaBoard.height(of: IdeaBoard.rows(tod.ideas))
+        let height = IdeaBoard.height(of: IdeaBoard.rows(tod.ideas, aims: tod.hasAims))
         ideaHeight = (tod.tasks, tod.lists, day, height)
         return height
     }
@@ -348,7 +385,7 @@ final class NotchState: ObservableObject {
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
         case .ideas: return Feature.ideasPage.isOn
-        case .projects: return Feature.projectsPage.isOn
+        case .projects: return showsProjects
         case .log: return Feature.logPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
@@ -358,7 +395,9 @@ final class NotchState: ObservableObject {
 
     /// A timer's gone off, a task's time has come, or it's two in the morning: the notch pops open
     /// to say so.
-    var isAlerting: Bool { timers.ringing != nil || bedtime.reminding || projects.ringing != nil }
+    var isAlerting: Bool {
+        timers.ringing != nil || bedtime.reminding || toylReminders.ringing != nil || (showsProjects && projects.ringing != nil)
+    }
 
     var mode: NotchMode {
         // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
@@ -407,7 +446,10 @@ final class NotchState: ObservableObject {
         // Each kind turned off stays in.
         var jobs: [Walker.Job] = Feature.agentOyls.isOn ? agents.working.map { .agent($0) } : []
         if let track = nowPlaying.track, nowPlaying.isPlaying, Feature.musicOyl.isOn {
-            let listening: OylDuty.Listening = track.isAudiobook ? .reading : showsLyrics && nowPlaying.lyrics != nil ? .singing : .dj
+            // It sings along (in Oyl's look, line by line on the bar) only with the lyrics on the bar;
+            // a moyl's rings glint while there are lyrics, its lyrics beside the notch being their own.
+            let sings = showsLyrics && nowPlaying.lyrics != nil && (theme == .midnight || showsLyricsClosed)
+            let listening: OylDuty.Listening = track.isAudiobook ? .reading : sings ? .singing : .dj
             jobs.append(.music(cover: nowPlaying.artwork, listening: listening))
         }
         if Feature.timerOyls.isOn { jobs += timers.timers.map { .timer($0) } }
@@ -440,7 +482,7 @@ final class NotchState: ObservableObject {
     /// app that seems to use AI.
     var hasOylsFooter: Bool { agents.offersChats || !AgentRadar.shared.suggestions.isEmpty }
     /// Midnight Oyl has no calendar bar, so no row of its settings.
-    var oylSettingsRows: Int { theme == .midnight ? 2 : 3 }
+    var oylSettingsRows: Int { 2 }
 
     var expandedWidth: CGFloat { max(Layout.expandedWidth, metrics.size.width + 2 * Layout.tabsWing(tabs: tabs.count)) }
 
@@ -679,7 +721,7 @@ final class NotchController {
     private var whenClosed: [() -> Void] = []
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor) {
-        state = NotchState(nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents, calendar: DayCalendar(),
+        state = NotchState(nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
                            power: PowerWatcher(), bedtime: Bedtime(), dictation: Dictation())
         state.startPhone()
         gestures = GestureWatcher()
@@ -697,13 +739,17 @@ final class NotchController {
         walkers.setShown(state.oylsVisible)
         walkers.dimsBar = state.dimsMenuBar
         walkers.showsCountdowns = state.showsCountdowns
-        walkers.showsCalendar = state.showsCalendar
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
         state.takeIdeaShot = { [weak self] in self?.takeShot(for: .ideas) }
         state.takeProjectShot = { [weak self] in self?.takeShot(for: .projects) }
         state.openProjects = { [weak self] id in self?.openProjects(at: id) }
+        // toyl's list in use: the outline's window goes (and can't be opened) till it isn't.
+        state.onSourceChange = { [weak self] in
+            guard let self, self.state.usesToyl else { return }
+            self.projectsWindow?.close()
+        }
         state.gestures = gestures
         dock = DockController(state: state)
         approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
@@ -955,11 +1001,6 @@ final class NotchController {
                 MainActor.assumeIsolated { self?.walkers.showsCountdowns = shows }
             }
             .store(in: &cancellables)
-        state.$showsCalendar
-            .sink { [weak self] shows in
-                MainActor.assumeIsolated { self?.walkers.showsCalendar = shows }
-            }
-            .store(in: &cancellables)
         walkers.onReveal = { agents.reveal($0) }
         walkers.onSelfie = { NSWorkspace.shared.open($0) }
         walkers.onOpen = { [weak self] job in self?.reveal(job) }
@@ -982,16 +1023,6 @@ final class NotchController {
                 MainActor.assumeIsolated { self?.walkers.say(line, as: "bedtime", for: 10) }
             }
         }
-        // The calendar bar, and clicking it: to the Calendar app, or to what it needs to work.
-        let calendar = state.calendar
-        calendar.objectWillChange
-            .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                MainActor.assumeIsolated { self?.walkers.showCalendar(calendar.events, note: calendar.note) }
-            }
-            .store(in: &cancellables)
-        walkers.showCalendar(calendar.events, note: calendar.note)
-        walkers.onCalendar = { calendar.openSomewhere() }
         castOyls()
     }
 
@@ -1057,6 +1088,7 @@ final class NotchController {
     /// The outline of every project, in its own window, up where you are (at the line `id`, if
     /// it's given), in the look Oyl's in.
     private func openProjects(at id: String?) {
+        guard state.showsProjects else { return }
         let window = projectsWindow ?? ProjectsWindowController(store: state.projects, workLog: state.workLog)
         projectsWindow = window
         window.theme = state.theme
@@ -1151,7 +1183,6 @@ final class NotchController {
         } else {
             walkers.band = nil
         }
-        walkers.notchOpen(to: state.mode == .expanded ? middle + state.size(for: .expanded).width / 2 + NotchState.topRadius(.expanded) : nil)
         walkers.inFullscreen = state.inFullscreen
     }
 

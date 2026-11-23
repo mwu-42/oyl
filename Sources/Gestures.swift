@@ -91,7 +91,7 @@ extension NotchState {
         case .horns:
             if awake.isActive { awake.stop() } else { awake.startUsual() }
         case .pinky:
-            // The lyrics, and the music Oyl on the menu bar singing them.
+            // The lyrics (and, if they're on the bar, the music Oyl singing them there).
             toggleLyrics()
         case .pinch, .peace, .ok, .thumbsUp, .announce, .tiltLeft, .tiltRight, .rock, .fist:
             // Handled elsewhere: GestureWatcher has a pinch call turn(by:) or scrub(by:), peace

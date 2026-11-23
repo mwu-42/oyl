@@ -30,10 +30,6 @@
 	<string>Oyl reads the current song from Music and Spotify and controls playback, and asks your browser which tabs an agent (Muse, ChatGPT…) is working in, to show it at work.</string>
 	<key>NSAudioCaptureUsageDescription</key>
 	<string>Oyl listens to Music and Spotify's audio so the visualizer moves with the song.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Oyl shows today's events in a bar on the menu bar, with an Oyl doing whatever's on.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Oyl watches for hand gestures while your pointer is over the open notch.</string>
 	<key>NSDesktopFolderUsageDescription</key>

@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "out=$(\"$HOME/toyl/docs/oyl-sync/pending.sh\" 2>/dev/null); [ -n \"$out\" ] && printf 'toyl has changed since Oyl last took it in. Tell the owner, and offer to run /toyl-sync:\\n\\n%s\\n' \"$out\"; exit 0"
+          }
+        ]
+      }
+    ]
+  }
+}

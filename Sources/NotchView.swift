@@ -50,7 +50,7 @@ struct NotchView: View {
                 state.page = .settings
                 state.isRevealing = true
             }
-            if Feature.projectsPage.isOn {
+            if state.showsProjects {
                 Button("Projects…") { state.openProjects(nil) }
             }
             Toggle("Midnight Oyl", isOn: Binding { state.theme == .midnight } set: { state.theme = $0 ? .midnight : .standard })
@@ -280,7 +280,10 @@ struct ExpandedNotch: View {
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
-                } else if let task = state.projects.ringing {
+                } else if let ringing = state.toylReminders.ringing {
+                    ToylReminderAlert(ringing: ringing, reminders: state.toylReminders)
+                        .transition(NotchView.swap)
+                } else if state.showsProjects, let task = state.projects.ringing {
                     ProjectAlert(task: task, projects: state.projects)
                         .transition(NotchView.swap)
                 } else {

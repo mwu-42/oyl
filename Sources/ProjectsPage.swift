@@ -332,50 +332,14 @@ enum ProjectGlyph {
 struct ProjectAlert: View {
     let task: ProjectNode
     @ObservedObject var projects: ProjectStore
-    @Environment(\.notchTheme) private var theme
 
-    static let bell = Color(red: 1, green: 0.78, blue: 0.42)
+    static let bell = ReminderAlert.bell
 
     var body: some View {
-        let bell = theme.tint(Self.bell, urgent: true)
         let project = projects.project(of: task.id)?.title
         let when = task.time.map(TodQuick.describe(time:)) ?? ""
-        HStack(spacing: 12) {
-            Image(systemName: "bell.fill")
-                .notchSymbol(size: 18, weight: .semibold)
-                .foregroundStyle(bell)
-                .symbolEffect(.pulse, options: .repeating)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(bell.opacity(0.16)))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(task.title.isEmpty ? "A reminder" : task.title)
-                    .notchFont(size: 13, weight: .semibold)
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                Text([project, when].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
-                    .notchFont(size: 10.5)
-                    .foregroundStyle(.white.opacity(0.6))
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            pill("+10 min", foreground: .white, background: .white.opacity(0.14), bright: false) { projects.snoozeRinging(minutes: 10) }
-            pill("OK", foreground: .white, background: .white.opacity(0.14), bright: false) { projects.dismissRinging() }
-            pill("Done", foreground: .black, background: Self.bell) { projects.finishRinging() }
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 8)
-    }
-
-    private func pill(_ title: String, foreground: Color, background: Color, bright: Bool = true,
-                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .notchFont(size: 11.5, weight: .semibold)
-                .padding(.horizontal, 12)
-                .frame(height: 26)
-                .notchPill(background, text: foreground, bright: bright, urgent: true)
-                .contentShape(Capsule())
-        }
-        .buttonStyle(PressableStyle())
+        ReminderAlert(title: task.title, detail: [project, when].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                      snooze: { projects.snoozeRinging(minutes: 10) }, dismiss: { projects.dismissRinging() },
+                      finish: { projects.finishRinging() })
     }
 }

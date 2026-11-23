@@ -296,13 +296,17 @@ enum IdeaBoard {
         let overdue: Bool
         /// Undated, and not looked at for a month.
         let stale: Bool
+        /// Pulled into toyl from an email or Canvas: the mark it carries (see `TodStore.Task.mark`).
+        var mark: String?
     }
 
     /// How far ahead an aim comes up, and how long an undated idea goes before it asks.
     static let comingUp = 7
     static let stale: TimeInterval = 30 * 86_400
 
-    static func rows(_ ideas: [TodStore.Task], now: Date = Date()) -> [Row] {
+    /// `aims`: whether there are any (tod's ideas have them, toyl's don't: with toyl, one with
+    /// only an aim is undated, as toyl shows it).
+    static func rows(_ ideas: [TodStore.Task], now: Date = Date(), aims: Bool = true) -> [Row] {
         let calendar = IdeaQuick.calendar, today = calendar.startOfDay(for: now)
         func daysFromToday(_ text: String) -> Int? {
             IdeaQuick.date(text).flatMap { calendar.dateComponents([.day], from: today, to: $0).day }
@@ -314,17 +318,18 @@ enum IdeaBoard {
                 let late = idea.dueDate.map { $0 < now } ?? false
                 let ahead = daysFromToday(due) ?? 0
                 let label = late && ahead < 0 ? "\(days(-ahead)) late" : IdeaQuick.describe(due: due, time: idea.time, now: now)
-                placed.append((Row(id: idea.id, title: idea.title, kind: .due, label: label, overdue: late, stale: false),
+                placed.append((Row(id: idea.id, title: idea.title, kind: .due, label: label, overdue: late, stale: false, mark: idea.mark),
                                idea.dueDate?.timeIntervalSince1970 ?? 0))
-            } else if let target = idea.target, let ahead = daysFromToday(target) {
+            } else if aims, let target = idea.target, let ahead = daysFromToday(target) {
                 let kind: Row.Kind = ahead < comingUp ? .soon : .later
                 let label = ahead < 0 ? "slipped \(days(-ahead))" : IdeaQuick.describe(target: target, now: now)
-                placed.append((Row(id: idea.id, title: idea.title, kind: kind, label: label, overdue: ahead < 0, stale: false), Double(ahead)))
+                placed.append((Row(id: idea.id, title: idea.title, kind: kind, label: label, overdue: ahead < 0, stale: false,
+                                   mark: idea.mark), Double(ahead)))
             } else {
                 let since = idea.kept ?? idea.createdAt
                 let stale = now.timeIntervalSince(since) > stale
                 placed.append((Row(id: idea.id, title: idea.title, kind: .someday, label: stale ? "still want it?" : "", overdue: false,
-                                   stale: stale),
+                                   stale: stale, mark: idea.mark),
                                (stale ? -1e12 : 0) - idea.createdAt.timeIntervalSince1970))
             }
         }
@@ -353,19 +358,39 @@ enum IdeaBoard {
 }
 
 extension TodStore {
-    /// The brain dump's ideas, open ones and done, as tod keeps them.
+    /// The brain dump's ideas, open ones and done, as tod keeps them. With toyl, its ideas as toyl
+    /// shows them: its ideas list (the brain dump), and what's put off for someday from any list
+    /// that isn't put away.
     var ideas: [Task] {
         guard let dump = lists.first(where: \.isDump) else { return [] }
-        return tasks.filter { $0.listId == dump.id }
+        guard source == .toyl else { return tasks.filter { $0.listId == dump.id } }
+        let away = Set(lists.filter(\.isArchived).map(\.id))
+        return tasks.filter { $0.listId == dump.id || ($0.someday && !away.contains($0.listId)) }
     }
 
-    /// Jots an idea down in the brain dump, read as `IdeaQuick` reads it. Nil if there's nothing to
-    /// add, or no tod.
+    /// Ideas can have aims (a day to have one done by, roughly): tod's can, toyl's can't (toyl
+    /// reads "by fri" as a deadline).
+    var hasAims: Bool { source != .toyl }
+
+    /// Jots an idea down, and its id; nil if there's nothing to add, or no list. With toyl, through
+    /// toyl's own command (`toyl idea`), so it's read just as toyl reads it; else (or if toyl's
+    /// command isn't there or fails) into the brain dump, read as `IdeaQuick` reads it, an aim
+    /// taken as a deadline for toyl.
     @discardableResult
-    func addIdea(_ text: String) -> Task? {
+    func addIdea(_ text: String) -> String? {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if let folder = toylFolder, let id = ToylCommand.idea(text, in: folder) {
+            // Seen at once, so its screenshot can go with it.
+            readNow()
+            return id
+        }
         let idea = IdeaQuick.parse(text, weekStart: weekStart)
         guard let dump = lists.first(where: \.isDump) else { return nil }
-        return add(title: idea.title, due: idea.due, time: idea.time, listId: dump.id, target: idea.target)
+        if !hasAims {
+            return add(title: idea.title, due: idea.due ?? idea.target, time: idea.time, listId: dump.id)?.id
+        }
+        return add(title: idea.title, due: idea.due, time: idea.time, listId: dump.id, target: idea.target)?.id
     }
 
     /// An idea's aim put off `days` (a week, or a month), or given one if it's undated.
@@ -396,7 +421,7 @@ struct IdeasPage: View {
     var body: some View {
         IdeasLayout(tod: tod, draft: state.ideaDraft, pictures: state.ideaPictures, editing: state.isEditing,
                     listHeight: state.ideaListHeight, resign: state.resignKeyboard, takeShot: state.takeIdeaShot,
-                    projects: Feature.projectsPage.isOn ? state.projects : nil)
+                    projects: state.showsProjects ? state.projects : nil)
     }
 }
 
@@ -419,13 +444,15 @@ struct IdeasLayout: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
-            let rows = IdeaBoard.rows(tod.ideas, now: context.date)
+            let rows = IdeaBoard.rows(tod.ideas, now: context.date, aims: tod.hasAims)
             VStack(alignment: .leading, spacing: 10) {
                 field
                 if !tod.isAvailable {
-                    hint("tod isn't here yet: Oyl keeps ideas in tod's brain dump. Open tod once, then come back.")
+                    hint(tod.source == .toyl ? "toyl's list can't be read just now. It's back as soon as it can be."
+                         : "tod isn't here yet: Oyl keeps ideas in tod's brain dump. Open tod once, then come back.")
                 } else if rows.isEmpty {
-                    hint("Jot down anything to come back to. “due fri” is a deadline; “by next month” or “in a month or so” is an aim; nothing’s for someday.")
+                    hint(tod.hasAims ? "Jot down anything to come back to. “due fri” is a deadline; “by next month” or “in a month or so” is an aim; nothing’s for someday."
+                         : "Jot down anything to come back to: toyl's ideas. “fri” or “by next month” is a deadline; nothing’s for someday. (In toyl, “?” makes one.)")
                 } else if IdeaBoard.height(of: rows) <= listHeight + 0.5 {
                     list(rows)
                 } else {
@@ -439,7 +466,7 @@ struct IdeasLayout: View {
         }
         .onAppear {
             takeKeyboard()
-            // Screenshots whose ideas are gone from tod go too.
+            // Screenshots whose ideas are gone from the list go too.
             if tod.isAvailable, !tod.tasks.isEmpty { pictures.prune(keeping: Set(tod.tasks.map(\.id))) }
         }
         .onChange(of: draft.wantsKeyboard) { _, _ in takeKeyboard() }
@@ -464,8 +491,8 @@ struct IdeasLayout: View {
                     .foregroundStyle(.white)
             }
             ReminderField(text: $draft.text,
-                          placeholder: shot == nil ? "Dump an idea…   “due fri”, “by next month”, “in a month or so”"
-                              : "What's the idea?   “due fri”, “by next month”, “in a month or so”",
+                          placeholder: (shot == nil ? "Dump an idea…   " : "What's the idea?   ")
+                              + (tod.hasAims ? "“due fri”, “by next month”, “in a month or so”" : "“fri”, “by next month”, or nothing"),
                           onSubmit: submit, onCancel: cancel, focus: focus.value)
             if !draft.text.isEmpty {
                 Image(systemName: "return")
@@ -511,7 +538,8 @@ struct IdeasLayout: View {
                     .modifier(IdeaDrift(order: index * 3, on: theme == .midnight))
                 ForEach(Array(rows.filter { $0.kind == kind }.enumerated()), id: \.element.id) { offset, row in
                     let picture = pictures.url(for: row.id).flatMap { url in pictures.thumbnail(for: row.id).map { (url, $0) } }
-                    IdeaRow(row: row, picture: picture, done: { tod.toggle(row.id) }, putOff: { tod.putOff(row.id, by: $0) },
+                    IdeaRow(row: row, picture: picture, done: { tod.toggle(row.id) },
+                            putOff: tod.hasAims ? { tod.putOff(row.id, by: $0) } : nil,
                             keep: { tod.keep(row.id) }, makeProject: projects.map { projects in { makeProject(row, in: projects) } })
                         .modifier(IdeaDrift(order: index * 3 + offset + 1, on: theme == .midnight))
                 }
@@ -522,7 +550,7 @@ struct IdeasLayout: View {
     private func submit() {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        // "#oyl …", with Oyl one of your projects: into it, not tod's brain dump.
+        // "#oyl …", with Oyl one of your projects: into it, not the brain dump.
         if let projects, let tag = ProjectQuick.parse(text, idea: true).tag, projects.project(for: tag) != nil,
            projects.ideaForProject(text, shot: draft.handOver()) != nil {
             Haptics.perform(.alignment)
@@ -530,7 +558,7 @@ struct IdeasLayout: View {
             return
         }
         if let idea = tod.addIdea(text) {
-            if let shot = draft.handOver() { pictures.keep(shot, for: idea.id) }
+            if let shot = draft.handOver() { pictures.keep(shot, for: idea) }
             Haptics.perform(.alignment)
             // Kept in the field for the next one: ideas come in runs.
             draft.text = ""
@@ -591,7 +619,8 @@ private struct IdeaRow: View {
     let row: IdeaBoard.Row
     var picture: (url: URL, image: NSImage)?
     let done: () -> Void
-    let putOff: (Int) -> Void
+    /// Put off a week or a month (given an aim): not for toyl's, which have none.
+    let putOff: ((Int) -> Void)?
     let keep: () -> Void
     var makeProject: (() -> Void)?
     @StateObject private var hover = LocalState(false)
@@ -624,6 +653,12 @@ private struct IdeaRow: View {
                 .onDrag { NSItemProvider(contentsOf: picture.url) ?? NSItemProvider() }
                 .help("Open the screenshot")
             }
+            if let mark = row.mark {
+                Image(systemName: mark)
+                    .notchSymbol(size: 8.5, weight: .semibold)
+                    .foregroundStyle(.white.opacity(checked.value ? 0.3 : 0.5))
+                    .help(mark == "envelope" ? "From an email, pulled in by toyl" : "An assignment from Canvas, brought in by toyl")
+            }
             Text(row.title)
                 .notchFont(size: 12)
                 .foregroundStyle(.white.opacity(checked.value ? 0.4 : 0.9))
@@ -631,11 +666,11 @@ private struct IdeaRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 6)
-            if hover.value, row.kind != .due || makeProject != nil {
+            if hover.value, (row.kind != .due && (putOff != nil || row.stale)) || makeProject != nil {
                 HStack(spacing: 10) {
                     if let makeProject { action("Project", makeProject) }
                     if row.stale { action("Keep", keep) }
-                    if row.kind != .due {
+                    if row.kind != .due, let putOff {
                         action(row.kind == .someday && !row.stale ? "In a week" : "+1 wk") { putOff(7) }
                         action(row.kind == .someday && !row.stale ? "A month" : "+1 mo") { putOff(28) }
                     }
