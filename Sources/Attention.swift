@@ -44,7 +44,7 @@ enum AppAttention {
 /// A mark for an app asking for you, along the bottom edge under where its icon is in Oyl's Dock,
 /// in place of the macOS Dock's icon bouncing up there: small, there till you go to it, its icon
 /// popping up off it as it starts asking, and now and then after (see `AttentionPop`). In Oyl's
-/// look, a little of the Dock come up out of the edge, black, flared into it, its icon on it; in
+/// look, a little of the Dock come up out of the edge, black, flared into it, the app's own icon on it; in
 /// Midnight Oyl's, its glyph traced in starlight just over the edge, out of a pool of night,
 /// breathing, with a glint by it.
 struct AttentionMark: View {
@@ -62,9 +62,10 @@ struct AttentionMark: View {
         if theme == .midnight { traced } else { plain }
     }
 
+    /// Midnight's glyph, traced; in Oyl's look, the app's own icon.
     private var picture: some View {
         Group {
-            if let glyph {
+            if theme == .midnight, let glyph {
                 DockGlyphTile(glyph: glyph, tile: Self.tile, hovered: false, active: true)
             } else {
                 Image(nsImage: icon)

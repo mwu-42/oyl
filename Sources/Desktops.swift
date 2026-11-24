@@ -5,7 +5,7 @@ import os
 
 // Four fingers up (or right Shift twice): your desktops and fullscreen apps in a list, in the order
 // they're in, each by its name (a fullscreen app's by its app's, as the menu bar's label names them)
-// with the icons of the apps on it. Click one to go straight to it; point at one to rename it; drag
+// with the icons of the apps on it. Click one to go straight to it; right-click one to rename it; drag
 // one onto another to group them, under a heading that folds them away (see `SpaceGroups`). (They
 // can't be put in another order from here: macOS keeps that in the Dock, and short of turning System
 // Integrity Protection off, only Mission Control can change it, by dragging.) macOS's own
@@ -623,6 +623,15 @@ final class DesktopsModel: ObservableObject {
     @Published var dragAt: CGPoint?
     /// A drag's just ended: the click that ends it isn't a pick.
     var justDragged = false
+    /// Where each line is in the window (top-left first), as last laid out: for what's under a
+    /// right-click, which needn't have been pointed at first.
+    var lineFrames: [String: CGRect] = [:]
+
+    /// The line at `point` in the window (top-left first), if one's there.
+    func line(at point: CGPoint) -> String? {
+        let shown = Set(items.map(\.id))
+        return lineFrames.first { shown.contains($0.key) && $0.value.contains(point) }?.key
+    }
     /// Shift-clicked first: where what's grouped begins, once another's shift-clicked.
     @Published var anchor: String?
 
@@ -882,8 +891,8 @@ final class DesktopsModel: ObservableObject {
 
 /// The desktops, in a list. In Oyl's look it's a plain black card in the middle of the screen, a
 /// little way down, each row a name (the one you're on in bold, with a dot), the names of the apps
-/// on a desktop still called by its number, and their icons; a row pointed at is lit, with a pencil
-/// to rename it; a group's heading a small bold name after a chevron, its desktops in under it. In
+/// on a desktop still called by its number, and their icons; a row pointed at is lit (right-click it
+/// to rename it); a group's heading a small bold name after a chevron, its desktops in under it. In
 /// Midnight Oyl's the
 /// screen goes to night (stars twinkling over ink), and the list's set off to the left under its
 /// title in a flourish, the names in Superclarendon strung down a line of stars that bows out and
@@ -1002,6 +1011,14 @@ private struct DesksHint: View {
 
 /// The lines. In Midnight Oyl's they bow out to the right and back, down a line of stars; a
 /// group's desktops sit in under its heading.
+/// Each line's frame in the window, top-left first.
+private struct DeskLineFrames: PreferenceKey {
+    static let defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { $1 }
+    }
+}
+
 private struct DesktopsRows: View {
     @ObservedObject var model: DesktopsModel
     @Environment(\.notchTheme) private var theme
@@ -1013,6 +1030,10 @@ private struct DesktopsRows: View {
             ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                 let dragged = item.id == model.dragging
                 line(item, height: height)
+                    // Where it is on the screen, for a right-click on it (see `DesktopsModel.line(at:)`).
+                    .background(GeometryReader { place in
+                        Color.clear.preference(key: DeskLineFrames.self, value: [item.id: place.frame(in: .global)])
+                    })
                     .padding(.leading, Self.inset(of: item, at: index, of: count, midnight: midnight))
                     .modifier(DeskDrift(model: model, index: index, count: count, on: midnight))
                     .offset(dragged ? model.dragShift : .zero)
@@ -1034,6 +1055,9 @@ private struct DesktopsRows: View {
             }
         }
         .coordinateSpace(.named(Self.space))
+        .onPreferenceChange(DeskLineFrames.self) { frames in
+            MainActor.assumeIsolated { model.lineFrames = frames }
+        }
     }
 
     @ViewBuilder private func line(_ item: DesktopsModel.Item, height: CGFloat) -> some View {
@@ -1105,8 +1129,8 @@ private struct DeskLine: Shape {
     }
 }
 
-/// A desktop: its name, what's on it, and (pointed at) a way to rename it, or take it out of its
-/// group. Click it to go there; drag it onto another to group them.
+/// A desktop: its name, what's on it, and (pointed at, in a group) a way to take it out. Click it to
+/// go there, right-click it to rename it; drag it onto another to group them.
 private struct DeskRow: View {
     @ObservedObject var model: DesktopsModel
     let desk: DesktopsModel.Desk
@@ -1140,7 +1164,6 @@ private struct DeskRow: View {
             Spacer(minLength: 8)
             if showsActions {
                 if grouped { takeOutButton(midnight: midnight) }
-                renameButton(midnight: midnight)
             }
         }
         .padding(.horizontal, midnight ? 6 : 10)
@@ -1244,10 +1267,6 @@ private struct DeskRow: View {
             .offset(x: midnight && lit ? 4 : 0)
     }
 
-    private func renameButton(midnight: Bool) -> some View {
-        DeskAction(word: "rename", symbol: "pencil", help: "Rename") { model.startRenaming(desk) }
-    }
-
     private func takeOutButton(midnight: Bool) -> some View {
         DeskAction(word: "take out", symbol: "minus.circle", help: "Take out of the group") {
             withAnimation(model.shuffle) { model.regroup(.out(desk: desk.id)) }
@@ -1256,7 +1275,7 @@ private struct DeskRow: View {
 }
 
 /// A group's heading: its name, and, folded, how many desktops are in it and their apps' icons;
-/// pointed at, a way to rename it or do away with it. Click it to fold the group away or open it
+/// pointed at, a way to do away with it (right-click it to rename it). Click it to fold the group away or open it
 /// out; drag a desktop onto it to put it in. In Oyl's look, a small bold name after a chevron
 /// that turns; in Midnight's, a little constellation and the name in italics, the desktops
 /// drifting away into a blur as it folds.
@@ -1292,7 +1311,6 @@ private struct DeskHeading: View {
                 DeskAction(word: "ungroup", symbol: "xmark", help: "Ungroup") {
                     withAnimation(model.shuffle) { model.regroup(.ungroup(group: group.id)) }
                 }
-                DeskAction(word: "rename", symbol: "pencil", help: "Rename") { model.startRenaming(group: group.id) }
             }
         }
         .padding(.horizontal, midnight ? 6 : 10)
@@ -1573,7 +1591,7 @@ final class DesktopsPanel: NSPanel {
     }
 
     /// A right-click (or control-click): whether it was taken (a line renamed).
-    var rightClicked: () -> Bool = { false }
+    var rightClicked: (NSEvent) -> Bool = { _ in false }
 
     override var canBecomeKey: Bool { true }
 
@@ -1581,7 +1599,7 @@ final class DesktopsPanel: NSPanel {
 
     override func sendEvent(_ event: NSEvent) {
         let right = event.type == .rightMouseDown || event.type == .leftMouseDown && event.modifierFlags.contains(.control)
-        if right, rightClicked() { return }
+        if right, rightClicked(event) { return }
         super.sendEvent(event)
     }
 
@@ -1634,9 +1652,12 @@ final class DesktopsViewer {
         panel.contentView = host
         panel.escape = { [weak self] in self?.escape() }
         panel.pressed = { [weak self] event in self?.pressed(event) ?? false }
-        panel.rightClicked = { [weak self] in
+        panel.rightClicked = { [weak self] event in
             guard let self else { return false }
-            return self.model.renameLine(self.model.hovered)
+            // The line under the click, as it's laid out (the one pointed at, if that's not known).
+            let point = event.locationInWindow
+            let height = self.panel.contentView?.bounds.height ?? self.panel.frame.height
+            return self.model.renameLine(self.model.line(at: CGPoint(x: point.x, y: height - point.y)) ?? self.model.hovered)
         }
         model.dismiss = { [weak self] in self?.close() }
         model.pick = { [weak self] desk in self?.close(goingTo: desk) }

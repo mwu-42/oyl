@@ -1055,10 +1055,11 @@ private struct DockTile: View {
         let hovered = model.reordering == nil ? model.hovered == item.id || asking : model.reordering?.id == item.id
         Hop(active: apps.launching.contains(item.id), height: tile * 0.28) {
             Group {
-                if let glyph = apps.glyphs[item.id] {
+                // Midnight's traced glyph; in Oyl's look (or till its glyph's lifted, or for one with
+                // none to lift), the icon as it is.
+                if theme == .midnight, let glyph = apps.glyphs[item.id] {
                     DockGlyphTile(glyph: glyph, tile: tile, hovered: hovered, active: item.isActive)
                 } else {
-                    // Until its glyph's lifted, or for one with none to lift: the icon as it is.
                     Image(nsImage: apps.icon(for: item))
                         .resizable()
                         .interpolation(.high)
