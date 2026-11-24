@@ -208,9 +208,9 @@ final class ChimeSettings: ObservableObject {
 
 /// Oyl's own soft tones, made as sound (16-bit, mono), low: around D3 to A3. Each note mostly a
 /// pure tone, with a little of its overtones over it that fade sooner (warm, not bright), coming in
-/// gently and dying away. Done is two notes stepping down, settled; waiting two stepping up, as a
-/// question does. Four of them: low round, a hum, wood, a soft bell. In Midnight Oyl's, softer
-/// still, slower to fade, with a faint shimmer.
+/// gently and dying away. Done is three notes rising, a small ta-da; waiting two soft taps of one,
+/// asking. Four of them: low round, a hum, wood, a soft bell. In Midnight Oyl's, softer still,
+/// slower to fade, with a faint shimmer.
 enum ChimeTone {
     struct Note: Equatable {
         /// Its pitch, in hertz; when it starts, in seconds; how loud, 0 to 1.
@@ -232,32 +232,31 @@ enum ChimeTone {
 
     static let rate = 44_100
 
-    /// `kind` in `style` ("round", "hum", "wood", "bell").
+    /// `kind` in `style` ("round", "hum", "wood", "bell"). Done rises, D3, F♯3, A3, a small ta-da;
+    /// waiting is two soft taps of A3, asking.
     nonisolated static func notes(_ kind: AgentChimes.Kind, style: String = "round", midnight: Bool) -> [Note] {
         let soft = midnight ? 1.7 : 1.0
         let shimmer = midnight ? [Overtone(ratio: 6, level: 0.05, fade: 0.6)] : []
-        let (first, second): (Double, Double) = kind == .done ? (220, 164.81) : (146.83, 220)
-        func two(attack: Double, fade: Double, gap: Double, overtones: [Overtone], down: Double = 1) -> [Note] {
-            [Note(pitch: first * down, at: 0, level: 0.32, attack: attack * soft, fade: fade * soft, overtones: overtones + shimmer),
-             Note(pitch: second * down, at: gap * (midnight ? 1.2 : 1), level: 0.36, attack: attack * soft, fade: fade * soft * 1.25,
-                  overtones: overtones + shimmer)]
+        let pitches: [Double] = kind == .done ? [146.83, 185.0, 220.0] : [220.0, 220.0]
+        func run(attack: Double, fade: Double, gap: Double, overtones: [Overtone], scale: Double = 1) -> [Note] {
+            let gap = (kind == .done ? gap * 0.75 : gap) * (midnight ? 1.2 : 1)
+            return pitches.enumerated().map { index, pitch in
+                let last = index == pitches.count - 1
+                return Note(pitch: pitch * scale, at: Double(index) * gap, level: 0.3 + 0.03 * Double(index),
+                            attack: attack * soft, fade: fade * soft * (last ? 1.3 : 1), overtones: overtones + shimmer)
+            }
         }
         switch style {
         case "hum":
-            // One long low note for done; two soft pulses of it for waiting.
-            let note = Note(pitch: 146.83, at: 0, level: 0.4, attack: 0.05 * soft, fade: 0.42 * soft,
-                            overtones: [Overtone(ratio: 2, level: 0.12, fade: 0.6)] + shimmer)
-            guard kind == .waiting else { return [note] }
-            return [Note(pitch: 146.83, at: 0, level: 0.32, attack: 0.04 * soft, fade: 0.16 * soft, overtones: note.overtones),
-                    Note(pitch: 146.83, at: 0.22, level: 0.36, attack: 0.04 * soft, fade: 0.3 * soft, overtones: note.overtones)]
+            return run(attack: 0.04, fade: 0.22, gap: 0.2, overtones: [Overtone(ratio: 2, level: 0.12, fade: 0.6)], scale: 0.75)
         case "wood":
-            return two(attack: 0.004, fade: 0.07, gap: 0.11,
-                       overtones: [Overtone(ratio: 2, level: 0.35, fade: 0.5), Overtone(ratio: 3, level: 0.15, fade: 0.35)], down: 1.5)
+            return run(attack: 0.004, fade: 0.07, gap: 0.11,
+                       overtones: [Overtone(ratio: 2, level: 0.35, fade: 0.5), Overtone(ratio: 3, level: 0.15, fade: 0.35)], scale: 1.5)
         case "bell":
-            return two(attack: 0.006, fade: 0.45, gap: 0.18,
-                       overtones: [Overtone(ratio: 2.76, level: 0.16, fade: 0.5), Overtone(ratio: 5.4, level: 0.05, fade: 0.3)], down: 0.75)
+            return run(attack: 0.006, fade: 0.4, gap: 0.17,
+                       overtones: [Overtone(ratio: 2.76, level: 0.16, fade: 0.5), Overtone(ratio: 5.4, level: 0.05, fade: 0.3)], scale: 0.75)
         default:
-            return two(attack: 0.012, fade: 0.2, gap: 0.13, overtones: [Overtone(ratio: 2, level: 0.22, fade: 0.45)])
+            return run(attack: 0.012, fade: 0.2, gap: 0.13, overtones: [Overtone(ratio: 2, level: 0.22, fade: 0.45)])
         }
     }
 

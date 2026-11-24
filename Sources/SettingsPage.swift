@@ -166,7 +166,7 @@ struct SettingsPage: View {
             }
             items.append(feature(.discovery, "Find new agents", "Offer to watch apps that talk to an AI service"))
             items.append(feature(.agentSounds, "🔔 Sound when Claude's done",
-                                 "A low, soft sound as a Claude finishes its turn (two notes down), another as it starts waiting for you, for a permission or a question (two notes up); each place it runs can have its own"))
+                                 "A low, soft sound as a Claude finishes its turn (three notes rising), another as it starts waiting for you, for a permission or a question (two soft taps); each place it runs can have its own"))
             if Feature.agentSounds.isOn {
                 // Each place a Claude's been seen running, and everywhere else: click to hear it, ‹ › for another.
                 let chimes = ChimeSettings.shared
