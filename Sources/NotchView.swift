@@ -89,8 +89,14 @@ struct NotchView: View {
         .frame(width: size.width + 2 * topRadius, height: size.height, alignment: .top)
         .background(Color.black)
         .clipShape(NotchShape(topRadius: topRadius, bottomRadius: NotchState.bottomRadius(mode)))
-        // Shadow only while lifted (popped or open).
-        .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? (mode == .expanded ? 14 : 6) : 0, y: lifted ? 4 : 0)
+        // Shadow only while lifted (popped or open), cast by the plain shape behind it all: cast
+        // by what's in it, it was worked out again each time anything there moved (the music's
+        // bars, a timer, a field's cursor), and flickered.
+        .background {
+            NotchShape(topRadius: topRadius, bottomRadius: NotchState.bottomRadius(mode))
+                .fill(Color.black)
+                .shadow(color: .black.opacity(lifted ? 0.5 : 0), radius: lifted ? (mode == .expanded ? 14 : 6) : 0, y: lifted ? 4 : 0)
+        }
         .opacity(mode == .idle && !state.isPopped ? 0 : 1)
         // Innermost wins when several change at once: opening/closing beats the pop.
         .animation(mode == .expanded ? (state.isAnnouncing ? Self.announce : Self.open) : Self.close, value: mode)
