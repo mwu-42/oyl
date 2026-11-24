@@ -712,6 +712,14 @@ final class DesktopsModel: ObservableObject {
 
     // MARK: Groups
 
+    /// Whether a group's desktops aren't next to each other in macOS's own order (as Mission
+    /// Control has them), so they can be dragged together there.
+    func isSplit(_ group: String) -> Bool {
+        let at = desks.indices.filter { desks[$0].group == group }
+        guard let first = at.first, let last = at.last else { return false }
+        return last - first + 1 != at.count
+    }
+
     /// A group folded away under its heading, or opened out. A desktop picked in it, the heading's
     /// picked instead.
     func fold(_ id: String, _ folding: Bool) {
@@ -1305,6 +1313,13 @@ private struct DeskHeading: View {
                     .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.38))
                 DeskIcons(apps: apps, lit: lit, most: DeskRow.mostIcons, small: true)
                     .transition(.opacity)
+            }
+            if !renaming, model.isSplit(group.id) {
+                // Its desktops apart in Mission Control: said, to drag them together there.
+                Text(midnight ? "parted" : "split")
+                    .font(midnight ? Midnight.italic(12.5) : .system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(LimitWing.tint(85, theme: theme).opacity(midnight ? 0.85 : 1))
+                    .help("Its desktops aren't next to each other in Mission Control: drag them together there")
             }
             Spacer(minLength: 8)
             if !renaming, model.dragging == nil, model.anchor == nil, model.hovered == id || model.selected == id {

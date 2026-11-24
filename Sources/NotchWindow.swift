@@ -692,6 +692,8 @@ final class NotchController {
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
+    /// Your desktops' groups, marked over Mission Control while it's open.
+    private let missionGroups = MissionGroups()
     /// The lid's shut with no other screen on.
     private var isShut = false
     private let stats = SystemStats()
@@ -904,6 +906,7 @@ final class NotchController {
                     self?.walkers.theme = theme
                     self?.projectsWindow?.theme = theme
                     self?.desktops?.theme = theme
+                    self?.missionGroups.theme = theme
                 }
             }
             .store(in: &cancellables)
@@ -952,7 +955,10 @@ final class NotchController {
                 self.desktops?.toggle()
             },
         ])
-        missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }
+        missionControl = MissionControl { [weak self] showing in
+            self?.viewDesktops(showing && Feature.missionControl.isOn)
+            self?.missionGroups.showing(showing && self?.state.isOff == false)
+        }
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
         // twice again.
