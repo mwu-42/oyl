@@ -675,7 +675,7 @@ final class NotchController {
     private var approvalCorner: ApprovalCorner?
     private var spaceLabel: SpaceLabel?
     private var pictureInPicture: PictureInPicture?
-    /// Three fingers up: the desktops and their windows (see `DesktopsViewer`), while it's on.
+    /// Four fingers up: the desktops in a list (see `DesktopsViewer`), while it's on.
     private var desktops: DesktopsViewer?
     /// The outline of every project, once it's been opened.
     private var projectsWindow: ProjectsWindowController?
@@ -1006,8 +1006,7 @@ final class NotchController {
         castOyls()
     }
 
-    /// Three fingers up for the desktops, or not: the trackpads read and the desktops' pictures
-    /// kept only while it's on.
+    /// Four fingers up for the desktops, or not: the trackpads read only while it's on.
     private func followDesktops(_ on: Bool) {
         guard on else {
             desktops?.stop()

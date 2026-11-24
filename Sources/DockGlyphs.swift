@@ -21,7 +21,7 @@ enum DockGlyphs {
     /// those far enough off them the glyph. Nil if that's next to nothing or all of it (a picture
     /// of an icon, with no one glyph on it).
     nonisolated static func lift(_ icon: CGImage) -> DockGlyph? {
-        liftedMask(icon).flatMap(finish)
+        liftedMask(icon).flatMap { finish($0) }
     }
 
     /// Just the first letter of what's lifted (the C of the name on Canva's icon), made as big as a
@@ -61,6 +61,59 @@ enum DockGlyphs {
         context.fill(CGRect(x: middle.x - outer * 0.02, y: middle.y - width / 2, width: outer * 1.02, height: width))
         guard let image = context.makeImage(), let pixels = Pixels(image, side: side) else { return nil }
         return finish((0..<side * side).map { pixels.alpha($0 % side, $0 / side) })
+    }
+
+    /// Find My's, as a radar: two rings round a dot, the sweep's line out from it to the outer
+    /// ring, its trail fading away behind it (anticlockwise, as it turns clockwise), and a blip in
+    /// the trail it's just passed. Only the lines and dots are traced, for Midnight Oyl's (the trail's
+    /// in the fill alone).
+    @MainActor
+    static func radar() -> DockGlyph? {
+        let side = DockGlyph.side
+        let middle = CGPoint(x: CGFloat(side) / 2, y: CGFloat(side) / 2)
+        let outer = CGFloat(side) * 0.28, line = CGFloat(side) * 0.034
+        // (The context counts up from the bottom, so angles go anticlockwise from the right.)
+        let sweep = CGFloat.pi * 48 / 180, trail = CGFloat.pi * 80 / 180
+        func drawn(withTrail: Bool) -> [Float]? {
+            guard let context = Pixels.context(side: side) else { return nil }
+            if withTrail {
+                // In thin slices, each fainter than the last, drawn without smoothing so they
+                // meet without seams (its edges are under the ring and the line).
+                context.setShouldAntialias(false)
+                let slices = 40
+                for slice in 0..<slices {
+                    let from = sweep + trail * CGFloat(slice) / CGFloat(slices), to = sweep + trail * CGFloat(slice + 1) / CGFloat(slices)
+                    let fade = 1 - (CGFloat(slice) + 0.5) / CGFloat(slices)
+                    context.setFillColor(CGColor(gray: 1, alpha: 0.5 * fade * fade))
+                    context.move(to: middle)
+                    context.addArc(center: middle, radius: outer - line / 2, startAngle: from, endAngle: to, clockwise: false)
+                    context.closePath()
+                    context.fillPath()
+                }
+                context.setShouldAntialias(true)
+            }
+            context.setStrokeColor(CGColor(gray: 1, alpha: 1))
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.setLineWidth(line)
+            context.setLineCap(.round)
+            for radius in [outer - line / 2, outer * 0.5] {
+                context.strokeEllipse(in: CGRect(x: middle.x - radius, y: middle.y - radius, width: 2 * radius, height: 2 * radius))
+            }
+            context.move(to: middle)
+            context.addLine(to: CGPoint(x: middle.x + cos(sweep) * (outer - line / 2), y: middle.y + sin(sweep) * (outer - line / 2)))
+            context.strokePath()
+            func dot(at point: CGPoint, radius: CGFloat) {
+                context.fillEllipse(in: CGRect(x: point.x - radius, y: point.y - radius, width: 2 * radius, height: 2 * radius))
+            }
+            dot(at: middle, radius: line * 1.15)
+            // Halfway between the rings, clear of both.
+            let blip = sweep + trail * 0.34, reach = outer * 0.735
+            dot(at: CGPoint(x: middle.x + cos(blip) * reach, y: middle.y + sin(blip) * reach), radius: line * 0.72)
+            guard let image = context.makeImage(), let pixels = Pixels(image, side: side) else { return nil }
+            return (0..<side * side).map { pixels.alpha($0 % side, $0 / side) }
+        }
+        guard let whole = drawn(withTrail: true), let lines = drawn(withTrail: false) else { return nil }
+        return finish(whole, tracing: lines)
     }
 
     /// Only what's brightest on an icon: Activity Monitor's pulse, glowing white across its
@@ -223,7 +276,8 @@ enum DockGlyphs {
         name.first { $0.isLetter || $0.isNumber }.map { String($0).uppercased() }
     }
 
-    /// An SF Symbol, as a glyph: Finder's (a magnifying glass), or a folder's.
+    /// An SF Symbol, as a glyph: Finder's (a magnifying glass), a folder's, or Maps' (its
+    /// navigation arrow).
     @MainActor
     static func symbol(_ name: String) -> DockGlyph? {
         let side = DockGlyph.side
@@ -242,10 +296,11 @@ enum DockGlyphs {
     }
 
     /// The mask, its edges (the mask grown a pixel, less the mask shrunk one), and spots spread
-    /// along them.
-    private nonisolated static func finish(_ mask: [Float]) -> DockGlyph? {
+    /// along them: the edges of `lines` instead, if it's given (what's to be traced of it).
+    private nonisolated static func finish(_ mask: [Float], tracing lines: [Float]? = nil) -> DockGlyph? {
         let side = DockGlyph.side
-        let grown = Morphology.extreme(mask, side: side, max: true), shrunk = Morphology.extreme(mask, side: side, max: false)
+        let traced = lines ?? mask
+        let grown = Morphology.extreme(traced, side: side, max: true), shrunk = Morphology.extreme(traced, side: side, max: false)
         let edges = zip(grown, shrunk).map { min(max($0 - $1, 0), 1) }
         guard let maskImage = Pixels.white(mask, side: side), let outline = Pixels.white(edges, side: side) else { return nil }
         // Spread out: each the farthest from those picked so far, starting from the top.

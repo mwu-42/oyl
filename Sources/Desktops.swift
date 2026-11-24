@@ -1,17 +1,18 @@
 import AppKit
 import ApplicationServices
-import ScreenCaptureKit
 import SwiftUI
 
-// Three fingers up: Oyl's own view of your desktops, in place of Mission Control's. Along the top
-// are your desktops and fullscreen apps, in order, each with its name; under them the windows of
-// the one you're on, spread out from where they are. It comes up with your fingers and settles as
-// they lift; click a desktop to go to it, or a window to bring it to the front. macOS's own swipe
-// has to be off (or moved to four fingers) for three fingers up to be Oyl's: see `MissionControlSwipe`.
+// Four fingers up: your desktops and fullscreen apps in a list, in the order they're in, each by
+// its name (a fullscreen app's by its app's, as the menu bar's label names them) with the icons of
+// the apps on it. Click one to go to it; point at one to rename it; drag them into another order,
+// and as the list goes the Spaces themselves are put in it (Mission Control's the only thing that
+// can, so it's opened for a moment and they're dragged along its row there, as you'd drag them).
+// macOS's own four-finger swipe up has to be off for four fingers up to be Oyl's: see
+// `MissionControlSwipe`.
 
-// MARK: - Three fingers on the trackpad
+// MARK: - Four fingers on the trackpad
 
-/// A three-finger swipe up or down, as `SwipeRecognizer` makes it out of the trackpad's frames.
+/// A four-finger swipe up or down, as `SwipeRecognizer` makes it out of the trackpad's frames.
 enum DesktopSwipe: Equatable {
     /// Begun, upward or downward.
     case began(up: Bool)
@@ -19,14 +20,17 @@ enum DesktopSwipe: Equatable {
     case moved(Double)
     /// Let go: how far it got, and how fast it was going the way it began (whole ways a second).
     case ended(Double, speed: Double)
-    /// A fourth finger came down: not a swipe of these after all.
+    /// A fifth finger came down: not a swipe of these after all.
     case cancelled
 }
 
-/// Makes three-finger swipes up and down out of the trackpad's frames. Three fingers down, then
+/// Makes four-finger swipes up and down out of the trackpad's frames. Four fingers down, then
 /// moving mostly up or down (across is the system's, between Spaces), and they're followed as they
-/// go; it's over as soon as one lifts, and nothing more's made of them till they're all off.
+/// go; it's over as soon as one lifts, and nothing more's made of them till they're all off. (Three
+/// are left alone: they're Mission Control's, and the hand pointer's.)
 struct SwipeRecognizer {
+    /// How many fingers.
+    static let fingers = 4
     /// How far up or down, of the trackpad's height, is the whole way.
     static let travel = 0.16
     /// How far they go before it's decided which way.
@@ -47,10 +51,10 @@ struct SwipeRecognizer {
     mutating func frame(touching: Int, x: Double, y: Double, at time: Double) -> [DesktopSwipe] {
         switch phase {
         case .idle:
-            if touching == 3 { phase = .watching(x: x, y: y) }
+            if touching == Self.fingers { phase = .watching(x: x, y: y) }
             return []
         case .watching(let startX, let startY):
-            guard touching == 3 else {
+            guard touching == Self.fingers else {
                 phase = touching == 0 ? .idle : .done
                 return []
             }
@@ -63,11 +67,11 @@ struct SwipeRecognizer {
             phase = .swiping(up: up > 0, from: startY, last: y, at: time, speed: 0)
             return [.began(up: up > 0), .moved(Self.progress(up: up > 0, from: startY, to: y))]
         case .swiping(let upward, let start, let last, let at, var speed):
-            if touching > 3 {
+            if touching > Self.fingers {
                 phase = .done
                 return [.cancelled]
             }
-            guard touching == 3 else {
+            guard touching == Self.fingers else {
                 phase = touching == 0 ? .idle : .done
                 return [.ended(Self.progress(up: upward, from: start, to: last), speed: speed)]
             }
@@ -91,7 +95,7 @@ struct SwipeRecognizer {
 
 /// The trackpads' fingers, read straight from them (Apple's private multitouch framework, as
 /// BetterTouchTool and MiddleClick read it, looked up at run time: if it's ever gone, there are
-/// just no swipes), for three-finger swipes up and down. Each frame, on the trackpad's own thread,
+/// just no swipes), for four-finger swipes up and down. Each frame, on the trackpad's own thread,
 /// only how many fingers are touching and where they are on average is looked at; only what
 /// comes of them is passed on, to the main thread.
 final class Trackpads: @unchecked Sendable {
@@ -214,16 +218,55 @@ final class Trackpads: @unchecked Sendable {
     }
 }
 
-/// Whether macOS takes three fingers up for Mission Control itself: its swipe is on (it is till
-/// it's turned off in System Settings › Trackpad › More Gestures) and on three fingers. While it
-/// is, three fingers up are left to it.
+/// Whether macOS takes four fingers up for Mission Control itself: while its swipe's on (it is
+/// till it's turned off in System Settings › Trackpad › More Gestures), it does, whether it's set to
+/// three fingers or four (picking three there turns on four as well). While it does, four fingers
+/// up are left to it. Oyl can turn the four-finger one off on its own, leaving Mission Control on
+/// three: a setting System Settings doesn't show (picking three fingers there again turns it back on).
 enum MissionControlSwipe {
+    private static let trackpads = ["com.apple.AppleMultitouchTrackpad", "com.apple.driver.AppleBluetoothMultitouch.trackpad"]
+    private static let fourFingers = "TrackpadFourFingerVertSwipeGesture"
+    /// The same, as the Mac keeps it for itself.
+    private static let fourFingersHere = "com.apple.trackpad.fourFingerVertSwipeGesture"
+    /// Reapplies the trackpad's settings, as System Settings does, so they take hold now.
+    private static let activateSettings = "/System/Library/PrivateFrameworks/SystemAdministration.framework/Resources/activateSettings"
+
     static func isTheSystems() -> Bool {
-        for domain in ["com.apple.dock", "com.apple.AppleMultitouchTrackpad", "com.apple.driver.AppleBluetoothMultitouch.trackpad"] {
+        for domain in ["com.apple.dock"] + trackpads { CFPreferencesAppSynchronize(domain as CFString) }
+        let on = CFPreferencesCopyAppValue("showMissionControlGestureEnabled" as CFString, "com.apple.dock" as CFString) as? Bool ?? true
+        return on && fourFingerSwipe() == 2
+    }
+
+    /// Whether Mission Control's on three fingers: so four can be had without it losing its swipe.
+    static func isOnThreeFingers() -> Bool { TrackpadSettings.read().swipesUpAndDown }
+
+    /// 2 while four fingers up and down are Mission Control's and App Exposé's, 0 while they're no one's.
+    private static func fourFingerSwipe() -> Int {
+        for domain in trackpads {
+            if let value = CFPreferencesCopyAppValue(fourFingers as CFString, domain as CFString) as? Int { return value }
+        }
+        return 2
+    }
+
+    /// Four fingers up (and down) taken from Mission Control, which keeps three; or given back.
+    static func setFourFingers(free: Bool) {
+        let value = NSNumber(value: free ? 0 : 2)
+        for domain in trackpads {
+            CFPreferencesSetAppValue(fourFingers as CFString, value, domain as CFString)
             CFPreferencesAppSynchronize(domain as CFString)
         }
-        let on = CFPreferencesCopyAppValue("showMissionControlGestureEnabled" as CFString, "com.apple.dock" as CFString) as? Bool ?? true
-        return on && TrackpadSettings.read().swipesUpAndDown
+        CFPreferencesSetValue(fourFingersHere as CFString, value, kCFPreferencesAnyApplication, kCFPreferencesCurrentUser,
+                              kCFPreferencesCurrentHost)
+        CFPreferencesSynchronize(kCFPreferencesAnyApplication, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost)
+        DispatchQueue.global(qos: .utility).async {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: activateSettings)
+            process.arguments = ["-u"]
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return }
+            process.waitUntilExit()
+        }
     }
 
     /// Where it's turned off.
@@ -278,82 +321,248 @@ enum SpaceKeys {
     }
 }
 
-// MARK: - Pictures of each desktop
+// MARK: - Which apps are on which desktop
 
-/// A picture of each desktop as it was when you were last on it, kept here only (never on disk),
-/// for the desktops' row: taken a moment after you get to one, every couple of minutes while you
-/// stay, and as the desktops come up.
-@MainActor
-final class DesktopSnapshots {
-    private(set) var pictures: [String: NSImage] = [:]
-    private var later: DispatchWorkItem?
-    private var refresh: Timer?
-    private var observer: Any?
-    /// Not while nothing on the screens can be seen (the lid's shut), or Oyl's off.
-    var isResting = false
-
-    static let width: CGFloat = 640
-
-    func start() {
-        guard observer == nil else { return }
-        observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification,
-                                                                     object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.arrived() }
-        }
-        let timer = Timer(timeInterval: 120, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { _ = Task { await self?.take(inBackground: true) } }
-        }
-        timer.tolerance = 20
-        RunLoop.main.add(timer, forMode: .common)
-        refresh = timer
-        arrived()
+/// The apps with windows on each Space, as the window server has them: every app's ordinary
+/// windows (not Oyl's, nor anything's that isn't an app in the Dock), each on the Space it's on. A
+/// window on every Space is no one Space's.
+enum SpaceApps {
+    struct Window: Equatable {
+        let pid: pid_t
+        let spaces: [Int]
     }
 
-    func stop() {
-        if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
-        observer = nil
-        refresh?.invalidate()
-        refresh = nil
-        later?.cancel()
-        pictures = [:]
-    }
-
-    /// On a desktop just come to: its picture once it's settled there.
-    private func arrived() {
-        later?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { _ = Task { await self?.take(inBackground: true) } }
+    /// Each Space's apps, by its number, in the order their windows come (front first), each once.
+    static func group(_ windows: [Window]) -> [Int: [pid_t]] {
+        var apps: [Int: [pid_t]] = [:]
+        for window in windows where window.spaces.count == 1 {
+            let space = window.spaces[0]
+            if apps[space]?.contains(window.pid) != true { apps[space, default: []].append(window.pid) }
         }
-        later = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+        return apps
     }
 
-    /// The desktop showing on the screen with the pointer (or `screen`), as it is now, without
-    /// Oyl's own windows. Only with Screen Recording allowed (it isn't asked for here); and in the
-    /// background (as you get to one, and now and then), only once three fingers up are Oyl's.
-    @discardableResult
-    func take(on screen: NSScreen? = nil, inBackground: Bool = false) async -> NSImage? {
-        guard !isResting, CGPreflightScreenCaptureAccess() else { return nil }
-        if inBackground, MissionControlSwipe.isTheSystems() { return nil }
-        let pointer = NSEvent.mouseLocation
-        guard let screen = screen ?? NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) ?? NSScreen.main,
-              let key = Spaces.current(on: screen)?.key,
-              let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value,
-              let content = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true),
-              let display = content.displays.first(where: { $0.displayID == number }) else { return nil }
-        let oyl = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
-        let configuration = SCStreamConfiguration()
-        configuration.width = Int(Self.width)
-        configuration.height = Int((Self.width * CGFloat(display.height) / CGFloat(max(display.width, 1))).rounded())
-        configuration.showsCursor = false
-        guard let image = try? await SCScreenshotManager.captureImage(
-            contentFilter: SCContentFilter(display: display, excludingApplications: oyl, exceptingWindows: []),
-            configuration: configuration) else { return nil }
-        // Still on the same desktop, or it's not this one's picture.
-        guard Spaces.current(on: screen)?.key == key else { return nil }
-        let picture = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        pictures[key] = picture
-        return picture
+    private typealias ConnectionID = @convention(c) () -> Int32
+    private typealias CopySpaces = @convention(c) (Int32, Int32, CFArray) -> Unmanaged<CFArray>?
+    private static let defaultHandle = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
+    private static let connection = dlsym(defaultHandle, "CGSMainConnectionID").map { unsafeBitCast($0, to: ConnectionID.self) }
+    private static let copySpaces = dlsym(defaultHandle, "CGSCopySpacesForWindows").map { unsafeBitCast($0, to: CopySpaces.self) }
+    /// The Space showing, the others, and the user's: all of them.
+    private static let everySpace: Int32 = 7
+
+    /// As they are now (a few milliseconds: off the main thread).
+    static func read() -> [Int: [pid_t]] {
+        guard let connection, let copySpaces else { return [:] }
+        let id = connection(), own = ProcessInfo.processInfo.processIdentifier
+        let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var isApp: [pid_t: Bool] = [:]
+        let windows = list.compactMap { info -> Window? in
+            guard info[kCGWindowLayer as String] as? Int == 0, let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != own,
+                  let number = info[kCGWindowNumber as String] as? CGWindowID,
+                  ((info[kCGWindowAlpha as String] as? NSNumber)?.doubleValue ?? 1) > 0,
+                  let box = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let frame = CGRect(dictionaryRepresentation: box as CFDictionary), frame.width >= 50, frame.height >= 50 else { return nil }
+            if isApp[pid] == nil { isApp[pid] = NSRunningApplication(processIdentifier: pid)?.activationPolicy == .regular }
+            guard isApp[pid] == true else { return nil }
+            let spaces = copySpaces(id, everySpace, [NSNumber(value: number)] as CFArray)?.takeRetainedValue() as? [NSNumber] ?? []
+            return Window(pid: pid, spaces: spaces.map(\.intValue))
+        }
+        return group(windows)
+    }
+}
+
+// MARK: - Putting them in order
+
+/// The Spaces put in another order, as only Mission Control can (nothing else can, short of
+/// turning System Integrity Protection off): it's opened, each Space that's out of place is
+/// dragged along its row to where it goes, as you'd drag it, and it's closed again, by going to the
+/// Space picked (or back to the one you were on). The pointer's put back where it was.
+enum SpaceArranger {
+    struct Move: Equatable {
+        let from: Int
+        let to: Int
+    }
+
+    /// The moves that take `order` to `wanted`, one at a time, left to right: each Space that's out
+    /// of place brought in from its right, from where it is by then.
+    static func moves<T: Equatable>(from order: [T], to wanted: [T]) -> [Move] {
+        var now = order, moves: [Move] = []
+        for (place, item) in wanted.enumerated() {
+            guard let at = now.firstIndex(of: item), at > place else { continue }
+            moves.append(Move(from: at, to: place))
+            now.insert(now.remove(at: at), at: place)
+        }
+        return moves
+    }
+
+    /// Whether it can be: Oyl allowed in Accessibility, to read Mission Control and drag in it.
+    static var canArrange: Bool { AXIsProcessTrusted() }
+
+    /// `moves` made along the row of `count` Spaces on `display`, then to the Space at `goTo` (in
+    /// the order they're put in), or back to the one you were on. On a thread of its own, as it
+    /// waits on Mission Control; `done` is told on the main one whether it all went.
+    static func arrange(_ moves: [Move], count: Int, on display: CGDirectDisplayID, goTo: Int?,
+                        done: @escaping @MainActor @Sendable (Bool) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let went = run(moves, count: count, on: display, goTo: goTo)
+            DispatchQueue.main.async { MainActor.assumeIsolated { done(went) } }
+        }
+    }
+
+    private static func run(_ moves: [Move], count: Int, on display: CGDirectDisplayID, goTo: Int?) -> Bool {
+        let pointer = CGEvent(source: nil)?.location
+        defer {
+            if let pointer {
+                CGWarpMouseCursorPosition(pointer)
+                CGAssociateMouseAndMouseCursorPosition(1)
+            }
+        }
+        if missionControl() == nil { toggleMissionControl() }
+        guard let first = waitForRow(on: display, count: count) else {
+            if missionControl() != nil { toggleMissionControl() }
+            return false
+        }
+        let source = CGEventSource(stateID: .hidSystemState)
+        // Over the row, so it opens out from names to pictures.
+        let names = slots(first)
+        guard !names.isEmpty else {
+            toggleMissionControl()
+            return false
+        }
+        post(.mouseMoved, at: CGPoint(x: names.reduce(0) { $0 + $1.midX } / CGFloat(names.count), y: names[0].midY), source)
+        Thread.sleep(forTimeInterval: 0.5)
+        var went = true
+        for move in moves {
+            guard let row = row(on: display), case let places = slots(row), places.count == count else {
+                went = false
+                break
+            }
+            // Dropped a little left of where the one there was: it's moved over to make room.
+            let target = places[move.to]
+            drag(from: CGPoint(x: places[move.from].midX, y: places[move.from].midY),
+                 to: CGPoint(x: target.minX + target.width * 0.35, y: target.midY), source)
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        // Out: to the one picked, or back where you were.
+        if let goTo, let row = row(on: display), case let pressable = buttons(row), pressable.indices.contains(goTo) {
+            AXUIElementPerformAction(pressable[goTo], kAXPressAction as CFString)
+        } else if missionControl() != nil {
+            toggleMissionControl()
+        }
+        Thread.sleep(forTimeInterval: 0.35)
+        return went
+    }
+
+    /// Mission Control's row of Spaces on `display`, once it's all there (it's only made as it
+    /// opens), and a moment more for it to finish opening; nil if it isn't in 2½ seconds.
+    private static func waitForRow(on display: CGDirectDisplayID, count: Int) -> AXUIElement? {
+        let giveUp = Date().addingTimeInterval(2.5)
+        while Date() < giveUp {
+            if let row = row(on: display), buttons(row).count == count {
+                Thread.sleep(forTimeInterval: 0.35)
+                return row
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return nil
+    }
+
+    // MARK: Mission Control, as accessibility has it
+
+    /// Mission Control, while it's open: the Dock's group "mc" (on macOS 27, WindowManager's).
+    private static func missionControl() -> AXUIElement? {
+        for bundle in ["com.apple.dock", "com.apple.WindowManager"] {
+            guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first else { continue }
+            let element = AXUIElementCreateApplication(app.processIdentifier)
+            AXUIElementSetMessagingTimeout(element, 1)
+            if let group = children(element).first(where: { identifier($0) == "mc" }), !children(group).isEmpty { return group }
+        }
+        return nil
+    }
+
+    /// `display`'s row of Spaces: "mc.display" (the one with its number), "mc.spaces", "mc.spaces.list".
+    private static func row(on display: CGDirectDisplayID) -> AXUIElement? {
+        guard let group = missionControl() else { return nil }
+        let displays = children(group).filter { identifier($0) == "mc.display" }
+        let shown = displays.first { number($0, "AXDisplayID") == Int(display) } ?? (displays.count == 1 ? displays.first : nil)
+        guard let shown, let spaces = children(shown).first(where: { identifier($0) == "mc.spaces" }) else { return nil }
+        return children(spaces).first { identifier($0) == "mc.spaces.list" }
+    }
+
+    /// Its Spaces' buttons, left to right.
+    private static func buttons(_ row: AXUIElement) -> [AXUIElement] {
+        children(row).map { ($0, frame(of: $0)?.minX ?? 0) }.sorted { $0.1 < $1.1 }.map(\.0)
+    }
+
+    /// Where each of them is, left to right, from the top left of the main screen.
+    private static func slots(_ row: AXUIElement) -> [CGRect] {
+        children(row).compactMap(frame).sorted { $0.minX < $1.minX }
+    }
+
+    private static func children(_ element: AXUIElement) -> [AXUIElement] {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &value) == .success else { return [] }
+        return value as? [AXUIElement] ?? []
+    }
+
+    private static func identifier(_ element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXIdentifierAttribute as CFString, &value) == .success else { return nil }
+        return value as? String
+    }
+
+    private static func number(_ element: AXUIElement, _ attribute: String) -> Int? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return (value as? NSNumber)?.intValue
+    }
+
+    private static func frame(of element: AXUIElement) -> CGRect? {
+        var position: CFTypeRef?, size: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &position) == .success,
+              AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &size) == .success,
+              let position, let size, CFGetTypeID(position) == AXValueGetTypeID(), CFGetTypeID(size) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero, extent = CGSize.zero
+        guard AXValueGetValue(position as! AXValue, .cgPoint, &point), AXValueGetValue(size as! AXValue, .cgSize, &extent),
+              extent.width > 0 else { return nil }
+        return CGRect(origin: point, size: extent)
+    }
+
+    // MARK: Opening it, and dragging in it
+
+    private typealias DockNotification = @convention(c) (CFString, UnsafeMutableRawPointer?) -> Void
+    private static let sendToDock = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CoreDockSendNotification")
+        .map { unsafeBitCast($0, to: DockNotification.self) }
+
+    /// Mission Control opened, or closed: as its key does.
+    private static func toggleMissionControl() {
+        if let sendToDock {
+            sendToDock("com.apple.expose.awake" as CFString, nil)
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+        }
+    }
+
+    private static func post(_ type: CGEventType, at point: CGPoint, _ source: CGEventSource?) {
+        guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else { return }
+        if type == .leftMouseDown || type == .leftMouseUp { event.setIntegerValueField(.mouseEventClickState, value: 1) }
+        event.post(tap: .cghidEventTap)
+    }
+
+    /// Picked up, carried across in a fifth of a second or so, held a moment there, and let go.
+    private static func drag(from start: CGPoint, to end: CGPoint, _ source: CGEventSource?) {
+        post(.mouseMoved, at: start, source)
+        Thread.sleep(forTimeInterval: 0.1)
+        post(.leftMouseDown, at: start, source)
+        Thread.sleep(forTimeInterval: 0.25)
+        let steps = 18
+        for step in 1...steps {
+            let t = Double(step) / Double(steps), eased = t * t * (3 - 2 * t)
+            post(.leftMouseDragged, at: CGPoint(x: start.x + (end.x - start.x) * eased, y: start.y + (end.y - start.y) * eased), source)
+            Thread.sleep(forTimeInterval: 0.025)
+        }
+        Thread.sleep(forTimeInterval: 0.35)
+        post(.leftMouseUp, at: end, source)
     }
 }
 
@@ -361,399 +570,516 @@ final class DesktopSnapshots {
 
 @MainActor
 final class DesktopsModel: ObservableObject {
-    struct Space: Identifiable, Equatable {
-        let id: String
+    struct App: Identifiable, Equatable {
+        let id: pid_t
         let name: String
+        let icon: NSImage?
+    }
+
+    struct Desk: Identifiable, Equatable {
+        /// What its name's kept under (see `CurrentSpace.key`).
+        let id: String
+        var name: String
+        /// What it's called by itself: "desktop 2", or a fullscreen app's name.
+        let standard: String
         let isFullscreen: Bool
         let isCurrent: Bool
-        var picture: NSImage?
-        /// A fullscreen app's icon, for before there's a picture.
-        var icon: NSImage?
+        /// Front first; a fullscreen app's own first of all.
+        var apps: [App] = []
+
+        /// A desktop still called by its number: what's on it says more, so its apps are named too.
+        var namesApps: Bool { !isFullscreen && name == standard && !apps.isEmpty }
     }
 
-    struct Window: Identifiable, Equatable {
-        let id: CGWindowID
-        let pid: pid_t
-        let title: String
-        let app: String
-        /// Where it is on the screen, from its top left.
-        let frame: CGRect
-        var icon: NSImage?
-        var picture: CGImage?
-    }
-
-    /// How far up it's come: 0 is the screen as it is, 1 all the way up.
+    /// How far up it's come: 0 is gone, 1 all the way up.
     @Published var progress: Double = 0
     /// Following the fingers (so no easing), rather than settling.
     @Published var interactive = true
-    @Published var spaces: [Space] = []
-    /// Back to front.
-    @Published var windows: [Window] = []
+    /// In the order shown: the Spaces' own, or as they've been dragged into.
+    @Published var desks: [Desk] = []
     @Published var size = CGSize(width: 1440, height: 900)
-    /// The desktop picture behind it all.
-    @Published var backdrop: NSImage?
     @Published var theme = NotchTheme.standard
-    @Published var hoveredSpace: String?
-    @Published var hoveredWindow: CGWindowID?
-    /// The window picked, kept on top as the rest go back.
-    @Published var chosen: CGWindowID?
-    /// Screen Recording isn't allowed, so there are no pictures.
-    @Published var needsPermission = false
+    @Published var hovered: String?
+    /// Picked with the arrow keys.
+    @Published var selected: String?
+    /// Being renamed, and what's been typed.
+    @Published var renaming: String?
+    @Published var draft = ""
+    /// Being dragged, and how far up or down.
+    @Published var dragging: String?
+    @Published var dragOffset: CGFloat = 0
+    /// Dragged into another order than the Spaces': they're put in it as it goes.
+    @Published var isRearranged = false
+    /// Oyl's allowed in Accessibility, so they can be.
+    @Published var canArrange = true
 
-    var pick: (Space) -> Void = { _ in }
-    var choose: (Window) -> Void = { _ in }
+    var pick: (Desk) -> Void = { _ in }
+    var renamed: (Desk, String) -> Void = { _, _ in }
+    var reordered: () -> Void = {}
     var dismiss: () -> Void = {}
+    /// Just dropped: the click that ends a drag isn't one on the row.
+    var justDragged = false
 
     /// How long it takes to settle, in this look: Oyl's a plain ease, Midnight's a slow drift.
-    var settleTime: Double { theme == .midnight ? 0.55 : 0.28 }
+    var settleTime: Double { theme == .midnight ? 0.55 : 0.26 }
 
     func settle(delay: Double = 0) -> Animation? {
         guard !interactive else { return nil }
         return theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: settleTime).delay(delay)
             : .easeOut(duration: settleTime).delay(delay)
     }
-}
 
-/// Where everything goes, for a screen `size` big: the desktops' row along the top (in Midnight
-/// Oyl, along an arc, its highest point off to the left of the middle), and the windows spread
-/// out under it.
-struct DesktopsLayout {
-    let size: CGSize
-    let tiles: [CGRect]
-    let windows: [CGRect]
-    /// The row's height, all of it.
-    let stripHeight: CGFloat
+    /// Rows moving aside, or one put down.
+    var shuffle: Animation { theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 0.42) : .easeOut(duration: 0.18) }
 
-    init(size: CGSize, spaces: Int, windows frames: [CGRect], midnight: Bool) {
-        self.size = size
-        let aspect = size.width / max(size.height, 1)
-        let rowWidth = size.width - 80
-        var height = min(size.height * 0.12, 120)
-        let gap: CGFloat = midnight ? 30 : 20
-        // Narrower if they'd run off the sides.
-        if spaces > 0 {
-            let width = (rowWidth - CGFloat(spaces - 1) * gap) / CGFloat(spaces)
-            height = min(height, width / aspect)
-        }
-        let width = height * aspect
-        let total = CGFloat(spaces) * width + CGFloat(max(spaces - 1, 0)) * gap
-        let top: CGFloat = midnight ? 34 : 28
-        let lift: CGFloat = midnight ? height * 0.22 : 0
-        tiles = (0..<spaces).map { index in
-            let x = (size.width - total) / 2 + CGFloat(index) * (width + gap)
-            // Midnight's arc: highest 40% of the way along, falling away either side.
-            let along = spaces > 1 ? Double(index) / Double(spaces - 1) : 0.4
-            let y = top + lift * CGFloat(pow((along - 0.4) / 0.6, 2))
-            return CGRect(x: x, y: y, width: width, height: height)
-        }
-        stripHeight = top + height + lift + 34
-        let area = CGRect(x: 56, y: stripHeight + 24, width: size.width - 112, height: size.height - stripHeight - 24 - 48)
-        windows = Self.spread(frames, in: area, gap: midnight ? 40 : 28)
+    /// A row's height, in this look, with room for them all on the screen.
+    var rowHeight: CGFloat {
+        let usual: CGFloat = theme == .midnight ? 38 : 30
+        return min(usual, max(22, size.height * 0.62 / CGFloat(max(desks.count, 1))))
     }
 
-    /// Windows spread out to fill `area` without overlapping, as big as they can be (never bigger
-    /// than they are), each as it's shaped, in rows: as many rows as makes them biggest, the rows in
-    /// order of where they are up the screen, and along each, of where they are across.
-    static func spread(_ frames: [CGRect], in area: CGRect, gap: CGFloat) -> [CGRect] {
-        let count = frames.count
-        guard count > 0, area.width > 0, area.height > 0 else { return frames }
-        var best: (rows: Int, scale: [CGFloat], covered: CGFloat)?
-        for rows in 1...count {
-            let columns = Int((Double(count) / Double(rows)).rounded(.up))
-            let cellWidth = (area.width - gap * CGFloat(columns - 1)) / CGFloat(columns)
-            let cellHeight = (area.height - gap * CGFloat(rows - 1)) / CGFloat(rows)
-            guard cellWidth > 20, cellHeight > 20 else { continue }
-            let scales = frames.map { min(cellWidth / max($0.width, 1), cellHeight / max($0.height, 1), 1) }
-            let covered = zip(frames, scales).reduce(0) { $0 + $1.0.width * $1.0.height * $1.1 * $1.1 }
-            if best.map({ covered > $0.covered + 0.5 }) ?? true { best = (rows, scales, covered) }
-        }
-        guard let best else { return frames }
-        let columns = Int((Double(count) / Double(best.rows)).rounded(.up))
-        let cellWidth = (area.width - gap * CGFloat(columns - 1)) / CGFloat(columns)
-        let cellHeight = (area.height - gap * CGFloat(best.rows - 1)) / CGFloat(best.rows)
-        // Top to bottom into rows, then each row left to right.
-        let byHeight = frames.indices.sorted { frames[$0].midY != frames[$1].midY ? frames[$0].midY < frames[$1].midY : $0 < $1 }
-        var placed = frames
-        for row in 0..<best.rows {
-            let start = row * columns
-            guard start < count else { break }
-            let members = byHeight[start..<min(start + columns, count)].sorted { frames[$0].midX < frames[$1].midX }
-            // A short last row, in the middle.
-            let rowWidth = CGFloat(members.count) * cellWidth + CGFloat(members.count - 1) * gap
-            let left = area.minX + (area.width - rowWidth) / 2
-            for (column, index) in members.enumerated() {
-                let scale = best.scale[index]
-                let size = CGSize(width: frames[index].width * scale, height: frames[index].height * scale)
-                let cell = CGRect(x: left + CGFloat(column) * (cellWidth + gap), y: area.minY + CGFloat(row) * (cellHeight + gap),
-                                  width: cellWidth, height: cellHeight)
-                placed[index] = CGRect(x: cell.midX - size.width / 2, y: cell.midY - size.height / 2, width: size.width, height: size.height)
-            }
-        }
-        return placed
+    /// What's said under the list, if anything.
+    var note: String? {
+        guard isRearranged else { return nil }
+        return canArrange ? "Put in this order as this closes" : "Allow Oyl in Accessibility to put them in this order"
     }
 
-    static func between(_ from: CGRect, _ to: CGRect, _ amount: Double) -> CGRect {
-        let t = CGFloat(min(max(amount, 0), 1))
-        return CGRect(x: from.minX + (to.minX - from.minX) * t, y: from.minY + (to.minY - from.minY) * t,
-                      width: from.width + (to.width - from.width) * t, height: from.height + (to.height - from.height) * t)
+    // MARK: Dragging
+
+    /// Where the one being dragged would go, put down now.
+    var dropIndex: Int? {
+        guard let dragging, let from = desks.firstIndex(where: { $0.id == dragging }) else { return nil }
+        let steps = Int((dragOffset / rowHeight).rounded())
+        return min(max(from + steps, 0), desks.count - 1)
+    }
+
+    /// How far the row at `index` has moved up or down, out of the way of the one being dragged.
+    func shift(of index: Int) -> CGFloat {
+        guard let dragging, let from = desks.firstIndex(where: { $0.id == dragging }), let to = dropIndex, index != from else { return 0 }
+        if from < to, index > from, index <= to { return -rowHeight }
+        if to < from, index >= to, index < from { return rowHeight }
+        return 0
+    }
+
+    /// The one being dragged put down where it's got to.
+    func drop() {
+        defer {
+            dragging = nil
+            dragOffset = 0
+        }
+        guard let dragging, let from = desks.firstIndex(where: { $0.id == dragging }), let to = dropIndex, from != to else { return }
+        desks.insert(desks.remove(at: from), at: to)
+        reordered()
+    }
+
+    // MARK: The keyboard
+
+    /// The next or last row picked (the one you're on, to begin with).
+    func select(by step: Int) {
+        guard !desks.isEmpty else { return }
+        let at = desks.firstIndex { $0.id == selected } ?? desks.firstIndex(where: \.isCurrent) ?? 0
+        selected = desks[min(max(at + (selected == nil ? 0 : step), 0), desks.count - 1)].id
+    }
+
+    /// The row picked moved up or down one.
+    func moveSelected(by step: Int) {
+        guard let selected, let at = desks.firstIndex(where: { $0.id == selected }), desks.indices.contains(at + step) else { return }
+        desks.swapAt(at, at + step)
+        reordered()
+    }
+
+    // MARK: Renaming
+
+    func startRenaming(_ desk: Desk) {
+        draft = desk.name
+        renaming = desk.id
+    }
+
+    /// Done typing: what's been typed kept (`keeping`), or not.
+    func finishRenaming(keeping: Bool) {
+        guard let id = renaming else { return }
+        renaming = nil
+        if keeping, let desk = desks.first(where: { $0.id == id }), draft != desk.name { renamed(desk, draft) }
     }
 }
 
-/// The desktops and the windows, in Oyl's look or Midnight Oyl's.
-///
-/// In Oyl's look it's Mission Control's own arrangement: your desktop picture, dimmed, behind a dark
-/// row of your desktops (the one you're on ringed in white, the one pointed at lifted and lit), and
-/// the windows on rounded pictures with a shadow, a name on a pill under the one pointed at; it all
-/// settles on a plain ease. In Midnight Oyl's it's the night: stars twinkling over ink, your
-/// desktops strung along an arc as a constellation, each a soft-edged picture with no frame, the
-/// one you're on in a pool of moonlight with a glint at its corner, and the windows' pictures
-/// soft-edged too, drifting into place one after another, their names in Midnight's faces.
+/// The desktops, in a list. In Oyl's look it's a plain black card in the middle of the screen, a
+/// little way down, each row a name (the one you're on in bold, with a dot), the names of the apps
+/// on a desktop still called by its number, and their icons; a row pointed at is lit, with a pencil
+/// to rename it, and a row being dragged is lifted as the rest move aside. In Midnight Oyl's the
+/// screen goes to night (stars twinkling over ink), and the list's set off to the left under its
+/// title in a flourish, the names in Superclarendon strung down a line of stars that bows out and
+/// back, the one you're on lit by a glint; they drift in one after another out of a blur.
 struct DesktopsView: View {
     @ObservedObject var model: DesktopsModel
 
     var body: some View {
         let midnight = model.theme == .midnight
-        let layout = DesktopsLayout(size: model.size, spaces: model.spaces.count, windows: model.windows.map(\.frame), midnight: midnight)
-        let progress = model.progress
         ZStack(alignment: .topLeading) {
-            backdrop(midnight: midnight)
-                .opacity(min(max(progress, 0), 1))
-                .animation(model.settle(), value: progress)
+            veil(midnight: midnight)
+                .opacity(min(max(model.progress, 0), 1))
+                .animation(model.settle(), value: model.progress)
                 .contentShape(Rectangle())
                 .onTapGesture { model.dismiss() }
-            ForEach(Array(model.windows.enumerated()), id: \.element.id) { index, window in
-                windowTile(window, to: layout.windows.indices.contains(index) ? layout.windows[index] : window.frame, index: index,
-                           midnight: midnight)
-            }
-            strip(layout, midnight: midnight)
-                .offset(y: -(1 - min(max(progress, 0), 1)) * (layout.stripHeight + 20))
-                .opacity(min(max(progress, 0), 1))
-                .animation(model.settle(), value: progress)
-            if model.needsPermission {
-                Text("Allow Oyl in Screen Recording (System Settings › Privacy & Security) for pictures of your windows and desktops")
-                    .notchFont(size: 12, weight: .medium)
-                    .foregroundStyle(.white.opacity(0.7))
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Capsule().fill(.black.opacity(midnight ? 0 : 0.5)))
-                    .frame(width: model.size.width)
-                    .position(x: model.size.width / 2, y: model.size.height - 40)
-                    .opacity(progress)
-            }
+            if midnight { MidnightDesks(model: model) } else { PlainDesks(model: model) }
         }
         .frame(width: model.size.width, height: model.size.height, alignment: .topLeading)
         .environment(\.notchTheme, model.theme)
     }
 
-    // MARK: Behind
-
-    @ViewBuilder private func backdrop(midnight: Bool) -> some View {
+    @ViewBuilder private func veil(midnight: Bool) -> some View {
         if midnight {
             ZStack {
-                Midnight.ink.opacity(0.94)
+                Midnight.ink.opacity(0.9)
                 // Moonlight off to the upper right, as the band's sky has it.
-                RadialGradient(colors: [Midnight.moonlight.opacity(0.1), .clear], center: UnitPoint(x: 0.78, y: 0.05), startRadius: 0,
+                RadialGradient(colors: [Midnight.moonlight.opacity(0.09), .clear], center: UnitPoint(x: 0.78, y: 0.05), startRadius: 0,
                                endRadius: model.size.width * 0.6)
                 DesktopsStars(size: model.size)
             }
-        } else if let backdrop = model.backdrop {
-            ZStack {
-                Image(nsImage: backdrop)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: model.size.width, height: model.size.height)
-                    .clipped()
-                Color.black.opacity(0.28)
-            }
         } else {
-            Color.black.opacity(0.88)
+            Color.black.opacity(0.28)
         }
     }
+}
 
-    // MARK: The desktops
+/// Oyl's: the card, rising a little into place as it fades in.
+private struct PlainDesks: View {
+    @ObservedObject var model: DesktopsModel
+    static let width: CGFloat = 380
 
-    private func strip(_ layout: DesktopsLayout, midnight: Bool) -> some View {
-        ZStack(alignment: .topLeading) {
+    var body: some View {
+        let shown = min(max(model.progress, 0), 1)
+        VStack(alignment: .leading, spacing: 4) {
+            DesktopsRows(model: model)
+            if let note = model.note {
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+            }
+        }
+        .padding(6)
+        .frame(width: Self.width, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.84)))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.09)))
+        .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
+        .opacity(shown)
+        .offset(y: (1 - shown) * 16)
+        .animation(model.settle(), value: model.progress)
+        .animation(model.shuffle, value: model.note)
+        .frame(width: model.size.width, alignment: .top)
+        .padding(.top, model.size.height * 0.24)
+    }
+}
+
+/// Midnight's: off to the left of the middle, under its title.
+private struct MidnightDesks: View {
+    @ObservedObject var model: DesktopsModel
+
+    var body: some View {
+        let shown = min(max(model.progress, 0), 1)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 9) {
+                FourPointStar()
+                    .fill(Midnight.starlight)
+                    .frame(width: 9, height: 9)
+                Text("the desktops")
+                    .font(Midnight.flourish(19))
+                    .foregroundStyle(Midnight.silver.opacity(0.72))
+            }
+            .opacity(shown)
+            .offset(x: -(1 - shown) * 30)
+            .blur(radius: (1 - shown) * 4)
+            .animation(model.settle(), value: model.progress)
+            DesktopsRows(model: model)
+            if let note = model.note {
+                Text(note)
+                    .font(Midnight.italic(12.5))
+                    .foregroundStyle(Midnight.silver.opacity(0.55))
+                    .padding(.leading, 30)
+                    .transition(.opacity.combined(with: .offset(x: -12)))
+            }
+        }
+        .animation(model.shuffle, value: model.note)
+        .frame(width: 470, alignment: .leading)
+        .padding(.leading, model.size.width * 0.19)
+        .padding(.top, model.size.height * 0.22)
+    }
+}
+
+/// The rows, the one being dragged following the pointer as the rest move aside. In Midnight
+/// Oyl's they bow out to the right and back, down a line of stars.
+private struct DesktopsRows: View {
+    @ObservedObject var model: DesktopsModel
+    @Environment(\.notchTheme) private var theme
+    static let space = "desktops"
+
+    var body: some View {
+        let midnight = theme == .midnight, height = model.rowHeight, count = model.desks.count
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(model.desks.enumerated()), id: \.element.id) { index, desk in
+                let dragged = desk.id == model.dragging
+                DeskRow(model: model, desk: desk, height: height)
+                    .padding(.leading, midnight ? Self.bow(index, of: count) : 0)
+                    .modifier(DeskDrift(model: model, index: index, count: count, on: midnight))
+                    .offset(y: dragged ? model.dragOffset : model.shift(of: index))
+                    .zIndex(dragged ? 1 : 0)
+                    .animation(dragged ? nil : model.shuffle, value: model.shift(of: index))
+            }
+        }
+        .background(alignment: .topLeading) {
             if midnight {
-                constellation(layout)
-            } else {
-                Color.black.opacity(0.35)
-                    .frame(width: model.size.width, height: layout.stripHeight)
-            }
-            ForEach(Array(model.spaces.enumerated()), id: \.element.id) { index, space in
-                if layout.tiles.indices.contains(index) {
-                    spaceTile(space, in: layout.tiles[index], midnight: midnight)
-                }
-            }
-        }
-    }
-
-    /// Midnight's: the desktops joined in order by a line of stars over them, a star over each.
-    private func constellation(_ layout: DesktopsLayout) -> some View {
-        Canvas { context, _ in
-            let points = layout.tiles.map { CGPoint(x: $0.midX, y: $0.minY - 12) }
-            var line = Path()
-            for (index, point) in points.enumerated() {
-                if index == 0 { line.move(to: point) } else { line.addLine(to: point) }
-            }
-            context.stroke(line, with: .color(Midnight.starlight.opacity(0.22)), lineWidth: 0.6)
-            for point in points {
-                context.fill(Path(ellipseIn: CGRect(x: point.x - 1.6, y: point.y - 1.6, width: 3.2, height: 3.2)),
-                             with: .color(Midnight.starlight.opacity(0.75)))
-            }
-        }
-        .frame(width: model.size.width, height: layout.stripHeight + 10)
-        .allowsHitTesting(false)
-    }
-
-    private func spaceTile(_ space: DesktopsModel.Space, in frame: CGRect, midnight: Bool) -> some View {
-        let hovered = model.hoveredSpace == space.id
-        let shape = RoundedRectangle(cornerRadius: midnight ? 5 : 7, style: .continuous)
-        return VStack(spacing: 7) {
-            ZStack {
-                if let picture = space.picture {
-                    Image(nsImage: picture)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                } else {
-                    (midnight ? Midnight.ink : Color.black).opacity(0.8)
-                    if let icon = space.icon {
-                        Image(nsImage: icon).resizable().frame(width: frame.height * 0.42, height: frame.height * 0.42)
-                    } else if let backdrop = model.backdrop, !space.isFullscreen {
-                        Image(nsImage: backdrop).resizable().aspectRatio(contentMode: .fill).opacity(0.7)
-                    }
-                }
-            }
-            .frame(width: frame.width, height: frame.height)
-            .clipped()
-            .modifier(Feathered(on: midnight, shape: shape))
-            .background {
-                if midnight && (space.isCurrent || hovered) {
-                    RadialGradient(colors: [Midnight.moonlight.opacity(space.isCurrent ? 0.32 : 0.18), .clear], center: .center, startRadius: 0,
-                                   endRadius: frame.width * 0.8)
-                        .frame(width: frame.width * 1.7, height: frame.height * 2)
-                        .allowsHitTesting(false)
-                }
-            }
-            .overlay {
-                if !midnight {
-                    shape.strokeBorder(.white.opacity(space.isCurrent ? 0.95 : hovered ? 0.55 : 0), lineWidth: space.isCurrent ? 2.5 : 1.5)
-                }
-            }
-            .overlay(alignment: .topTrailing) {
-                if midnight && space.isCurrent { DesktopGlint().offset(x: 7, y: -7) }
-            }
-            .shadow(color: .black.opacity(midnight ? 0 : 0.35), radius: 8, y: 3)
-            Text(space.name)
-                .notchFont(size: midnight ? 12.5 : 11.5, weight: space.isCurrent ? .semibold : .medium)
-                .foregroundStyle((midnight ? Midnight.white : Color.white).opacity(space.isCurrent || hovered ? 0.95 : 0.65))
-                .lineLimit(1)
-                .frame(width: frame.width + 24)
-        }
-        .scaleEffect(hovered ? 1.05 : 1)
-        .animation(midnight ? .easeInOut(duration: 0.35) : .easeOut(duration: 0.15), value: hovered)
-        .contentShape(Rectangle())
-        .onHover { model.hoveredSpace = $0 ? space.id : (model.hoveredSpace == space.id ? nil : model.hoveredSpace) }
-        .onTapGesture { model.pick(space) }
-        .help(space.isCurrent ? "\(space.name): where you are" : "Go to \(space.name)")
-        .position(x: frame.midX, y: frame.minY + frame.height / 2 + 13)
-    }
-
-    // MARK: The windows
-
-    private func windowTile(_ window: DesktopsModel.Window, to target: CGRect, index: Int, midnight: Bool) -> some View {
-        let progress = model.progress
-        let frame = DesktopsLayout.between(window.frame, target, progress)
-        let hovered = model.hoveredWindow == window.id && progress > 0.95
-        let shape = RoundedRectangle(cornerRadius: midnight ? 6 : 9, style: .continuous)
-        // Midnight's drift in one after another (not while following the fingers).
-        let delay = midnight && !model.interactive ? Double(min(index, 8)) * 0.035 : 0
-        return ZStack {
-            if let picture = window.picture {
-                Image(decorative: picture, scale: 1)
-                    .resizable()
-                    .interpolation(.high)
-            } else {
-                (midnight ? Midnight.ink : Color(white: 0.12)).opacity(0.85)
-                if let icon = window.icon {
-                    Image(nsImage: icon).resizable().frame(width: min(64, frame.width * 0.3), height: min(64, frame.width * 0.3))
-                }
-            }
-        }
-        .frame(width: frame.width, height: frame.height)
-        .clipShape(shape)
-        .modifier(Feathered(on: midnight, shape: shape))
-        .overlay {
-            if !midnight { shape.strokeBorder(.white.opacity(hovered ? 0.9 : 0), lineWidth: 2) }
-        }
-        .background {
-            if midnight && hovered {
-                RadialGradient(colors: [Midnight.moonlight.opacity(0.22), .clear], center: .center, startRadius: 0, endRadius: frame.width * 0.75)
-                    .frame(width: frame.width * 1.5, height: frame.height * 1.5)
+                DeskLine(points: (0..<count).map { CGPoint(x: Self.bow($0, of: count) + DeskRow.markerMiddle, y: (CGFloat($0) + 0.5) * height) })
+                    .trim(from: 0, to: min(max(model.progress, 0), 1))
+                    .stroke(Midnight.silver.opacity(0.2), style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
+                    .animation(model.settle(delay: 0.1), value: model.progress)
+                    .animation(model.shuffle, value: model.desks.map(\.id))
                     .allowsHitTesting(false)
             }
         }
-        .shadow(color: .black.opacity(midnight ? 0 : 0.45 * min(progress * 2, 1)), radius: 14, y: 6)
-        .overlay(alignment: .bottom) {
-            // Just inside its foot, so it's over nothing else.
-            if hovered {
-                windowName(window, midnight: midnight)
-                    .padding(.bottom, 12)
-                    .transition(.opacity)
-            }
-        }
-        .opacity(window.picture == nil && progress < 0.05 ? 0 : 1)
-        .scaleEffect(hovered ? 1.02 : 1)
-        .contentShape(Rectangle())
-        .onHover { on in model.hoveredWindow = on ? window.id : (model.hoveredWindow == window.id ? nil : model.hoveredWindow) }
-        .onTapGesture { model.choose(window) }
-        .position(x: frame.midX, y: frame.midY)
-        .zIndex(model.chosen == window.id ? 100 : Double(index))
-        .animation(model.settle(delay: delay), value: progress)
-        .animation(midnight ? .easeInOut(duration: 0.3) : .easeOut(duration: 0.15), value: hovered)
-        .animation(.easeOut(duration: 0.2), value: window.picture == nil)
+        .coordinateSpace(.named(Self.space))
     }
 
-    private func windowName(_ window: DesktopsModel.Window, midnight: Bool) -> some View {
-        HStack(spacing: 6) {
-            if let icon = window.icon { Image(nsImage: icon).resizable().frame(width: 16, height: 16) }
-            Text(window.title.isEmpty || window.title == window.app ? window.app : "\(window.app) — \(window.title)")
-                .notchFont(size: 11.5, weight: .medium)
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
-        .background(Capsule().fill(midnight ? AnyShapeStyle(Midnight.ink.opacity(0.85)) : AnyShapeStyle(Color.black.opacity(0.65))))
-        .fixedSize()
+    /// How far right the row at `index` sits, of `count`: furthest in the middle.
+    static func bow(_ index: Int, of count: Int) -> CGFloat {
+        guard count > 1 else { return 0 }
+        return 30 * sin(.pi * (CGFloat(index) + 0.5) / CGFloat(count))
     }
 }
 
-/// Midnight's pictures have no edge: they fade out over their last few points. Oyl's are clipped
-/// to their rounded shape.
-private struct Feathered<S: Shape>: ViewModifier {
+/// Midnight's rows come in one after another, out of a blur from the left, and go the same way.
+private struct DeskDrift: ViewModifier {
+    @ObservedObject var model: DesktopsModel
+    let index: Int
+    let count: Int
     let on: Bool
-    let shape: S
 
     func body(content: Content) -> some View {
         if on {
-            content.mask(shape.fill(.white).padding(4).blur(radius: 4))
+            let step = min(0.05, 0.3 / Double(max(count, 1)))
+            let shown = min(max(model.progress * 1.3 - Double(index) * step, 0), 1)
+            content
+                .opacity(shown)
+                .offset(x: -(1 - shown) * 36)
+                .blur(radius: (1 - shown) * 4)
+                .animation(model.settle(delay: Double(index) * 0.035), value: model.progress)
         } else {
-            content.clipShape(shape)
+            content
         }
     }
 }
 
-/// A four-pointed glint at the corner of the desktop you're on, twinkling.
+/// The line of stars Midnight's rows hang on.
+private struct DeskLine: Shape {
+    var points: [CGPoint]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() { path.addLine(to: point) }
+        return path
+    }
+}
+
+/// A desktop: its name, what's on it, and (pointed at) a way to rename it. Click it to go there;
+/// drag it up or down to move it.
+private struct DeskRow: View {
+    @ObservedObject var model: DesktopsModel
+    let desk: DesktopsModel.Desk
+    let height: CGFloat
+    @FocusState private var typing: Bool
+    @Environment(\.notchTheme) private var theme
+
+    /// Where the star (or dot) before the name is, across.
+    static let markerMiddle: CGFloat = 14
+    static let mostIcons = 6
+
+    private var renaming: Bool { model.renaming == desk.id }
+    private var dragged: Bool { model.dragging == desk.id }
+    private var lit: Bool { dragged || model.dragging == nil && (model.hovered == desk.id || model.selected == desk.id) }
+
+    var body: some View {
+        let midnight = theme == .midnight
+        HStack(spacing: midnight ? 10 : 8) {
+            marker(midnight: midnight)
+            name(midnight: midnight)
+            if desk.namesApps, !renaming { appNames(midnight: midnight) }
+            icons(midnight: midnight)
+            Spacer(minLength: 8)
+            if lit, !renaming, !dragged { renameButton(midnight: midnight) }
+        }
+        .padding(.horizontal, midnight ? 6 : 10)
+        .frame(height: height)
+        .background(highlight(midnight: midnight))
+        .scaleEffect(dragged ? (midnight ? 1.035 : 1.02) : 1, anchor: .leading)
+        .shadow(color: dragged ? (midnight ? Midnight.moonlight.opacity(0.25) : .black.opacity(0.4)) : .clear, radius: dragged ? 10 : 0)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                model.hovered = desk.id
+            } else if model.hovered == desk.id {
+                model.hovered = nil
+            }
+        }
+        .onTapGesture {
+            guard !renaming, !model.justDragged else { return }
+            model.pick(desk)
+        }
+        .gesture(drag, including: renaming ? .subviews : .all)
+        .animation(.easeOut(duration: 0.15), value: lit)
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(DesktopsRows.space))
+            .onChanged { value in
+                if model.dragging != desk.id {
+                    model.finishRenaming(keeping: true)
+                    model.dragging = desk.id
+                }
+                model.dragOffset = value.translation.height
+            }
+            .onEnded { _ in
+                withAnimation(model.shuffle) { model.drop() }
+                model.justDragged = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { model.justDragged = false }
+            }
+    }
+
+    // MARK: Pieces
+
+    @ViewBuilder private func marker(midnight: Bool) -> some View {
+        if midnight {
+            ZStack {
+                if desk.isCurrent {
+                    DesktopGlint()
+                } else {
+                    FourPointStar()
+                        .fill(Midnight.starlight)
+                        .frame(width: lit ? 8 : 6, height: lit ? 8 : 6)
+                        .opacity(lit ? 0.95 : 0.5)
+                }
+            }
+            .frame(width: 16, height: 16)
+        } else {
+            Circle()
+                .fill(.white)
+                .frame(width: 5, height: 5)
+                .opacity(desk.isCurrent ? 0.9 : 0)
+                .frame(width: 8)
+        }
+    }
+
+    @ViewBuilder private func name(midnight: Bool) -> some View {
+        let font = midnight ? Midnight.font(.heading, size: 18, weight: desk.isCurrent ? .bold : .regular)
+            : .system(size: 13, weight: desk.isCurrent ? .semibold : .regular)
+        if renaming {
+            TextField("", text: $model.draft)
+                .textFieldStyle(.plain)
+                .font(font)
+                .foregroundStyle(midnight ? Midnight.white : .white)
+                .focused($typing)
+                .onSubmit { model.finishRenaming(keeping: true) }
+                .onAppear { DispatchQueue.main.async { typing = true } }
+                .frame(width: midnight ? 240 : 200)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(midnight ? AnyShapeStyle(LinearGradient(colors: [Midnight.moonlight.opacity(0.14), .clear],
+                                                                      startPoint: .leading, endPoint: .trailing))
+                                     : AnyShapeStyle(Color.white.opacity(0.12)),
+                            in: RoundedRectangle(cornerRadius: midnight ? 2 : 5, style: .continuous))
+        } else if midnight {
+            Text(desk.name)
+                .font(font)
+                .foregroundStyle(Midnight.white.opacity(lit ? 1 : desk.isCurrent ? 0.95 : 0.7))
+                .shadow(color: Midnight.moonlight.opacity(lit || desk.isCurrent ? 0.45 : 0), radius: 6)
+                .offset(x: lit ? 4 : 0)
+                .lineLimit(1)
+        } else {
+            Text(desk.name)
+                .font(font)
+                .foregroundStyle(.white.opacity(lit || desk.isCurrent ? 1 : 0.82))
+                .lineLimit(1)
+        }
+    }
+
+    private func appNames(midnight: Bool) -> some View {
+        Text(desk.apps.prefix(3).map { $0.name.lowercased() }.joined(separator: ", "))
+            .font(midnight ? Midnight.italic(12.5) : .system(size: 11.5))
+            .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.4))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .layoutPriority(-1)
+    }
+
+    private func icons(midnight: Bool) -> some View {
+        let side: CGFloat = midnight ? 17 : 16
+        return HStack(spacing: midnight ? 4 : 3) {
+            ForEach(desk.apps.prefix(Self.mostIcons)) { app in
+                if let icon = app.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .interpolation(.high)
+                        .frame(width: side, height: side)
+                        .saturation(midnight ? 0.55 : 1)
+                        .opacity(midnight ? (lit ? 0.95 : 0.72) : 1)
+                        .help(app.name)
+                }
+            }
+            if desk.apps.count > Self.mostIcons {
+                Text("+\(desk.apps.count - Self.mostIcons)")
+                    .font(midnight ? Midnight.italic(11) : .system(size: 10.5, weight: .medium))
+                    .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.45))
+            }
+        }
+        .offset(x: midnight && lit ? 4 : 0)
+    }
+
+    private func renameButton(midnight: Bool) -> some View {
+        Button { model.startRenaming(desk) } label: {
+            if midnight {
+                Text("rename")
+                    .font(Midnight.italic(12))
+                    .foregroundStyle(Midnight.silver.opacity(0.6))
+            } else {
+                Image(systemName: "pencil")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .frame(width: 20, height: 20)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .help("Rename")
+        .transition(.opacity)
+    }
+
+    @ViewBuilder private func highlight(midnight: Bool) -> some View {
+        if midnight {
+            // A wash of moonlight with no edge: fading in from the left, off to the right, and above and below.
+            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: Midnight.moonlight.opacity(lit ? 0.13 : 0), location: 0.08),
+                                   .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
+                .mask(LinearGradient(colors: [.clear, .white, .clear], startPoint: .top, endPoint: .bottom))
+                .padding(.vertical, -4)
+        } else {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(.white.opacity(dragged ? 0.16 : lit ? 0.09 : 0))
+        }
+    }
+}
+
+/// A four-pointed glint before the desktop you're on, twinkling.
 private struct DesktopGlint: View {
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
             let twinkle = 0.5 + 0.5 * sin(timeline.date.timeIntervalSinceReferenceDate * 1.7)
             FourPointStar()
                 .fill(Midnight.starlight)
-                .frame(width: 11 + 4 * twinkle, height: 11 + 4 * twinkle)
-                .opacity(0.65 + 0.35 * twinkle)
+                .frame(width: 10 + 4 * twinkle, height: 10 + 4 * twinkle)
+                .opacity(0.7 + 0.3 * twinkle)
                 .rotationEffect(.degrees(twinkle * 12))
+                .shadow(color: Midnight.moonlight.opacity(0.6), radius: 4)
         }
         .allowsHitTesting(false)
     }
@@ -791,10 +1117,12 @@ private struct DesktopsStars: View {
 
 // MARK: - The window it's in, and what it does
 
-/// Over everything, on whichever Space is showing; it takes the keyboard (for Escape) without
-/// bringing Oyl to the front.
+/// Over everything, on whichever Space is showing; it takes the keyboard (for Escape, the arrows
+/// and Return, and renaming) without bringing Oyl to the front.
 final class DesktopsPanel: NSPanel {
-    var dismiss: () -> Void = {}
+    var escape: () -> Void = {}
+    /// A key it might want: whether it did.
+    var pressed: (NSEvent) -> Bool = { _ in false }
 
     convenience init() {
         self.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
@@ -811,11 +1139,14 @@ final class DesktopsPanel: NSPanel {
 
     override var canBecomeKey: Bool { true }
 
-    override func cancelOperation(_ sender: Any?) { dismiss() }
+    override func cancelOperation(_ sender: Any?) { escape() }
 
     override func keyDown(with event: NSEvent) {
-        // Escape, as anywhere.
-        if event.keyCode == 53 { dismiss() } else { super.keyDown(with: event) }
+        if event.keyCode == 53 {
+            escape()
+        } else if !pressed(event) {
+            super.keyDown(with: event)
+        }
     }
 }
 
@@ -823,15 +1154,15 @@ final class DesktopsHostingView: NSHostingView<DesktopsView> {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-/// Three fingers up brings it up, following them; let go most of the way (or quickly), it's up,
-/// else it goes back down. Three fingers down, Escape, or a click on its background puts it away.
+/// Four fingers up brings it up, following them; let go most of the way (or quickly), it's up,
+/// else it goes back down. Four fingers down, Escape, or a click off the list puts it away (and
+/// the Spaces in the order they've been dragged into, if they have).
 @MainActor
 final class DesktopsViewer {
     let model = DesktopsModel()
     private let panel = DesktopsPanel()
-    private let snapshots = DesktopSnapshots()
     private var screen: NSScreen?
-    /// The Spaces as they were when it came up, and the one showing.
+    /// The Spaces in their own order, as they were last read, and the one showing.
     private var spaces: [CurrentSpace] = []
     private var current: Int?
     /// Up at all: coming up, up, or going.
@@ -839,9 +1170,12 @@ final class DesktopsViewer {
     /// A swipe being followed, and which way.
     private var following: Bool?
     private var hiding: DispatchWorkItem?
-    private var loading: Task<Void, Never>?
+    /// The Space to go to once it's gone, after they're put in order.
+    private var goingTo: String?
+    /// Putting them in order in Mission Control: no coming up till that's done.
+    private var arranging = false
+    private var readingApps: Task<Void, Never>?
     private var observers: [Any] = []
-    private var askedPermission = false
     /// Whether it can come up now (not while Oyl's off, or nothing can be seen).
     var isAllowed: () -> Bool = { true }
 
@@ -850,27 +1184,28 @@ final class DesktopsViewer {
     }
 
     var isResting = false {
-        didSet {
-            snapshots.isResting = isResting
-            if isResting, isUp { hide() }
-        }
+        didSet { if isResting, isUp { hide() } }
     }
 
     init() {
         let host = DesktopsHostingView(rootView: DesktopsView(model: model))
         host.sizingOptions = []
         panel.contentView = host
-        panel.dismiss = { [weak self] in self?.close() }
+        panel.escape = { [weak self] in self?.escape() }
+        panel.pressed = { [weak self] event in self?.pressed(event) ?? false }
         model.dismiss = { [weak self] in self?.close() }
-        model.pick = { [weak self] space in self?.go(to: space) }
-        model.choose = { [weak self] window in self?.bringForward(window) }
+        model.pick = { [weak self] desk in self?.close(goingTo: desk) }
+        model.renamed = { [weak self] desk, name in self?.rename(desk, to: name) }
+        model.reordered = { [weak self] in
+            guard let self else { return }
+            self.model.isRearranged = self.model.desks.map(\.id) != self.spaces.map(\.key)
+        }
     }
 
-    /// Reading the trackpads, and keeping pictures of the desktops.
+    /// Reading the trackpads.
     func start() {
         Trackpads.shared.swiped = { [weak self] swipe in self?.swiped(swipe) }
         Trackpads.shared.start()
-        snapshots.start()
         let workspace = NSWorkspace.shared.notificationCenter
         observers = [
             workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
@@ -879,11 +1214,11 @@ final class DesktopsViewer {
             NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { Trackpads.shared.restart() }
             },
-            // Swiped across to another Space while it's up: that one's windows.
+            // Swiped across to another Space while it's up: that one's the one you're on.
             workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let self, self.isUp, self.following == nil, self.hiding == nil else { return }
-                    self.load(fresh: true)
+                    self.load()
                 }
             },
         ]
@@ -891,7 +1226,6 @@ final class DesktopsViewer {
 
     func stop() {
         Trackpads.shared.stop()
-        snapshots.stop()
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             NotificationCenter.default.removeObserver(observer)
@@ -905,7 +1239,7 @@ final class DesktopsViewer {
     private func swiped(_ swipe: DesktopSwipe) {
         switch swipe {
         case .began(let up):
-            if up, !isUp || hiding != nil, isAllowed(), !MissionControlSwipe.isTheSystems() {
+            if up, !isUp || hiding != nil, !arranging, isAllowed(), !MissionControlSwipe.isTheSystems() {
                 following = true
                 if !isUp { show() } else { cancelHiding() }
             } else if !up, isUp, hiding == nil {
@@ -923,7 +1257,9 @@ final class DesktopsViewer {
             following = nil
             // Most of the way, or flicked; not if it was coming back as they lifted.
             let went = (amount > 0.35 || speed > 1.5) && speed > -0.8
-            settle(open: up ? went : !went)
+            let open = up ? went : !went
+            if !open { model.finishRenaming(keeping: true) }
+            settle(open: open)
         case .cancelled:
             guard let up = following else { return }
             following = nil
@@ -941,26 +1277,50 @@ final class DesktopsViewer {
         }
     }
 
-    /// Down and away, then `then`.
-    func close(then: (() -> Void)? = nil) {
-        guard isUp else { return }
+    /// Escape: a name being typed left as it was; else away.
+    private func escape() {
+        if model.renaming != nil {
+            model.finishRenaming(keeping: false)
+        } else {
+            close()
+        }
+    }
+
+    /// Down and away, then (with `desk` picked) to it: straight away, or once they've been put in
+    /// order, if they've been dragged into one.
+    func close(goingTo desk: DesktopsModel.Desk? = nil) {
+        guard isUp, hiding == nil else { return }
         following = nil
+        model.finishRenaming(keeping: true)
         settle(open: false)
-        if let then { DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { then() } }
+        if model.isRearranged {
+            goingTo = desk?.id
+        } else if let desk, let target = spaces.firstIndex(where: { $0.key == desk.id }), let current, target != current {
+            // A moment for it to start going.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                if !SpaceKeys.go(target - current) { NSSound.beep() }
+            }
+        }
     }
 
     private func hideAfterSettling() {
         cancelHiding()
         let work = DispatchWorkItem { [weak self] in
-            MainActor.assumeIsolated { self?.hide() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let wanted = self.model.isRearranged ? self.model.desks.map(\.id) : nil, goal = self.goingTo
+                self.hide()
+                if let wanted { self.arrange(wanted, goingTo: goal) }
+            }
         }
         hiding = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + model.settleTime + 0.35, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + model.settleTime + 0.3, execute: work)
     }
 
     private func cancelHiding() {
         hiding?.cancel()
         hiding = nil
+        goingTo = nil
     }
 
     // MARK: Up and down
@@ -973,184 +1333,162 @@ final class DesktopsViewer {
         model.interactive = true
         model.progress = 0
         model.size = screen.frame.size
-        model.chosen = nil
-        model.hoveredSpace = nil
-        model.hoveredWindow = nil
-        model.windows = []
-        model.backdrop = NSWorkspace.shared.desktopImageURL(for: screen).flatMap { NSImage(contentsOf: $0) }
+        model.hovered = nil
+        model.selected = nil
+        model.renaming = nil
+        model.dragging = nil
+        model.dragOffset = 0
+        model.isRearranged = false
+        model.canArrange = SpaceArranger.canArrange
+        model.desks = []
         panel.setFrame(screen.frame, display: false)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
         panel.makeKey()
         isUp = true
-        load(fresh: false)
+        load()
     }
 
     private func hide() {
-        cancelHiding()
-        loading?.cancel()
-        loading = nil
+        hiding?.cancel()
+        hiding = nil
+        goingTo = nil
+        readingApps?.cancel()
+        readingApps = nil
         following = nil
         panel.orderOut(nil)
         isUp = false
-        model.windows = []
         model.progress = 0
+        model.isRearranged = false
+        model.renaming = nil
+        model.dragging = nil
     }
 
-    /// The Spaces, and the windows of the one showing (pictures as they come).
-    private func load(fresh: Bool) {
+    /// The Spaces, then what's on each.
+    private func load() {
         guard let screen else { return }
         readSpaces(on: screen)
-        loading?.cancel()
-        loading = Task { @MainActor [weak self] in
-            guard let self else { return }
-            guard CGPreflightScreenCaptureAccess() else {
-                if !self.askedPermission {
-                    self.askedPermission = true
-                    CGRequestScreenCaptureAccess()
-                }
-                self.model.needsPermission = true
-                await self.loadWindowsWithoutPictures(on: screen)
-                return
-            }
-            self.model.needsPermission = false
-            await self.loadWindows(on: screen)
-            // The desktop you're on, as it is now.
-            if await self.snapshots.take(on: screen) != nil, !Task.isCancelled { self.readSpaces(on: screen) }
+        readingApps?.cancel()
+        readingApps = Task { @MainActor [weak self] in
+            let apps = await Task.detached(priority: .userInitiated) { SpaceApps.read() }.value
+            guard let self, !Task.isCancelled else { return }
+            self.fill(apps)
         }
     }
 
+    /// The Spaces as they are, in the order they've been dragged into if they have (any new at the end).
     private func readSpaces(on screen: NSScreen) {
         guard let display = FullscreenSpace.display(for: screen) else {
             spaces = []
             current = nil
-            model.spaces = []
+            model.desks = []
             return
         }
         let all = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }
         spaces = all.spaces
         current = all.current
         let names = SpaceNames()
-        model.spaces = all.spaces.enumerated().map { index, space in
-            DesktopsModel.Space(id: space.key, name: names.name(of: space), isFullscreen: space.isFullscreen,
-                                isCurrent: index == all.current, picture: snapshots.pictures[space.key],
-                                icon: space.pid.flatMap { NSRunningApplication(processIdentifier: $0)?.icon })
+        let before = Dictionary(model.desks.map { ($0.id, $0.apps) }, uniquingKeysWith: { first, _ in first })
+        var desks = all.spaces.enumerated().map { index, space in
+            DesktopsModel.Desk(id: space.key, name: names.name(of: space), standard: space.standard, isFullscreen: space.isFullscreen,
+                               isCurrent: index == all.current, apps: before[space.key] ?? [])
         }
+        if model.isRearranged {
+            let order = model.desks.map(\.id)
+            desks = desks.enumerated().sorted { first, second in
+                (order.firstIndex(of: first.element.id) ?? order.count + first.offset)
+                    < (order.firstIndex(of: second.element.id) ?? order.count + second.offset)
+            }.map(\.element)
+            model.isRearranged = desks.map(\.id) != spaces.map(\.key)
+        }
+        model.desks = desks
     }
 
-    /// The windows showing on `screen`'s Space, back to front, in screen points from its top left.
-    private func loadWindows(on screen: NSScreen) async {
-        guard let content = try? await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true), !Task.isCancelled else {
-            return await loadWindowsWithoutPictures(on: screen)
+    /// Each desktop's apps, by the Spaces' numbers: a fullscreen app's own first.
+    private func fill(_ apps: [Int: [pid_t]]) {
+        var known: [pid_t: DesktopsModel.App] = [:]
+        func app(_ pid: pid_t) -> DesktopsModel.App? {
+            if let found = known[pid] { return found }
+            guard let running = NSRunningApplication(processIdentifier: pid) else { return nil }
+            let made = DesktopsModel.App(id: pid, name: running.localizedName ?? "", icon: running.icon)
+            known[pid] = made
+            return made
         }
-        let bounds = Self.bounds(of: screen)
-        let order = Self.frontToBack()
-        let own = ProcessInfo.processInfo.processIdentifier
-        let windows = content.windows.filter { window in
-            guard window.windowLayer == 0, window.isOnScreen, let app = window.owningApplication, app.processID != own,
-                  !Self.skipped.contains(app.bundleIdentifier), window.frame.width >= 60, window.frame.height >= 40 else { return false }
-            return window.frame.intersection(bounds).width > window.frame.width * 0.5
-        }
-        .sorted { (order[$0.windowID] ?? .max) > (order[$1.windowID] ?? .max) }
-        model.windows = windows.map { window in
-            let app = window.owningApplication
-            return DesktopsModel.Window(id: window.windowID, pid: app?.processID ?? 0, title: window.title ?? "",
-                                        app: app?.applicationName ?? "",
-                                        frame: window.frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY),
-                                        icon: app.flatMap { NSRunningApplication(processIdentifier: $0.processID)?.icon })
-        }
-        let scale = screen.backingScaleFactor
-        await withTaskGroup(of: (CGWindowID, CGImage?).self) { group in
-            for window in windows {
-                group.addTask {
-                    let configuration = SCStreamConfiguration()
-                    let longest = max(window.frame.width, window.frame.height) * scale
-                    let shrink = min(1, 1400 / max(longest, 1))
-                    configuration.width = max(Int(window.frame.width * scale * shrink), 1)
-                    configuration.height = max(Int(window.frame.height * scale * shrink), 1)
-                    configuration.showsCursor = false
-                    configuration.ignoreShadowsSingleWindow = true
-                    let image = try? await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: window),
-                                                                           configuration: configuration)
-                    return (window.windowID, image)
-                }
+        let byKey = Dictionary(spaces.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        model.desks = model.desks.map { desk in
+            guard let space = byKey[desk.id] else { return desk }
+            var pids = apps[space.id] ?? []
+            if let own = space.pid {
+                pids.removeAll { $0 == own }
+                pids.insert(own, at: 0)
             }
-            for await (id, image) in group {
-                guard !Task.isCancelled, let image, let index = model.windows.firstIndex(where: { $0.id == id }) else { continue }
-                model.windows[index].picture = image
-            }
+            var filled = desk
+            filled.apps = pids.compactMap(app)
+            return filled
         }
     }
 
-    /// Without Screen Recording: where the windows are, from the window list, with their apps' icons.
-    private func loadWindowsWithoutPictures(on screen: NSScreen) async {
-        let bounds = Self.bounds(of: screen)
-        let own = ProcessInfo.processInfo.processIdentifier
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let windows = list.compactMap { info -> DesktopsModel.Window? in
-            guard info[kCGWindowLayer as String] as? Int == 0, let pid = info[kCGWindowOwnerPID as String] as? pid_t, pid != own,
-                  let id = info[kCGWindowNumber as String] as? CGWindowID,
-                  let box = info[kCGWindowBounds as String] as? [String: CGFloat],
-                  let frame = CGRect(dictionaryRepresentation: box as CFDictionary),
-                  frame.width >= 60, frame.height >= 40, frame.intersection(bounds).width > frame.width * 0.5 else { return nil }
-            let app = NSRunningApplication(processIdentifier: pid)
-            guard !Self.skipped.contains(app?.bundleIdentifier ?? "") else { return nil }
-            return DesktopsModel.Window(id: id, pid: pid, title: info[kCGWindowName as String] as? String ?? "",
-                                        app: app?.localizedName ?? "", frame: frame.offsetBy(dx: -bounds.minX, dy: -bounds.minY),
-                                        icon: app?.icon)
+    // MARK: The keyboard
+
+    /// ↑ and ↓ pick a row, ⌥↑ and ⌥↓ move it, Return goes to it.
+    private func pressed(_ event: NSEvent) -> Bool {
+        guard model.renaming == nil, model.dragging == nil else { return false }
+        let moving = event.modifierFlags.contains(.option)
+        switch event.keyCode {
+        case 126:
+            withAnimation(model.shuffle) { moving ? model.moveSelected(by: -1) : model.select(by: -1) }
+        case 125:
+            withAnimation(model.shuffle) { moving ? model.moveSelected(by: 1) : model.select(by: 1) }
+        case 36, 76:
+            guard let desk = model.desks.first(where: { $0.id == model.selected }) else { close(); return true }
+            close(goingTo: desk)
+        default:
+            return false
         }
-        model.windows = windows.reversed()
+        return true
     }
 
-    /// The system's own windows over everything, not a desktop's.
-    private static let skipped: Set<String> = ["com.apple.dock", "com.apple.WindowManager", "com.apple.controlcenter",
-                                               "com.apple.notificationcenterui", "com.apple.Spotlight", "com.apple.screencaptureui"]
+    // MARK: Renaming, and putting them in order
 
-    /// A screen's frame as the window server has it: from the top left of the main screen, down.
-    static func bounds(of screen: NSScreen) -> CGRect {
-        let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
-        return number.map { CGDisplayBounds($0) } ?? screen.frame
+    private func rename(_ desk: DesktopsModel.Desk, to name: String) {
+        guard let space = spaces.first(where: { $0.key == desk.id }) else { return }
+        let names = SpaceNames()
+        names.rename(space, to: name)
+        let named = names.name(of: space)
+        if let index = model.desks.firstIndex(where: { $0.id == desk.id }) { model.desks[index].name = named }
     }
 
-    /// Each window on screen's place, front first.
-    private static func frontToBack() -> [CGWindowID: Int] {
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        var order: [CGWindowID: Int] = [:]
-        for (index, info) in list.enumerated() {
-            if let id = info[kCGWindowNumber as String] as? CGWindowID { order[id] = index }
-        }
-        return order
-    }
-
-    // MARK: Going somewhere
-
-    private func go(to space: DesktopsModel.Space) {
-        guard let target = spaces.firstIndex(where: { $0.key == space.id }), let current, target != current else {
-            close()
+    /// The Spaces put in the order `wanted` (their keys), then to `goal` if it's another than the
+    /// one you're on. Not if they've changed meanwhile (one's come or gone).
+    private func arrange(_ wanted: [String], goingTo goal: String?) {
+        guard let screen, let display = FullscreenSpace.display(for: screen),
+              let number = Self.number(of: screen) else { return }
+        let now = Spaces.all(in: display, boot: Spaces.bootTime) { _ in nil }
+        let order = now.spaces.map(\.key)
+        guard Set(order) == Set(wanted), order.count == wanted.count else {
+            NSSound.beep()
             return
         }
-        close {
-            if !SpaceKeys.go(target - current) { NSSound.beep() }
+        guard SpaceArranger.canArrange else {
+            NSSound.beep()
+            return
+        }
+        let moves = SpaceArranger.moves(from: order, to: wanted)
+        let currentKey = now.current.map { order[$0] }
+        let goTo = goal.flatMap { $0 == currentKey ? nil : wanted.firstIndex(of: $0) }
+        guard !moves.isEmpty else { return }
+        arranging = true
+        SpaceArranger.arrange(moves, count: order.count, on: number, goTo: goTo) { [weak self] went in
+            guard let self else { return }
+            self.arranging = false
+            // As they are now.
+            let after = NSScreen.screens.first { Self.number(of: $0) == number }.flatMap(FullscreenSpace.display(for:))
+                .map { Spaces.all(in: $0, boot: Spaces.bootTime) { _ in nil }.spaces.map(\.key) }
+            if !went || after != wanted { NSSound.beep() }
         }
     }
 
-    /// The window to the front: its app, and it raised (as picture in picture goes to its window).
-    private func bringForward(_ window: DesktopsModel.Window) {
-        model.chosen = window.id
-        let pid = window.pid, id = window.id
-        close {
-            NSRunningApplication(processIdentifier: pid)?.activate()
-            DispatchQueue.global(qos: .userInitiated).async {
-                let app = AXUIElementCreateApplication(pid)
-                AXUIElementSetMessagingTimeout(app, 1)
-                for element in ButtonReader.elements(app, kAXWindowsAttribute) {
-                    var number: CGWindowID = 0
-                    guard let windowNumber = PiPWindows.windowNumber, windowNumber(element, &number) == .success, number == id else { continue }
-                    AXUIElementPerformAction(element, kAXRaiseAction as CFString)
-                    AXUIElementSetAttributeValue(element, kAXMainAttribute as CFString, kCFBooleanTrue)
-                    break
-                }
-            }
-        }
+    private static func number(of screen: NSScreen) -> CGDirectDisplayID? {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
     }
 }

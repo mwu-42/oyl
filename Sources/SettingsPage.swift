@@ -183,7 +183,7 @@ struct SettingsPage: View {
             }
             return items
         case .keys:
-            return [
+            var items = [
                 feature(.approveTap, "Right ⌘ Allow", "The right Command key tapped once on its own, while something's waiting for your OK: it's allowed (just that once; the first, if there are a few)"),
                 feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
@@ -192,16 +192,26 @@ struct SettingsPage: View {
                 feature(.pictureInPicture, "⌃⌥P Picture in picture", "The window in front, kept up small over every desktop and fullscreen app (or right-click an app in Oyl's Dock); again to put it away"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
-                SettingItem(id: Feature.desktopsView.rawValue, title: "Three fingers up: desktops",
-                            hint: MissionControlSwipe.isTheSystems()
-                                ? "Your desktops and this one's windows, Oyl's way. First set Mission Control's swipe to four fingers or off, in System Settings › Trackpad › More Gestures (turning this on opens it)"
-                                : "Your desktops and this one's windows, Oyl's way, instead of Mission Control; three fingers down, Escape or a click puts them away",
+                SettingItem(id: Feature.desktopsView.rawValue, title: "Four fingers up: desktops",
+                            hint: !MissionControlSwipe.isTheSystems()
+                                ? "Your desktops and fullscreen apps in a list, with the apps on each: click one to go there, drag them into another order (the Spaces are put in it), point at one to rename it; four fingers down, Escape or a click puts it away"
+                                : MissionControlSwipe.isOnThreeFingers()
+                                ? "Your desktops in a list, to go to, rename and put in order. macOS opens Mission Control with four fingers too: free them (below) and Mission Control keeps three"
+                                : "Your desktops in a list, to go to, rename and put in order. First set Mission Control's swipe to three fingers or off, in System Settings › Trackpad › More Gestures (turning this on opens it)",
                             isOn: Feature.desktopsView.isOn) {
                     Features.shared.toggle(.desktopsView)
-                    // macOS still answering three fingers up itself: where to change that.
-                    if Feature.desktopsView.isOn, MissionControlSwipe.isTheSystems() { MissionControlSwipe.openSettings() }
+                    // macOS answering four fingers up itself, and not something Oyl can change: where to change it.
+                    if Feature.desktopsView.isOn, MissionControlSwipe.isTheSystems(), !MissionControlSwipe.isOnThreeFingers() {
+                        MissionControlSwipe.openSettings()
+                    }
                 },
             ]
+            if Feature.desktopsView.isOn, MissionControlSwipe.isTheSystems(), MissionControlSwipe.isOnThreeFingers() {
+                items.append(SettingItem(id: "freeFourFingers", title: "Free four fingers",
+                                         hint: "macOS's four-finger swipe up and down turned off, so four fingers up are Oyl's; Mission Control keeps three (picking three fingers in Trackpad settings again turns it back on)",
+                                         action: { MissionControlSwipe.setFourFingers(free: true) }, isButton: true))
+            }
+            return items
         case .dock:
             return [
                 SettingItem(id: "dock", title: "Oyl's Dock", hint: "Along the bottom, over the macOS Dock", isOn: state.showsDock) {
