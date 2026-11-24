@@ -22,9 +22,12 @@ struct SettingItem: Identifiable {
     /// A button (Quit, Turn off…), not a switch.
     var isButton = false
     var remove: (() -> Void)?
+    /// A value it has, moved down or up (‹ and ›, after its title): a time, say.
+    var adjust: (down: () -> Void, up: () -> Void)?
 
     init(id: String, title: String, hint: @autoclosure @escaping () -> String, isOn: Bool = false,
-         action: @escaping () -> Void, isButton: Bool = false, remove: (() -> Void)? = nil) {
+         action: @escaping () -> Void, isButton: Bool = false, remove: (() -> Void)? = nil,
+         adjust: (down: () -> Void, up: () -> Void)? = nil) {
         self.id = id
         self.title = title
         says = hint
@@ -32,6 +35,7 @@ struct SettingItem: Identifiable {
         self.action = action
         self.isButton = isButton
         self.remove = remove
+        self.adjust = adjust
     }
 }
 
@@ -42,6 +46,7 @@ struct SettingsPage: View {
     @ObservedObject var state: NotchState
     @ObservedObject var radar = AgentRadar.shared
     @ObservedObject var features = Features.shared
+    @ObservedObject var morning = MorningStart.shared
 
     var body: some View {
         SettingsLayout(section: $state.settingsSection, items: Self.items(state.settingsSection, state: state),
@@ -158,6 +163,11 @@ struct SettingsPage: View {
                                          remove: { radar.decline(agent) }))
             }
             items.append(feature(.discovery, "Find new agents", "Offer to watch apps that talk to an AI service"))
+            let morning = MorningStart.shared
+            items.append(SettingItem(id: Feature.morningClaude.rawValue, title: "☀ Claude at \(morning.time)",
+                                     hint: "Each morning at \(morning.time), a one-word prompt to Claude (Haiku, through Claude Code, on your plan) starts your 5-hour limit window, so it resets that much sooner. ‹ › change the time. The Mac has to be awake: missed while it sleeps, it's sent when it wakes, within 4 hours. " + morning.lastSaid,
+                                     isOn: Feature.morningClaude.isOn, action: { Features.shared.toggle(.morningClaude) },
+                                     adjust: (down: { morning.move(by: -1) }, up: { morning.move(by: 1) })))
             if let front = state.front, !radar.knows(front.id) {
                 items.append(SettingItem(id: "front", title: "Watch \(front.name)", hint: "As an agent: \(hint(for: front))",
                                          action: { radar.add(front) }, isButton: true))
@@ -424,6 +434,12 @@ struct SettingRow: View {
             }
             .buttonStyle(PressableStyle())
             .help(item.hint)
+            if let adjust = item.adjust {
+                HStack(spacing: 0) {
+                    stepper("chevron.left", help: "Earlier", action: adjust.down)
+                    stepper("chevron.right", help: "Later", action: adjust.up)
+                }
+            }
             if let remove = item.remove {
                 Button(action: remove) {
                     Image(systemName: "xmark")
@@ -438,6 +454,18 @@ struct SettingRow: View {
             Spacer(minLength: 0)
         }
         .animation(.easeOut(duration: 0.15), value: item.isOn)
+    }
+
+    private func stepper(_ symbol: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .notchSymbol(size: 8, weight: .bold)
+                .foregroundStyle(.white.opacity(0.45))
+                .frame(width: 14, height: 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(PressableStyle())
+        .help(help)
     }
 }
 

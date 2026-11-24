@@ -74,7 +74,8 @@ final class ProcessAgents: @unchecked Sendable {
         let processes = Processes.all()
         let byPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { a, _ in a })
         var matched: [pid_t: String] = [:]
-        for process in processes {
+        // (Not Oyl's own: Claude Code run for the morning's prompt, see `MorningStart`.)
+        for process in processes where process.parent != getpid() {
             if let known = names[process.pid], known.started == process.started {
                 if let program = known.program { matched[process.pid] = program }
                 continue

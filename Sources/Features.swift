@@ -61,10 +61,15 @@ enum Feature: String, CaseIterable, Sendable {
     case desktopsKey
 
     case openAtLogin
+    /// Claude's 5-hour window started early, with a prompt each morning (see `MorningStart`).
+    case morningClaude
 
     var key: String { "feature." + rawValue }
 
-    var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? true }
+    var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? !Self.offToBegin.contains(self) }
+
+    /// Off till they're turned on: what sends things in your name.
+    static let offToBegin: Set<Feature> = [.morningClaude]
 
     /// What a gesture does, if it can be turned off.
     init?(_ gesture: HandGesture) {
