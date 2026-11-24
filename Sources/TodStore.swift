@@ -171,9 +171,15 @@ final class TodStore: ObservableObject {
     /// inbox. Nil if there's nothing to add, or no tod.
     @discardableResult
     func add(_ text: String) -> Task? {
-        let parsed = TodQuick.parse(text, weekStart: weekStart)
+        let parsed = read(text)
         let listId = parsed.list.flatMap { TodQuick.list(for: $0, among: lists.map { (id: $0.id, name: $0.name) }) }
         return add(title: parsed.title, due: parsed.due, time: parsed.time, listId: listId, newList: listId == nil ? parsed.list : nil)
+    }
+
+    /// What's typed, read as the list's own app reads it: toyl's quick add (its shorthand, "td",
+    /// "eow", and a day said loosely as when it's due) on toyl's list, tod's on tod's.
+    private func read(_ text: String) -> TodQuick {
+        source == .toyl ? ToylQuick.parse(text, weekStart: weekStart) : TodQuick.parse(text, weekStart: weekStart)
     }
 
     /// Adds a task at the top of its list's first lane: in `listId` if there's such a list, else
@@ -206,7 +212,7 @@ final class TodStore: ObservableObject {
     /// move it.
     func edit(_ id: String, to text: String) {
         guard let task = tasks.first(where: { $0.id == id }) else { return }
-        let parsed = TodQuick.parse(text, weekStart: weekStart)
+        let parsed = read(text)
         var changed = task
         if !parsed.title.isEmpty {
             changed.title = parsed.title

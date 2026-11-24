@@ -192,10 +192,10 @@ struct SettingsPage: View {
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
                 SettingItem(id: Feature.desktopsView.rawValue, title: "Four fingers up: desktops",
                             hint: !MissionControlSwipe.isTheSystems()
-                                ? "Your desktops and fullscreen apps in a list, with the apps on each: click one to go straight there, point at one to rename it; four fingers down, Escape or a click puts it away"
+                                ? "Your desktops and fullscreen apps in a list, with the apps on each: click one to go straight there, point at one to rename it, drag one onto another to group them; four fingers down, Escape or a click puts it away"
                                 : MissionControlSwipe.isOnThreeFingers()
-                                ? "Your desktops in a list, to go to and rename. macOS opens Mission Control with four fingers too: free them (below) and Mission Control keeps three"
-                                : "Your desktops in a list, to go to and rename. First set Mission Control's swipe to three fingers or off, in System Settings › Trackpad › More Gestures (turning this on opens it)",
+                                ? "Your desktops in a list, to go to, rename and group. macOS opens Mission Control with four fingers too: free them (below) and Mission Control keeps three"
+                                : "Your desktops in a list, to go to, rename and group. First set Mission Control's swipe to three fingers or off, in System Settings › Trackpad › More Gestures (turning this on opens it)",
                             isOn: Feature.desktopsView.isOn) {
                     Features.shared.toggle(.desktopsView)
                     // macOS answering four fingers up itself, and not something Oyl can change: where to change it.

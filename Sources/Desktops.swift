@@ -1,12 +1,14 @@
 import AppKit
 import ApplicationServices
 import SwiftUI
+import os
 
 // Four fingers up (or right Shift twice): your desktops and fullscreen apps in a list, in the order
 // they're in, each by its name (a fullscreen app's by its app's, as the menu bar's label names them)
-// with the icons of the apps on it. Click one to go straight to it; point at one to rename it.
-// (They can't be put in another order from here: macOS keeps that in the Dock, and short of turning
-// System Integrity Protection off, only Mission Control can change it, by dragging.) macOS's own
+// with the icons of the apps on it. Click one to go straight to it; point at one to rename it; drag
+// one onto another to group them, under a heading that folds them away (see `SpaceGroups`). (They
+// can't be put in another order from here: macOS keeps that in the Dock, and short of turning System
+// Integrity Protection off, only Mission Control can change it, by dragging.) macOS's own
 // four-finger swipe up has to be off for four fingers up to be Oyl's: see `MissionControlSwipe`.
 
 // MARK: - Four fingers on the trackpad
@@ -424,6 +426,111 @@ enum InstantSpaces {
     private static func field(_ number: UInt32) -> CGEventField { unsafeBitCast(number, to: CGEventField.self) }
 }
 
+// MARK: - Groups
+
+/// The groups you've put desktops in, kept in the defaults: each its name, whether it's folded,
+/// and its desktops, by what their names are kept under (a fullscreen app's by its window too, so
+/// it's still in when it leaves fullscreen and comes back, a new Space each time). They're only
+/// this list's: the Spaces stay in macOS's own order, which only Mission Control can change.
+struct SpaceGroups {
+    static let key = "spaces.groups"
+    /// The most desktops kept in them: past that, fullscreen apps' windows' go first (they're the
+    /// ones that don't last).
+    static let most = 300
+
+    struct Group: Equatable {
+        let id: String
+        var name: String
+        var folded: Bool
+        var members: [String]
+    }
+
+    var defaults = UserDefaults.standard
+
+    var all: [Group] {
+        (defaults.array(forKey: Self.key) as? [[String: Any]] ?? []).compactMap { entry in
+            guard let id = entry["id"] as? String, let name = entry["name"] as? String else { return nil }
+            return Group(id: id, name: name, folded: entry["folded"] as? Bool ?? false, members: entry["members"] as? [String] ?? [])
+        }
+    }
+
+    private func save(_ groups: [Group]) {
+        var groups = groups.filter { !$0.members.isEmpty }
+        // Too many kept: the oldest fullscreen windows' let go of.
+        var over = groups.reduce(0) { $0 + $1.members.count } - Self.most
+        for index in groups.indices where over > 0 {
+            let windows = groups[index].members.filter { $0.hasPrefix("window:") }.prefix(over)
+            groups[index].members.removeAll { windows.contains($0) }
+            over -= windows.count
+        }
+        groups = groups.filter { !$0.members.isEmpty }
+        defaults.set(groups.map { ["id": $0.id, "name": $0.name, "folded": $0.folded, "members": $0.members] as [String: Any] }, forKey: Self.key)
+    }
+
+    /// What a Space is kept under: its own, and a fullscreen app's window's.
+    static func keys(of space: CurrentSpace) -> [String] { [space.key] + (space.window.map { [$0] } ?? []) }
+
+    /// The group `space` is in, among `groups`.
+    static func group(of space: CurrentSpace, in groups: [Group]) -> Group? {
+        let keys = Self.keys(of: space)
+        return groups.first { $0.members.contains(where: keys.contains) }
+    }
+
+    /// A new group of `space` and `other` (each out of any it was in), called "group" (or "group
+    /// 2", and so on, if that's taken): its id.
+    @discardableResult
+    func make(_ space: CurrentSpace, with other: CurrentSpace) -> String {
+        var groups = Self.without([space, other], in: all)
+        let names = Set(groups.map { $0.name.lowercased() })
+        let name = names.contains("group") ? (2...).lazy.map { "group \($0)" }.first { !names.contains($0) }! : "group"
+        let id = UUID().uuidString
+        groups.append(Group(id: id, name: name, folded: false, members: Self.keys(of: other) + Self.keys(of: space)))
+        save(groups)
+        return id
+    }
+
+    /// `space` put in the group `id` (out of any other).
+    func put(_ space: CurrentSpace, in id: String) {
+        var groups = Self.without([space], in: all)
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
+        groups[index].members += Self.keys(of: space)
+        save(groups)
+    }
+
+    /// `space` on its own again.
+    func takeOut(_ space: CurrentSpace) { save(Self.without([space], in: all)) }
+
+    /// The group `id` done away with, its desktops on their own again.
+    func ungroup(_ id: String) { save(all.filter { $0.id != id }) }
+
+    func rename(_ id: String, to name: String) {
+        let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(SpaceNames.longest))
+        guard !name.isEmpty else { return }
+        save(all.map { group in
+            var group = group
+            if group.id == id { group.name = name }
+            return group
+        })
+    }
+
+    func fold(_ id: String, _ folded: Bool) {
+        save(all.map { group in
+            var group = group
+            if group.id == id { group.folded = folded }
+            return group
+        })
+    }
+
+    private static func without(_ spaces: [CurrentSpace], in groups: [Group]) -> [Group] {
+        let keys = Set(spaces.flatMap(Self.keys))
+        return groups.map { group in
+            var group = group
+            group.members.removeAll { keys.contains($0) }
+            return group
+        }
+    }
+}
+
 // MARK: - What's shown
 
 @MainActor
@@ -444,9 +551,48 @@ final class DesktopsModel: ObservableObject {
         let isCurrent: Bool
         /// Front first; a fullscreen app's own first of all.
         var apps: [App] = []
+        /// The group it's in (see `SpaceGroups`), if any.
+        var group: String?
 
         /// A desktop still called by its number: what's on it says more, so its apps are named too.
         var namesApps: Bool { !isFullscreen && name == standard && !apps.isEmpty }
+    }
+
+    /// Desktops put together under a name, in this list only (macOS keeps them in its own order).
+    struct Group: Identifiable, Equatable {
+        /// What it's kept under (see `SpaceGroups`).
+        let id: String
+        var name: String
+        /// Just its heading shown, its desktops tucked away under it.
+        var folded: Bool
+    }
+
+    /// A line of the list: a group's heading (with the desktops in it), or a desktop.
+    enum Item: Identifiable, Equatable {
+        case heading(Group, desks: [Desk])
+        case desk(Desk, grouped: Bool)
+
+        var id: String {
+            switch self {
+            case .heading(let group, _): return DesktopsModel.headingID(group.id)
+            case .desk(let desk, _): return desk.id
+            }
+        }
+    }
+
+    /// What a heading's known by in the list (picked, renamed), apart from the desktops.
+    nonisolated static func headingID(_ group: String) -> String { "group:" + group }
+
+    /// What letting go of a desktop being dragged does.
+    enum Regroup: Equatable {
+        /// Put in a new group with the one it's let go on.
+        case with(desk: String, other: String)
+        /// Put in a group (let go on its heading, or on a desktop in it).
+        case into(desk: String, group: String)
+        /// Taken out of its group (let go off the list).
+        case out(desk: String)
+        /// A group done away with, its desktops back on their own.
+        case ungroup(group: String)
     }
 
     /// How far up it's come: 0 is gone, 1 all the way up.
@@ -455,6 +601,8 @@ final class DesktopsModel: ObservableObject {
     @Published var interactive = true
     /// In the Spaces' own order.
     @Published var desks: [Desk] = []
+    /// Every group there is (some may have none of these desktops in them).
+    @Published var groups: [Group] = []
     @Published var size = CGSize(width: 1440, height: 900)
     @Published var theme = NotchTheme.standard
     @Published var hovered: String?
@@ -463,10 +611,42 @@ final class DesktopsModel: ObservableObject {
     /// Being renamed, and what's been typed.
     @Published var renaming: String?
     @Published var draft = ""
+    /// The desktop being dragged, and where the pointer is, in the list (see `DesktopsRows.space`).
+    @Published var dragging: String?
+    @Published var dragShift = CGSize.zero
+    @Published var dragAt: CGPoint?
+    /// A drag's just ended: the click that ends it isn't a pick.
+    var justDragged = false
 
     var pick: (Desk) -> Void = { _ in }
     var renamed: (Desk, String) -> Void = { _, _ in }
+    var renamedGroup: (String, String) -> Void = { _, _ in }
+    var regroup: (Regroup) -> Void = { _ in }
+    var folded: (String, Bool) -> Void = { _, _ in }
     var dismiss: () -> Void = {}
+
+    /// The list's lines: the desktops in the Spaces' order, each group's together under its
+    /// heading where the first of them comes (folded, the heading alone).
+    var items: [Item] { Self.arrange(desks, groups: groups) }
+
+    nonisolated static func arrange(_ desks: [Desk], groups: [Group]) -> [Item] {
+        let byId = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var placed = Set<String>(), items: [Item] = []
+        for desk in desks {
+            guard let id = desk.group, let group = byId[id] else {
+                items.append(.desk(desk, grouped: false))
+                continue
+            }
+            guard placed.insert(id).inserted else { continue }
+            let members = desks.filter { $0.group == id }
+            items.append(.heading(group, desks: members))
+            if !group.folded { items += members.map { .desk($0, grouped: true) } }
+        }
+        return items
+    }
+
+    /// How wide the list is, in this look.
+    var listWidth: CGFloat { theme == .midnight ? 470 : 368 }
 
     /// How long it takes to settle, in this look: Oyl's a plain ease, Midnight's a slow drift.
     var settleTime: Double { theme == .midnight ? 0.55 : 0.26 }
@@ -481,18 +661,107 @@ final class DesktopsModel: ObservableObject {
     var shuffle: Animation { theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 0.42) : .easeOut(duration: 0.18) }
 
     /// A row's height, in this look, with room for them all on the screen.
-    var rowHeight: CGFloat {
+    var rowHeight: CGFloat { rowHeight(for: items.count) }
+
+    func rowHeight(for count: Int) -> CGFloat {
         let usual: CGFloat = theme == .midnight ? 38 : 30
-        return min(usual, max(22, size.height * 0.62 / CGFloat(max(desks.count, 1))))
+        return min(usual, max(22, size.height * 0.62 / CGFloat(max(count, 1))))
     }
 
     // MARK: The keyboard
 
-    /// The next or last row picked (the one you're on, to begin with).
+    /// The next or last line picked (the one you're on, to begin with: its group's heading, if
+    /// it's folded away).
     func select(by step: Int) {
-        guard !desks.isEmpty else { return }
-        let at = desks.firstIndex { $0.id == selected } ?? desks.firstIndex(where: \.isCurrent) ?? 0
-        selected = desks[min(max(at + (selected == nil ? 0 : step), 0), desks.count - 1)].id
+        let ids = items.map(\.id)
+        guard !ids.isEmpty else { return }
+        let picked = selected.flatMap { ids.firstIndex(of: $0) }
+        let current = desks.first(where: \.isCurrent)
+        let at = picked ?? current.flatMap { desk in
+            ids.firstIndex(of: desk.id) ?? desk.group.flatMap { ids.firstIndex(of: Self.headingID($0)) }
+        } ?? 0
+        selected = ids[min(max(at + (picked == nil ? 0 : step), 0), ids.count - 1)]
+    }
+
+    /// The group picked (its heading, or a desktop in it), if one is.
+    var selectedGroup: Group? {
+        guard let selected else { return nil }
+        if let group = groups.first(where: { Self.headingID($0.id) == selected }) { return group }
+        return items.lazy.compactMap { item -> Group? in
+            guard case .desk(let desk, true) = item, desk.id == selected else { return nil }
+            return self.groups.first { $0.id == desk.group }
+        }.first
+    }
+
+    // MARK: Groups
+
+    /// A group folded away under its heading, or opened out. A desktop picked in it, the heading's
+    /// picked instead.
+    func fold(_ id: String, _ folding: Bool) {
+        guard let index = groups.firstIndex(where: { $0.id == id }), groups[index].folded != folding else { return }
+        if folding, let selected, desks.contains(where: { $0.id == selected && $0.group == id }) { self.selected = Self.headingID(id) }
+        groups[index].folded = folding
+        folded(id, folding)
+    }
+
+    /// What letting go of the one being dragged would do, where the pointer is now.
+    var dropping: Regroup? {
+        guard let dragging, let at = dragAt, let desk = desks.first(where: { $0.id == dragging }) else { return nil }
+        return Self.drop(desk, at: at, items: items, rowHeight: rowHeight, width: listWidth)
+    }
+
+    /// Let go at `point` (in the list): on a heading, into that group; on a desktop in a group, into
+    /// it too; on one on its own, a new group of the two; off the list, out of its group. Nothing
+    /// if it's let go on itself, or where it already is.
+    nonisolated static func drop(_ desk: Desk, at point: CGPoint, items: [Item], rowHeight: CGFloat, width: CGFloat) -> Regroup? {
+        let index = Int((point.y / max(rowHeight, 1)).rounded(.down))
+        let onList = point.x > -24 && point.x < width + 24 && items.indices.contains(index)
+        switch onList ? items[index] : nil {
+        case .heading(let group, _)?:
+            return desk.group == group.id ? nil : .into(desk: desk.id, group: group.id)
+        case .desk(let other, let grouped)?:
+            guard other.id != desk.id else { return nil }
+            if grouped, let group = other.group { return desk.group == group ? nil : .into(desk: desk.id, group: group) }
+            return .with(desk: desk.id, other: other.id)
+        case nil:
+            let isGrouped = items.contains { if case .heading(_, let members) = $0 { return members.contains { $0.id == desk.id } } else { return false } }
+            return isGrouped ? .out(desk: desk.id) : nil
+        }
+    }
+
+    /// The line letting go would put it with (lit while it's dragged over).
+    var dropTarget: String? {
+        switch dropping {
+        case .with(_, let other)?: return other
+        case .into(_, let group)?: return Self.headingID(group)
+        default: return nil
+        }
+    }
+
+    /// What letting go would do, said under the list while dragging (and how to group, before
+    /// there are any groups).
+    var dropHint: String? {
+        func named(_ id: String) -> String { groups.first { $0.id == id }?.name ?? "the group" }
+        guard let dragging else {
+            return groups.isEmpty || !desks.contains(where: { $0.group != nil }) ? "drag one onto another to group them" : nil
+        }
+        switch dropping {
+        case .with(_, let other)?: return "let go to group it with “\(desks.first { $0.id == other }?.name ?? "that one")”"
+        case .into(_, let group)?: return "let go to put it in “\(named(group))”"
+        case .out?:
+            let from = desks.first { $0.id == dragging }?.group.map(named) ?? "its group"
+            return "let go off the list to take it out of “\(from)”"
+        default: return desks.first(where: { $0.id == dragging })?.group == nil ? "onto another to group them" : "off the list to take it out"
+        }
+    }
+
+    /// Done dragging: what letting go there does, done.
+    func drop() {
+        let change = dropping
+        dragging = nil
+        dragShift = .zero
+        dragAt = nil
+        if let change { regroup(change) }
     }
 
     // MARK: Renaming
@@ -502,21 +771,38 @@ final class DesktopsModel: ObservableObject {
         renaming = desk.id
     }
 
-    /// Done typing: what's been typed kept (`keeping`), or not.
+    func startRenaming(group id: String) {
+        guard let group = groups.first(where: { $0.id == id }) else { return }
+        draft = group.name
+        renaming = Self.headingID(id)
+    }
+
+    /// Done typing: what's been typed kept (`keeping`), or not. A group's left as it was if
+    /// nothing's typed.
     func finishRenaming(keeping: Bool) {
         guard let id = renaming else { return }
         renaming = nil
-        if keeping, let desk = desks.first(where: { $0.id == id }), draft != desk.name { renamed(desk, draft) }
+        guard keeping else { return }
+        if let desk = desks.first(where: { $0.id == id }) {
+            if draft != desk.name { renamed(desk, draft) }
+        } else if let index = groups.firstIndex(where: { Self.headingID($0.id) == id }) {
+            let name = String(draft.trimmingCharacters(in: .whitespacesAndNewlines).prefix(SpaceNames.longest))
+            guard !name.isEmpty, name != groups[index].name else { return }
+            groups[index].name = name
+            renamedGroup(groups[index].id, name)
+        }
     }
 }
 
 /// The desktops, in a list. In Oyl's look it's a plain black card in the middle of the screen, a
 /// little way down, each row a name (the one you're on in bold, with a dot), the names of the apps
 /// on a desktop still called by its number, and their icons; a row pointed at is lit, with a pencil
-/// to rename it. In Midnight Oyl's the
+/// to rename it; a group's heading a small bold name after a chevron, its desktops in under it. In
+/// Midnight Oyl's the
 /// screen goes to night (stars twinkling over ink), and the list's set off to the left under its
 /// title in a flourish, the names in Superclarendon strung down a line of stars that bows out and
-/// back, the one you're on lit by a glint; they drift in one after another out of a blur.
+/// back, the one you're on lit by a glint; they drift in one after another out of a blur, and a
+/// group's heading is a little constellation, its desktops further along the line.
 struct DesktopsView: View {
     @ObservedObject var model: DesktopsModel
 
@@ -558,6 +844,7 @@ private struct PlainDesks: View {
         let shown = min(max(model.progress, 0), 1)
         VStack(alignment: .leading, spacing: 4) {
             DesktopsRows(model: model)
+            DesksHint(model: model)
         }
         .padding(6)
         .frame(width: Self.width, alignment: .leading)
@@ -592,6 +879,9 @@ private struct MidnightDesks: View {
             .blur(radius: (1 - shown) * 4)
             .animation(model.settle(), value: model.progress)
             DesktopsRows(model: model)
+            DesksHint(model: model)
+                .opacity(shown)
+                .animation(model.settle(delay: 0.2), value: model.progress)
         }
         .frame(width: 470, alignment: .leading)
         .padding(.leading, model.size.width * 0.19)
@@ -599,35 +889,98 @@ private struct MidnightDesks: View {
     }
 }
 
-/// The rows. In Midnight Oyl's they bow out to the right and back, down a line of stars.
-private struct DesktopsRows: View {
+/// Under the list: how to group them, before there are any groups; while one's dragged, what
+/// letting go would do.
+private struct DesksHint: View {
     @ObservedObject var model: DesktopsModel
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        let midnight = theme == .midnight, height = model.rowHeight, count = model.desks.count
+        let midnight = theme == .midnight, dragging = model.dragging != nil, said = model.dropHint != nil
+        ZStack(alignment: .leading) {
+            if let hint = model.dropHint {
+                Text(hint)
+                    .font(midnight ? Midnight.italic(12.5) : .system(size: 10.5))
+                    .foregroundStyle(midnight ? Midnight.silver.opacity(dragging ? 0.72 : 0.42) : .white.opacity(dragging ? 0.6 : 0.34))
+                    .lineLimit(1)
+                    .id(hint)
+                    .transition(midnight ? .modifier(active: FoldDrift(amount: 1), identity: FoldDrift(amount: 0)) : .opacity)
+            }
+        }
+        .frame(height: said ? (midnight ? 20 : 16) : 0, alignment: .leading)
+        .padding(.leading, midnight ? 44 : 10)
+        .animation(midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 0.35) : .easeOut(duration: 0.15), value: model.dropHint)
+        .allowsHitTesting(false)
+    }
+}
+
+/// The lines. In Midnight Oyl's they bow out to the right and back, down a line of stars; a
+/// group's desktops sit in under its heading.
+private struct DesktopsRows: View {
+    @ObservedObject var model: DesktopsModel
+    @Environment(\.notchTheme) private var theme
+    static let space = "desktops"
+
+    var body: some View {
+        let midnight = theme == .midnight, items = model.items, count = items.count, height = model.rowHeight(for: count)
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(model.desks.enumerated()), id: \.element.id) { index, desk in
-                DeskRow(model: model, desk: desk, height: height)
-                    .padding(.leading, midnight ? Self.bow(index, of: count) : 0)
+            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                let dragged = item.id == model.dragging
+                line(item, height: height)
+                    .padding(.leading, Self.inset(of: item, at: index, of: count, midnight: midnight))
                     .modifier(DeskDrift(model: model, index: index, count: count, on: midnight))
+                    .offset(dragged ? model.dragShift : .zero)
+                    .zIndex(dragged ? 1 : 0)
+                    .transition(midnight ? .modifier(active: FoldDrift(amount: 1), identity: FoldDrift(amount: 0)) : .opacity)
             }
         }
         .background(alignment: .topLeading) {
             if midnight {
-                DeskLine(points: (0..<count).map { CGPoint(x: Self.bow($0, of: count) + DeskRow.markerMiddle, y: (CGFloat($0) + 0.5) * height) })
-                    .trim(from: 0, to: min(max(model.progress, 0), 1))
-                    .stroke(Midnight.silver.opacity(0.2), style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
-                    .animation(model.settle(delay: 0.1), value: model.progress)
-                    .allowsHitTesting(false)
+                // (Not through the one being dragged: it's off with the pointer.)
+                DeskLine(points: items.enumerated().compactMap { index, item in
+                    item.id == model.dragging ? nil
+                        : CGPoint(x: Self.inset(of: item, at: index, of: count, midnight: true) + DeskRow.markerMiddle, y: (CGFloat(index) + 0.5) * height)
+                })
+                .trim(from: 0, to: min(max(model.progress, 0), 1))
+                .stroke(Midnight.silver.opacity(0.2), style: StrokeStyle(lineWidth: 0.7, lineCap: .round, lineJoin: .round))
+                .animation(model.settle(delay: 0.1), value: model.progress)
+                .allowsHitTesting(false)
             }
         }
+        .coordinateSpace(.named(Self.space))
+    }
+
+    @ViewBuilder private func line(_ item: DesktopsModel.Item, height: CGFloat) -> some View {
+        switch item {
+        case .heading(let group, let desks): DeskHeading(model: model, group: group, desks: desks, height: height)
+        case .desk(let desk, let grouped): DeskRow(model: model, desk: desk, grouped: grouped, height: height)
+        }
+    }
+
+    /// How far in a line sits: Midnight's bow, and a group's desktops in under its heading.
+    static func inset(of item: DesktopsModel.Item, at index: Int, of count: Int, midnight: Bool) -> CGFloat {
+        let grouped: Bool
+        if case .desk(_, true) = item { grouped = true } else { grouped = false }
+        return (midnight ? bow(index, of: count) : 0) + (grouped ? (midnight ? 24 : 16) : 0)
     }
 
     /// How far right the row at `index` sits, of `count`: furthest in the middle.
     static func bow(_ index: Int, of count: Int) -> CGFloat {
         guard count > 1 else { return 0 }
         return 30 * sin(.pi * (CGFloat(index) + 0.5) / CGFloat(count))
+    }
+}
+
+/// Midnight's lines folding away (or a hint giving way to the next): out of sight to the left,
+/// into a blur.
+private struct FoldDrift: ViewModifier {
+    let amount: Double
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(1 - amount)
+            .offset(x: -24 * amount)
+            .blur(radius: 4 * amount)
     }
 }
 
@@ -666,10 +1019,12 @@ private struct DeskLine: Shape {
     }
 }
 
-/// A desktop: its name, what's on it, and (pointed at) a way to rename it. Click it to go there.
+/// A desktop: its name, what's on it, and (pointed at) a way to rename it, or take it out of its
+/// group. Click it to go there; drag it onto another to group them.
 private struct DeskRow: View {
     @ObservedObject var model: DesktopsModel
     let desk: DesktopsModel.Desk
+    let grouped: Bool
     let height: CGFloat
     @FocusState private var typing: Bool
     @Environment(\.notchTheme) private var theme
@@ -679,7 +1034,10 @@ private struct DeskRow: View {
     static let mostIcons = 6
 
     private var renaming: Bool { model.renaming == desk.id }
-    private var lit: Bool { model.hovered == desk.id || model.selected == desk.id }
+    private var dragged: Bool { model.dragging == desk.id }
+    /// Being dragged onto: letting go puts them together.
+    private var target: Bool { model.dropTarget == desk.id }
+    private var lit: Bool { dragged || target || model.dragging == nil && (model.hovered == desk.id || model.selected == desk.id) }
 
     var body: some View {
         let midnight = theme == .midnight
@@ -689,11 +1047,16 @@ private struct DeskRow: View {
             if desk.namesApps, !renaming { appNames(midnight: midnight) }
             icons(midnight: midnight)
             Spacer(minLength: 8)
-            if lit, !renaming { renameButton(midnight: midnight) }
+            if lit, !renaming, model.dragging == nil {
+                if grouped { takeOutButton(midnight: midnight) }
+                renameButton(midnight: midnight)
+            }
         }
         .padding(.horizontal, midnight ? 6 : 10)
         .frame(height: height)
-        .background(highlight(midnight: midnight))
+        .background(DeskHighlight(lit: lit, target: target))
+        .scaleEffect(dragged ? (midnight ? 1.035 : 1.02) : 1, anchor: .leading)
+        .shadow(color: dragged ? (midnight ? Midnight.moonlight.opacity(0.25) : .black.opacity(0.4)) : .clear, radius: dragged ? 10 : 0)
         .contentShape(Rectangle())
         .onHover { inside in
             if inside {
@@ -703,10 +1066,28 @@ private struct DeskRow: View {
             }
         }
         .onTapGesture {
-            guard !renaming else { return }
+            guard !renaming, !model.justDragged else { return }
             model.pick(desk)
         }
+        .gesture(drag, including: renaming ? .subviews : .all)
         .animation(.easeOut(duration: 0.15), value: lit)
+    }
+
+    private var drag: some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .named(DesktopsRows.space))
+            .onChanged { value in
+                if model.dragging != desk.id {
+                    model.finishRenaming(keeping: true)
+                    model.dragging = desk.id
+                }
+                model.dragShift = value.translation
+                model.dragAt = value.location
+            }
+            .onEnded { _ in
+                withAnimation(model.shuffle) { model.drop() }
+                model.justDragged = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { model.justDragged = false }
+            }
     }
 
     // MARK: Pieces
@@ -737,20 +1118,7 @@ private struct DeskRow: View {
         let font = midnight ? Midnight.font(.heading, size: 18, weight: desk.isCurrent ? .bold : .regular)
             : .system(size: 13, weight: desk.isCurrent ? .semibold : .regular)
         if renaming {
-            TextField("", text: $model.draft)
-                .textFieldStyle(.plain)
-                .font(font)
-                .foregroundStyle(midnight ? Midnight.white : .white)
-                .focused($typing)
-                .onSubmit { model.finishRenaming(keeping: true) }
-                .onAppear { DispatchQueue.main.async { typing = true } }
-                .frame(width: midnight ? 240 : 200)
-                .padding(.horizontal, 5)
-                .padding(.vertical, 2)
-                .background(midnight ? AnyShapeStyle(LinearGradient(colors: [Midnight.moonlight.opacity(0.14), .clear],
-                                                                      startPoint: .leading, endPoint: .trailing))
-                                     : AnyShapeStyle(Color.white.opacity(0.12)),
-                            in: RoundedRectangle(cornerRadius: midnight ? 2 : 5, style: .continuous))
+            DeskNameField(model: model, font: font, typing: $typing)
         } else if midnight {
             Text(desk.name)
                 .font(font)
@@ -776,36 +1144,201 @@ private struct DeskRow: View {
     }
 
     private func icons(midnight: Bool) -> some View {
-        let side: CGFloat = midnight ? 17 : 16
-        return HStack(spacing: midnight ? 4 : 3) {
-            ForEach(desk.apps.prefix(Self.mostIcons)) { app in
+        DeskIcons(apps: desk.apps, lit: lit, most: Self.mostIcons)
+            .offset(x: midnight && lit ? 4 : 0)
+    }
+
+    private func renameButton(midnight: Bool) -> some View {
+        DeskAction(word: "rename", symbol: "pencil", help: "Rename") { model.startRenaming(desk) }
+    }
+
+    private func takeOutButton(midnight: Bool) -> some View {
+        DeskAction(word: "take out", symbol: "minus.circle", help: "Take out of the group") {
+            withAnimation(model.shuffle) { model.regroup(.out(desk: desk.id)) }
+        }
+    }
+}
+
+/// A group's heading: its name, and, folded, how many desktops are in it and their apps' icons;
+/// pointed at, a way to rename it or do away with it. Click it to fold the group away or open it
+/// out; drag a desktop onto it to put it in. In Oyl's look, a small bold name after a chevron
+/// that turns; in Midnight's, a little constellation and the name in italics, the desktops
+/// drifting away into a blur as it folds.
+private struct DeskHeading: View {
+    @ObservedObject var model: DesktopsModel
+    let group: DesktopsModel.Group
+    let desks: [DesktopsModel.Desk]
+    let height: CGFloat
+    @FocusState private var typing: Bool
+    @Environment(\.notchTheme) private var theme
+
+    private var id: String { DesktopsModel.headingID(group.id) }
+    private var renaming: Bool { model.renaming == id }
+    private var target: Bool { model.dropTarget == id }
+    private var lit: Bool { target || model.dragging == nil && (model.hovered == id || model.selected == id) }
+    /// The one you're on is in it, folded out of sight.
+    private var holdsCurrent: Bool { group.folded && desks.contains(where: \.isCurrent) }
+
+    var body: some View {
+        let midnight = theme == .midnight
+        HStack(spacing: midnight ? 10 : 7) {
+            marker(midnight: midnight)
+            name(midnight: midnight)
+            if group.folded, !renaming {
+                Text(midnight ? "· \(desks.count)" : "\(desks.count)")
+                    .font(midnight ? Midnight.italic(12.5) : .system(size: 10.5, weight: .medium))
+                    .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.38))
+                DeskIcons(apps: apps, lit: lit, most: DeskRow.mostIcons, small: true)
+                    .transition(.opacity)
+            }
+            Spacer(minLength: 8)
+            if lit, !renaming, model.dragging == nil {
+                DeskAction(word: "ungroup", symbol: "xmark", help: "Ungroup") {
+                    withAnimation(model.shuffle) { model.regroup(.ungroup(group: group.id)) }
+                }
+                DeskAction(word: "rename", symbol: "pencil", help: "Rename") { model.startRenaming(group: group.id) }
+            }
+        }
+        .padding(.horizontal, midnight ? 6 : 10)
+        .frame(height: height)
+        .background(DeskHighlight(lit: lit, target: target))
+        .contentShape(Rectangle())
+        .onHover { inside in
+            if inside {
+                model.hovered = id
+            } else if model.hovered == id {
+                model.hovered = nil
+            }
+        }
+        .onTapGesture {
+            guard !renaming, !model.justDragged else { return }
+            withAnimation(model.shuffle) { model.fold(group.id, !group.folded) }
+        }
+        .animation(.easeOut(duration: 0.15), value: lit)
+    }
+
+    /// Its desktops' apps, each once.
+    private var apps: [DesktopsModel.App] {
+        var seen = Set<pid_t>()
+        return desks.flatMap(\.apps).filter { seen.insert($0.id).inserted }
+    }
+
+    @ViewBuilder private func marker(midnight: Bool) -> some View {
+        if midnight {
+            DeskConstellation(gathered: group.folded, lit: lit, current: holdsCurrent)
+                .frame(width: 16, height: 16)
+        } else {
+            HStack(spacing: 4) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 5, height: 5)
+                    .opacity(holdsCurrent ? 0.9 : 0)
+                    .frame(width: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8.5, weight: .bold))
+                    .foregroundStyle(.white.opacity(lit ? 0.75 : 0.45))
+                    .rotationEffect(.degrees(group.folded ? 0 : 90))
+                    .frame(width: 10)
+            }
+        }
+    }
+
+    @ViewBuilder private func name(midnight: Bool) -> some View {
+        let font = midnight ? Midnight.italic(16) : .system(size: 11.5, weight: .semibold)
+        if renaming {
+            DeskNameField(model: model, font: font, typing: $typing)
+        } else if midnight {
+            Text(group.name)
+                .font(font)
+                .tracking(0.4)
+                .foregroundStyle((lit ? Midnight.white : Midnight.silver).opacity(lit ? 1 : 0.78))
+                .shadow(color: Midnight.moonlight.opacity(lit || holdsCurrent ? 0.4 : 0), radius: 6)
+                .offset(x: lit ? 4 : 0)
+                .lineLimit(1)
+        } else {
+            Text(group.name)
+                .font(font)
+                .tracking(0.3)
+                .foregroundStyle(.white.opacity(lit ? 0.92 : 0.62))
+                .lineLimit(1)
+        }
+    }
+}
+
+/// What a desktop or a group's renamed in: Return keeps it, Escape doesn't.
+private struct DeskNameField: View {
+    @ObservedObject var model: DesktopsModel
+    let font: Font
+    var typing: FocusState<Bool>.Binding
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        let midnight = theme == .midnight
+        TextField("", text: $model.draft)
+            .textFieldStyle(.plain)
+            .font(font)
+            .foregroundStyle(midnight ? Midnight.white : .white)
+            .focused(typing)
+            .onSubmit { model.finishRenaming(keeping: true) }
+            .onAppear { DispatchQueue.main.async { typing.wrappedValue = true } }
+            .frame(width: midnight ? 240 : 200)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .background(midnight ? AnyShapeStyle(LinearGradient(colors: [Midnight.moonlight.opacity(0.14), .clear],
+                                                                  startPoint: .leading, endPoint: .trailing))
+                                 : AnyShapeStyle(Color.white.opacity(0.12)),
+                        in: RoundedRectangle(cornerRadius: midnight ? 2 : 5, style: .continuous))
+    }
+}
+
+/// The icons of the apps on a desktop (or in a group), and how many more.
+private struct DeskIcons: View {
+    let apps: [DesktopsModel.App]
+    let lit: Bool
+    let most: Int
+    var small = false
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        let midnight = theme == .midnight
+        let side: CGFloat = (midnight ? 17 : 16) - (small ? 3 : 0)
+        HStack(spacing: midnight ? 4 : 3) {
+            ForEach(apps.prefix(most)) { app in
                 if let icon = app.icon {
                     Image(nsImage: icon)
                         .resizable()
                         .interpolation(.high)
                         .frame(width: side, height: side)
                         .saturation(midnight ? 0.55 : 1)
-                        .opacity(midnight ? (lit ? 0.95 : 0.72) : 1)
+                        .opacity(midnight ? (lit ? 0.95 : 0.72) : small ? 0.85 : 1)
                         .help(app.name)
                 }
             }
-            if desk.apps.count > Self.mostIcons {
-                Text("+\(desk.apps.count - Self.mostIcons)")
+            if apps.count > most {
+                Text("+\(apps.count - most)")
                     .font(midnight ? Midnight.italic(11) : .system(size: 10.5, weight: .medium))
                     .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.45))
             }
         }
-        .offset(x: midnight && lit ? 4 : 0)
     }
+}
 
-    private func renameButton(midnight: Bool) -> some View {
-        Button { model.startRenaming(desk) } label: {
-            if midnight {
-                Text("rename")
+/// A line's own action, shown while it's pointed at: a word in Midnight's italics, an icon in Oyl's.
+private struct DeskAction: View {
+    let word: String
+    let symbol: String
+    let help: String
+    let action: () -> Void
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            if theme == .midnight {
+                Text(word)
                     .font(Midnight.italic(12))
                     .foregroundStyle(Midnight.silver.opacity(0.6))
             } else {
-                Image(systemName: "pencil")
+                Image(systemName: symbol)
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(.white.opacity(0.55))
                     .frame(width: 20, height: 20)
@@ -813,21 +1346,63 @@ private struct DeskRow: View {
             }
         }
         .buttonStyle(.plain)
-        .help("Rename")
+        .help(help)
         .transition(.opacity)
     }
+}
 
-    @ViewBuilder private func highlight(midnight: Bool) -> some View {
-        if midnight {
-            // A wash of moonlight with no edge: fading in from the left, off to the right, and above and below.
-            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: Midnight.moonlight.opacity(lit ? 0.13 : 0), location: 0.08),
+/// A line lit: pointed at or picked, or (brighter) being dragged onto. In Midnight's, a wash of
+/// moonlight with no edge, fading in from the left, off to the right, and above and below.
+private struct DeskHighlight: View {
+    let lit: Bool
+    var target = false
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        if theme == .midnight {
+            LinearGradient(stops: [.init(color: .clear, location: 0),
+                                   .init(color: Midnight.moonlight.opacity(target ? 0.24 : lit ? 0.13 : 0), location: 0.08),
                                    .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
                 .mask(LinearGradient(colors: [.clear, .white, .clear], startPoint: .top, endPoint: .bottom))
                 .padding(.vertical, -4)
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(lit ? 0.09 : 0))
+                .fill(.white.opacity(target ? 0.17 : lit ? 0.09 : 0))
         }
+    }
+}
+
+/// Midnight's mark for a group: three stars, a little constellation, drawn in close as it folds
+/// (and twinkling, folded, when the one you're on is in it).
+private struct DeskConstellation: View {
+    let gathered: Bool
+    let lit: Bool
+    let current: Bool
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 20, paused: !current)) { timeline in
+            let twinkle = current ? 0.5 + 0.5 * sin(timeline.date.timeIntervalSinceReferenceDate * 1.7) : 0
+            let spread: CGFloat = gathered ? 0.7 : 1
+            let stars: [(CGPoint, CGFloat)] = [(CGPoint(x: -4.5, y: -3.5), 5.5), (CGPoint(x: 4.5, y: -1), 4.5), (CGPoint(x: -0.5, y: 5), 4)]
+            ZStack {
+                Path { path in
+                    path.move(to: CGPoint(x: 8 + stars[0].0.x * spread, y: 8 + stars[0].0.y * spread))
+                    for star in stars.dropFirst() { path.addLine(to: CGPoint(x: 8 + star.0.x * spread, y: 8 + star.0.y * spread)) }
+                }
+                .stroke(Midnight.silver.opacity(lit ? 0.45 : 0.25), lineWidth: 0.6)
+                ForEach(0..<stars.count, id: \.self) { index in
+                    FourPointStar()
+                        .fill(Midnight.starlight)
+                        .frame(width: stars[index].1 * (1 + 0.35 * twinkle), height: stars[index].1 * (1 + 0.35 * twinkle))
+                        .offset(x: stars[index].0.x * spread, y: stars[index].0.y * spread)
+                        .opacity(lit || current ? 0.95 : 0.6)
+                }
+            }
+            .frame(width: 16, height: 16)
+            .shadow(color: Midnight.moonlight.opacity(current ? 0.5 : 0), radius: 4)
+            .animation(.timingCurve(0.45, 0, 0.25, 1, duration: 0.42), value: gathered)
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -955,6 +1530,9 @@ final class DesktopsViewer {
         model.dismiss = { [weak self] in self?.close() }
         model.pick = { [weak self] desk in self?.close(goingTo: desk) }
         model.renamed = { [weak self] desk, name in self?.rename(desk, to: name) }
+        model.renamedGroup = { id, name in SpaceGroups().rename(id, to: name) }
+        model.folded = { id, folded in SpaceGroups().fold(id, folded) }
+        model.regroup = { [weak self] change in self?.regroup(change) }
     }
 
     /// Watching for the Mac waking, the screens changing, and Spaces changing while it's up.
@@ -990,6 +1568,7 @@ final class DesktopsViewer {
     /// Up, as four fingers up bring it (settling at once, on the look's own ease); or, up already,
     /// away. Right Shift twice.
     func toggle() {
+        putAwayIfUnseen()
         if isUp, hiding == nil {
             close()
             return
@@ -1018,6 +1597,7 @@ final class DesktopsViewer {
     private func swiped(_ swipe: DesktopSwipe) {
         switch swipe {
         case .began(let up):
+            if up { putAwayIfUnseen() }
             if up, !isUp || hiding != nil, isAllowed(), !MissionControlSwipe.isTheSystems() {
                 following = true
                 if !isUp { show() } else { cancelHiding() }
@@ -1045,6 +1625,17 @@ final class DesktopsViewer {
             settle(open: !up)
         }
     }
+
+    /// Up, as far as it knows, but not to be seen (put away by something else meanwhile): taken
+    /// as away, so four fingers up (which it leaves alone while it's up) and right Shift twice
+    /// bring it up again rather than doing nothing.
+    private func putAwayIfUnseen() {
+        guard isUp, hiding == nil, following == nil, !(panel.isVisible && panel.isOnActiveSpace) else { return }
+        Self.log.notice("The desktops' list was up but not to be seen: put away")
+        hide()
+    }
+
+    private static let log = Logger(subsystem: "local.nott", category: "desktops")
 
     private func settle(open: Bool) {
         model.interactive = false
@@ -1126,6 +1717,9 @@ final class DesktopsViewer {
         isUp = false
         model.progress = 0
         model.renaming = nil
+        model.dragging = nil
+        model.dragAt = nil
+        model.dragShift = .zero
     }
 
     /// The Spaces, then what's on each.
@@ -1153,10 +1747,48 @@ final class DesktopsViewer {
         current = all.current
         let names = SpaceNames()
         let before = Dictionary(model.desks.map { ($0.id, $0.apps) }, uniquingKeysWith: { first, _ in first })
+        let groups = SpaceGroups().all
+        model.groups = groups.map { DesktopsModel.Group(id: $0.id, name: $0.name, folded: $0.folded) }
         model.desks = all.spaces.enumerated().map { index, space in
             DesktopsModel.Desk(id: space.key, name: names.name(of: space), standard: space.standard, isFullscreen: space.isFullscreen,
-                               isCurrent: index == all.current, apps: before[space.key] ?? [])
+                               isCurrent: index == all.current, apps: before[space.key] ?? [],
+                               group: SpaceGroups.group(of: space, in: groups)?.id)
         }
+    }
+
+    /// The groups as they're kept, shown again (the desktops as they were read).
+    private func showGroups() {
+        let groups = SpaceGroups().all
+        let byKey = Dictionary(spaces.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
+        model.groups = groups.map { DesktopsModel.Group(id: $0.id, name: $0.name, folded: $0.folded) }
+        model.desks = model.desks.map { desk in
+            var desk = desk
+            desk.group = byKey[desk.id].flatMap { SpaceGroups.group(of: $0, in: groups)?.id }
+            return desk
+        }
+    }
+
+    /// A desktop let go of in a group, a new one, or out of one; or a group done away with. A new
+    /// group's named straight away.
+    private func regroup(_ change: DesktopsModel.Regroup) {
+        let store = SpaceGroups()
+        func find(_ id: String) -> CurrentSpace? { spaces.first { $0.key == id } }
+        var made: String?
+        switch change {
+        case .with(let desk, let other):
+            guard let space = find(desk), let other = find(other) else { return }
+            made = store.make(space, with: other)
+        case .into(let desk, let group):
+            guard let space = find(desk) else { return }
+            store.put(space, in: group)
+        case .out(let desk):
+            guard let space = find(desk) else { return }
+            store.takeOut(space)
+        case .ungroup(let group):
+            store.ungroup(group)
+        }
+        withAnimation(model.shuffle) { showGroups() }
+        if let made { model.startRenaming(group: made) }
     }
 
     /// Each desktop's apps, by the Spaces' numbers: a fullscreen app's own first.
@@ -1185,15 +1817,23 @@ final class DesktopsViewer {
 
     // MARK: The keyboard
 
-    /// ↑ and ↓ pick a row, Return goes to it.
+    /// ↑ and ↓ pick a line, Return goes to it (or folds or opens out a group); ← folds the group
+    /// picked, → opens it out.
     private func pressed(_ event: NSEvent) -> Bool {
-        guard model.renaming == nil else { return false }
+        guard model.renaming == nil, model.dragging == nil else { return false }
         switch event.keyCode {
         case 126:
             withAnimation(model.shuffle) { model.select(by: -1) }
         case 125:
             withAnimation(model.shuffle) { model.select(by: 1) }
+        case 123, 124:
+            guard let group = model.selectedGroup else { return false }
+            withAnimation(model.shuffle) { model.fold(group.id, event.keyCode == 123) }
         case 36, 76:
+            if let group = model.groups.first(where: { DesktopsModel.headingID($0.id) == model.selected }) {
+                withAnimation(model.shuffle) { model.fold(group.id, !group.folded) }
+                return true
+            }
             guard let desk = model.desks.first(where: { $0.id == model.selected }) else { close(); return true }
             close(goingTo: desk)
         default:
