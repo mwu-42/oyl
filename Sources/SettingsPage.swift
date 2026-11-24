@@ -134,6 +134,7 @@ struct SettingsPage: View {
             }
             items += [
                 feature(.spaceLabel, "Desktop's name", "Top left of the bar: the desktop you're on. Click it to rename it"),
+                feature(.claudeLimit, "Claude's 5 hours", "On the closed notch: how much of Claude's 5-hour limit window is used, as Claude Code's /usage says, read every few minutes"),
                 feature(.agentOyls, "Agents' \(oyl)s", "One for each agent at work"),
                 feature(.musicOyl, "Music \(oyl)", "Dancing (or reading) to what's playing"),
                 feature(.timerOyls, "Timers' \(oyl)s", "One for each timer and reminder"),

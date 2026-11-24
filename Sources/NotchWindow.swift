@@ -127,21 +127,26 @@ struct CompactLayout {
     let dictating: Bool
     /// The timer held on the notch, while nothing's being dictated.
     let focus: ReminderTimer?
+    /// How much of Claude's 5-hour window is used, while there's nothing else on the notch.
+    let limit: ClaudeLimit.Reading?
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil) {
+    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil, limit: ClaudeLimit.Reading? = nil) {
         self.dictating = dictating
         self.focus = dictating ? nil : focus
+        self.limit = dictating || focus != nil ? nil : limit
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    var isEmpty: Bool { !dictating && focus == nil }
+    var isEmpty: Bool { !dictating && focus == nil && limit == nil }
 
-    /// How far it reaches either side of the notch: for a timer, room for its name and its time.
-    var wing: CGFloat { focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
+    /// How far it reaches either side of the notch: for a timer, room for its name and its time;
+    /// for Claude's window, its gauge and its figure.
+    var wing: CGFloat { focus != nil ? Self.timerWing : limit != nil ? Self.limitWing : inset + (isEmpty ? 0 : art) + 10 }
     static let timerWing: CGFloat = 70
+    static let limitWing: CGFloat = 42
 }
 
 @MainActor
@@ -412,8 +417,12 @@ final class NotchState: ObservableObject {
 
     var compact: CompactLayout {
         CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
-                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil)
+                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil,
+                      limit: Feature.claudeLimit.isOn ? claudeLimit.flatMap { $0.isCurrent(at: Date()) ? $0 : nil } : nil)
     }
+
+    /// How much of Claude's 5-hour window is used, as last read (see `ClaudeLimit`).
+    @Published var claudeLimit: ClaudeLimit.Reading?
 
     /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
     /// each timer and reminder, staying awake, a low battery, a late night, a selfie; or with
@@ -715,6 +724,22 @@ final class NotchController {
         walkers.setShown(state.oylsVisible)
         walkers.dimsBar = state.dimsMenuBar
         walkers.showsCountdowns = state.showsCountdowns
+        // Claude's 5-hour window on the closed notch, as it's read; read again soon once a Claude
+        // that was working is done.
+        ClaudeLimit.shared.$reading
+            .removeDuplicates()
+            .sink { [weak self] reading in
+                MainActor.assumeIsolated { self?.state.claudeLimit = reading }
+            }
+            .store(in: &cancellables)
+        agents.$sessions
+            .map { $0.filter { $0.isClaude && $0.activity.priority > 1 }.count }
+            .removeDuplicates()
+            .scan((0, 0)) { ($0.1, $1) }
+            .sink { counts in
+                MainActor.assumeIsolated { if counts.1 < counts.0 { ClaudeLimit.shared.nudge() } }
+            }
+            .store(in: &cancellables)
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
@@ -1025,6 +1050,7 @@ final class NotchController {
             close()
         }
         walkers.isResting = resting
+        ClaudeLimit.shared.isResting = resting
         desktops?.isResting = resting
         gestures.isSuspended = resting
         state.nowPlaying.resting = resting

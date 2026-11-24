@@ -47,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = NotchController(nowPlaying: NowPlaying(), timers: TimerStore(), awake: awake,
                                      agents: AgentMonitor())
         MorningStart.shared.start()
+        ClaudeLimit.shared.start()
 
         // `kill`/`pkill` skip applicationWillTerminate; route them through it so a keep-awake
         // session never outlives the app (lid sleep especially). It carries on if Oyl's back soon.

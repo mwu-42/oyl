@@ -152,6 +152,8 @@ struct CompactNotch: View {
     var body: some View {
         if let timer = layout.focus.flatMap({ focus in timers.timers.first { $0.id == focus.id } }) {
             HeldTimer(timer: timer, size: size, notchWidth: notchWidth)
+        } else if let limit = layout.limit {
+            LimitWing(reading: limit, size: size, notchWidth: notchWidth)
         } else {
             dictating
         }
@@ -214,6 +216,85 @@ struct HeldTimer: View {
             .frame(width: size.width, height: size.height)
         }
         .help("\(timer.title), held on the notch")
+    }
+}
+
+/// How much of Claude's 5-hour limit window is used, on the closed notch (see `ClaudeLimit`): a
+/// gauge on the left and the figure on the right. In Oyl's look, a ring filling up, white till
+/// 80%, then amber, and coral past 95%. In Midnight Oyl's, a moon waxing as the window fills, a
+/// crescent to full, its glow rising with it, the figure in the notch's Victorian face; it waxes
+/// (and the figure rolls) as a new reading comes.
+struct LimitWing: View {
+    let reading: ClaudeLimit.Reading
+    let size: CGSize
+    let notchWidth: CGFloat
+    @Environment(\.notchTheme) private var theme
+
+    private var fraction: Double { min(max(Double(reading.percent) / 100, 0), 1) }
+
+    /// White, amber past 80%, coral past 95% (paler in Midnight's, as its colors are).
+    static func tint(_ percent: Int, theme: NotchTheme) -> Color {
+        let color = percent >= 95 ? Color(red: 1, green: 0.48, blue: 0.42) : percent >= 80 ? Color(red: 1, green: 0.76, blue: 0.36) : .white
+        return theme.tint(color)
+    }
+
+    var body: some View {
+        let midnight = theme == .midnight, tint = Self.tint(reading.percent, theme: theme)
+        HStack(spacing: 0) {
+            Group {
+                if midnight {
+                    WaxingMoon(fraction: fraction)
+                        .fill(Midnight.silver.opacity(0.92))
+                        .background(Circle().strokeBorder(Midnight.silver.opacity(0.28), lineWidth: 0.75))
+                        .shadow(color: Midnight.moonlight.opacity(0.15 + 0.45 * fraction), radius: 2 + 3 * fraction)
+                        .frame(width: 13, height: 13)
+                } else {
+                    TimerRing(fraction: fraction, lineWidth: 2, color: tint)
+                        .frame(width: 14, height: 14)
+                }
+            }
+            .frame(width: CompactLayout.limitWing - 12, alignment: .leading)
+            Spacer(minLength: notchWidth)
+            Text("\(reading.percent)%")
+                .notchFont(size: midnight ? 12.5 : 12, weight: .semibold, design: .rounded, digits: true)
+                .foregroundStyle(midnight && reading.percent < 80 ? Midnight.white.opacity(0.9) : tint)
+                .lineLimit(1)
+                .contentTransition(.numericText(value: Double(reading.percent)))
+                .frame(width: CompactLayout.limitWing - 8, alignment: .trailing)
+        }
+        .padding(.horizontal, 6)
+        .frame(width: size.width, height: size.height)
+        .animation(midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 1.2) : .easeOut(duration: 0.3), value: reading.percent)
+        .help(ClaudeLimit.describe(reading))
+    }
+}
+
+/// The lit part of a moon `fraction` of the way to full, lit from the right: a crescent to a
+/// half to full, its edge (where light meets dark) an ellipse's half.
+struct WaxingMoon: Shape {
+    var fraction: Double
+
+    var animatableData: Double {
+        get { fraction }
+        set { fraction = newValue }
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let f = min(max(fraction, 0), 1)
+        let r = min(rect.width, rect.height) / 2, c = CGPoint(x: rect.midX, y: rect.midY)
+        var path = Path()
+        guard f > 0.005 else { return path }
+        // The lit right half, top to bottom; then back up along the edge, bulging right (a
+        // crescent) before half, left (gibbous) after.
+        path.addArc(center: c, radius: r, startAngle: .degrees(-90), endAngle: .degrees(90), clockwise: false)
+        let edge = r * CGFloat(abs(1 - 2 * f)), side: CGFloat = f < 0.5 ? 1 : -1
+        let steps = 24
+        for step in 0...steps {
+            let angle = Double.pi / 2 - Double.pi * Double(step) / Double(steps)
+            path.addLine(to: CGPoint(x: c.x + side * edge * CGFloat(cos(angle)), y: c.y + r * CGFloat(sin(angle))))
+        }
+        path.closeSubpath()
+        return path
     }
 }
 

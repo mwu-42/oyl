@@ -61,6 +61,8 @@ enum Feature: String, CaseIterable, Sendable {
     case desktopsKey
 
     case openAtLogin
+    /// How much of Claude's 5-hour window is used, on the closed notch (see `ClaudeLimit`).
+    case claudeLimit
     /// Claude's 5-hour window started early, with a prompt each morning (see `MorningStart`).
     case morningClaude
 

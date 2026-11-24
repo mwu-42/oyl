@@ -7,7 +7,7 @@ import os
 /// window starts then and resets five hours on, sooner in the day than if it began with your first
 /// real prompt. Haiku answers it, so it takes as little of the limit as anything can. It runs in a
 /// folder of Oyl's own with no tools, no MCP servers, no hooks and nothing saved, so it isn't a
-/// session anywhere (nor an agent Oyl). On the Agents settings, off to begin with; ‹ and › move
+/// session anywhere (nor an agent Oyl): see `ClaudeCode`. On the Agents settings, off to begin with; ‹ and › move
 /// the time a quarter of an hour.
 ///
 /// The Mac has to be awake for it: missed while it sleeps (or before Oyl's open), it's sent when it
@@ -158,9 +158,8 @@ final class MorningStart: ObservableObject {
         if tried.map({ $0 < Self.moment(on: now, minutes: minutes) }) ?? true { triedToday = 0 }
         triedToday += 1
         defaults.set(now, forKey: Self.triedKey)
-        let folder = Self.folder()
         DispatchQueue.global(qos: .utility).async {
-            let result = Self.ask(in: folder)
+            let result = Self.ask()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self.finished(result) }
             }
@@ -193,63 +192,23 @@ final class MorningStart: ObservableObject {
         let said: String
     }
 
-    /// Where Claude Code's command is: linked into ~/.local/bin by its installer, or Homebrew's.
-    nonisolated static func tool(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL? {
-        let places = [home.appendingPathComponent(".local/bin/claude").path, "/opt/homebrew/bin/claude", "/usr/local/bin/claude",
-                      home.appendingPathComponent(".claude/local/claude").path]
-        return places.first { FileManager.default.isExecutableFile(atPath: $0) }.map { URL(fileURLWithPath: $0) }
-    }
-
-    /// Oyl's own folder for it, with nothing in it for Claude Code to read.
-    nonisolated static func folder(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
-        let folder = home.appendingPathComponent("Library/Application Support/nott/morning", isDirectory: true)
-        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder
-    }
-
-    /// What it's run with: print mode, Haiku, no tools, no MCP servers, no hooks, nothing saved.
-    nonisolated static let arguments = ["-p", prompt, "--model", "haiku", "--tools", "", "--strict-mcp-config",
-                                        "--settings", #"{"disableAllHooks":true}"#, "--no-session-persistence"]
+    /// What it's run with (see `ClaudeCode.arguments`).
+    nonisolated static let arguments = ClaudeCode.arguments(prompt)
 
     /// The prompt sent, and answered (or why not), off the main thread.
-    nonisolated static func ask(in folder: URL, tool: URL? = tool(), patience: TimeInterval = patience) -> Result<Void, Failure> {
-        guard let tool else { return .failure(Failure(said: "Claude Code's command isn't installed")) }
-        let process = Process()
-        process.executableURL = tool
-        process.arguments = arguments
-        process.currentDirectoryURL = folder
-        var environment = ProcessInfo.processInfo.environment
-        environment["NO_COLOR"] = "1"
-        process.environment = environment
-        let output = Pipe(), errors = Pipe()
-        process.standardOutput = output
-        process.standardError = errors
-        process.standardInput = FileHandle.nullDevice
-        do {
-            try process.run()
-        } catch {
-            return .failure(Failure(said: "Claude Code couldn't be run"))
+    nonisolated static func ask(in folder: URL = ClaudeCode.folder(), tool: URL? = ClaudeCode.tool(),
+                                patience: TimeInterval = patience) -> Result<Void, Failure> {
+        switch ClaudeCode.run(prompt, in: folder, tool: tool, patience: patience) {
+        case .failure(.missing): return .failure(Failure(said: "Claude Code's command isn't installed"))
+        case .failure(.unstartable): return .failure(Failure(said: "Claude Code couldn't be run"))
+        case .failure(.tooLong): return .failure(Failure(said: "it took too long"))
+        case .success(let output):
+            guard output.status == 0 else {
+                let why = (output.wrong.isEmpty ? output.said : output.wrong)
+                    .split(whereSeparator: \.isNewline).first.map { String($0.prefix(120)) } ?? ""
+                return .failure(Failure(said: why.isEmpty ? "Claude Code said no" : why))
+            }
+            return .success(())
         }
-        let watchdog = DispatchWorkItem { if process.isRunning { process.terminate() } }
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + patience, execute: watchdog)
-        final class Said: @unchecked Sendable { var data = Data() }
-        let said = Said()
-        let reading = DispatchGroup()
-        reading.enter()
-        DispatchQueue.global(qos: .utility).async {
-            said.data = errors.fileHandleForReading.readDataToEndOfFile()
-            reading.leave()
-        }
-        let answer = output.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        reading.wait()
-        watchdog.cancel()
-        guard process.terminationReason == .exit else { return .failure(Failure(said: "it took too long")) }
-        guard process.terminationStatus == 0 else {
-            let why = String(decoding: said.data.isEmpty ? answer : said.data, as: UTF8.self)
-                .split(whereSeparator: \.isNewline).first.map { String($0.prefix(120)) } ?? "Claude Code said no"
-            return .failure(Failure(said: why.isEmpty ? "Claude Code said no" : why))
-        }
-        return .success(())
     }
 }
