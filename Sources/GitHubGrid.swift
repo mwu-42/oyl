@@ -266,6 +266,9 @@ struct GitHubRow: View {
         ContributionsRow(grid: github.grid, trouble: github.trouble, reading: github.isReading)
             .onAppear { github.start() }
             .onDisappear { github.stop() }
+            // Right-click: it hidden (the page is shorter by it).
+            .contentShape(Rectangle())
+            .settingsMenu(.notch) { FeatureToggle(.githubGrid, "GitHub's grid") }
     }
 }
 

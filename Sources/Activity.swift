@@ -506,6 +506,13 @@ struct ClaudeWindowRow: View {
         .frame(height: 16)
         .animation(theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 1.2) : .easeOut(duration: 0.3), value: reading?.percent)
         .help(reading.map(ClaudeLimit.describe) ?? "Claude's 5-hour limit window, as Claude Code's /usage says")
+        // Right-click: where else it shows, and starting it early.
+        .contentShape(Rectangle())
+        .settingsMenu(.notch) {
+            FeatureToggle(.claudeLimitBar, "On the bar, beside the notch (what's left)")
+            FeatureToggle(.morningClaude, "Started early each morning, at \(MorningStart.shared.time)")
+            FeatureToggle(.claudeLimit, "Here, on the stats page")
+        }
     }
 
 }

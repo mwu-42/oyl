@@ -66,6 +66,11 @@ struct NotchView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // The pages both looks share set their type and accents by it.
         .environment(\.notchTheme, state.theme)
+        // A right-click's Settings… opens the settings page on its section.
+        .environment(\.openSettings, { [state] section in
+            state.settingsSection = section
+            state.page = .settings
+        })
     }
 
     /// Oyl's own notch: black, flared into the menu bar at the top, rounded at the bottom.
@@ -326,25 +331,66 @@ struct ExpandedNotch: View {
                     switch state.page {
                     case .music:
                         MusicPage(nowPlaying: nowPlaying, state: state, hands: gestures)
+                            .settingsMenu(.notch) {
+                                Toggle("Lyrics", isOn: $state.showsLyrics)
+                                Toggle("Lyrics on the bar", isOn: Binding { state.showsLyricsClosed } set: { on in
+                                    state.showsLyricsClosed = on
+                                    // On the bar, they need the lyrics on to show at all.
+                                    if on { state.showsLyrics = true }
+                                })
+                                FeatureToggle(.visualizer, "Visualizer")
+                                FeatureToggle(.songTitleOpensPlayer, "Song name opens its player")
+                                FeatureToggle(.musicOyl, "Music Oyl on the bar")
+                            }
                             .transition(NotchView.swap)
                     case .timers:
                         TimersPage(timers: timers, state: state)
+                            .settingsMenu(.oyls) {
+                                FeatureToggle(.timerOyls, "Timer Oyls on the bar")
+                                Toggle("Countdowns over them", isOn: $state.showsCountdowns)
+                            }
                             .transition(NotchView.swap)
                     case .ideas:
                         IdeasPage(tod: state.tod, state: state)
+                            .settingsMenu(.notch) {
+                                if TodStore.hasToyl { FeatureToggle(.useToyl, "toyl in Oyl") }
+                                FeatureToggle(.inboxPage, "Inbox page")
+                            }
                             .transition(NotchView.swap)
                     case .inbox:
                         InboxPage(tod: state.tod, state: state)
+                            .settingsMenu(.notch) {
+                                if TodStore.hasToyl { FeatureToggle(.useToyl, "toyl in Oyl") }
+                                FeatureToggle(.ideasPage, "Ideas page")
+                            }
                             .transition(NotchView.swap)
                     case .awake:
                         AwakePage(awake: awake, state: state)
+                            .settingsMenu(.oyls) {
+                                FeatureToggle(.awakeOyl, "Awake Oyl on the bar")
+                                FeatureToggle(.batteryOyl, "Battery Oyl, when it's low")
+                            }
                             .transition(NotchView.swap)
                     case .agents:
                         OylsPage(state: state, nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
                                  bedtime: bedtime)
+                            .settingsMenu(.agents) {
+                                FeatureToggle(.claudeCode, "Claude Code")
+                                FeatureToggle(.claudeChats, "Claude app chats")
+                                FeatureToggle(.cowork, "Cowork tasks")
+                                FeatureToggle(.agentOyls, "Agent Oyls on the bar")
+                                Divider()
+                                FeatureToggle(.agentSounds, "🔔 Sound when Claude's done")
+                                FeatureToggle(.morningClaude, "☀ Claude's window started each morning")
+                            }
                             .transition(NotchView.swap)
                     case .activity:
                         ActivityPage(stats: stats)
+                            .settingsMenu(.notch) {
+                                FeatureToggle(.claudeLimit, "Claude's 5 hours here")
+                                FeatureToggle(.claudeLimitBar, "5 hours on the bar")
+                                FeatureToggle(.githubGrid, "GitHub's grid")
+                            }
                             .transition(NotchView.swap)
                     case .mirror:
                         MirrorPage(gestures: gestures)
@@ -420,12 +466,28 @@ struct PageTabs: View {
                 .contentShape(Capsule())
         }
         .buttonStyle(PressableStyle())
+        .modifier(TabMenu(target: target))
     }
 
     private func selection(_ target: NotchPage) -> Color {
         guard page == target else { return .clear }
         if theme == .midnight { return Midnight.silver.opacity(0.14) }
         return .white.opacity(target == .agents ? 0.25 : 0.9)
+    }
+}
+
+/// A tab's right-click: its page hidden (its tab with it; Settings brings it back).
+private struct TabMenu: ViewModifier {
+    let target: NotchPage
+
+    func body(content: Content) -> some View {
+        if let feature = PageMenu.feature(of: target) {
+            content.settingsMenu(.notch) {
+                Button("Hide the \(PageMenu.name(of: target)) page") { Features.shared.set(feature, false) }
+            }
+        } else {
+            content
+        }
     }
 }
 
