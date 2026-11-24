@@ -5,20 +5,22 @@ extension TodStore {
     /// The inbox's open tasks, in its order: the newest at the top.
     var inbox: [Task] { tasks.filter { $0.listId == "inbox" && !$0.done } }
 
-    /// A task put into the inbox, and its id; nil if there's nothing to add, or no list. With toyl,
+    /// A task put into the inbox (its id); nil if there's nothing to add, or no list. With toyl,
     /// through toyl's own quick add (`toyl add`), so it's read just as toyl reads it ("essay fri
-    /// 5pm", "#cs" for a list, "~30m", " // a note"); else (or if toyl's command isn't there or
-    /// fails) as `TodQuick` reads it, into tod's inbox (or the list its #tag names).
+    /// 5pm", "#cs" for a list, "~30m", " // a note"), a slash word first making something else
+    /// ("/list groceries", "/timer 25m"), or toyl saying no to it ("/list" with no name); else (or
+    /// if toyl's command isn't there or broke) as `TodQuick` reads it, into tod's inbox (or the list
+    /// its #tag names), a slash word and all.
     @discardableResult
-    func addToInbox(_ text: String) -> String? {
+    func addToInbox(_ text: String) -> ToylCommand.Added? {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return nil }
-        if let folder = toylFolder, let id = ToylCommand.add(text, in: folder) {
-            // Seen at once, at the top of the list under the field.
-            readNow()
-            return id
+        if let folder = toylFolder, let added = ToylCommand.add(text, in: folder) {
+            // Seen at once: a task at the top of the list under the field, a timer on the notch.
+            if case .refused = added {} else { readNow() }
+            return added
         }
-        return add(text)?.id
+        return add(text).map { .task($0.id) }
     }
 }
 
@@ -44,6 +46,16 @@ struct InboxLayout: View {
     let listHeight: CGFloat
     let resign: () -> Void
     @Environment(\.notchTheme) private var theme
+    /// What the last line came to, said under the field for a moment: something a slash word made
+    /// ("Made the list “groceries”"), or toyl's no.
+    @StateObject private var said = LocalState<Said?>(nil)
+
+    /// What's said, and whether it's toyl's no.
+    struct Said: Equatable {
+        let text: String
+        let no: Bool
+        let at: Date
+    }
 
     /// With nothing in it, room for the hint.
     static func height(rows: Int) -> CGFloat { rows == 0 ? 30 : CGFloat(rows) * Layout.ideaRowHeight }
@@ -53,11 +65,18 @@ struct InboxLayout: View {
             let tasks = tod.inbox
             VStack(alignment: .leading, spacing: 10) {
                 field
+                if let said = said.value {
+                    hint(said.text)
+                        .foregroundStyle(.white.opacity(said.no ? 0.75 : 0.55))
+                        .transition(.opacity)
+                }
                 if !tod.isAvailable {
                     hint(tod.source == .toyl ? "toyl's list can't be read just now. It's back as soon as it can be."
                          : "Oyl adds to toyl's inbox, or tod's. Install one, and its inbox is here.")
                 } else if tasks.isEmpty {
-                    hint("Nothing in the inbox. Type a task and Return: “essay fri 5pm”, or “#cs” to put it in a list.")
+                    hint(tod.source == .toyl
+                         ? "Nothing in the inbox. Type a task and Return: “essay fri 5pm”, “#cs” to put it in a list, or “/list groceries” to make one."
+                         : "Nothing in the inbox. Type a task and Return: “essay fri 5pm”, or “#cs” to put it in a list.")
                 } else if Self.height(rows: tasks.count) <= listHeight + 0.5 {
                     list(tasks, now: context.date)
                 } else {
@@ -68,6 +87,7 @@ struct InboxLayout: View {
             .padding(.horizontal, 24)
             .padding(.top, 6)
             .animation(NotchView.open, value: tasks.map(\.id))
+            .animation(.easeOut(duration: 0.2), value: said.value)
         }
     }
 
@@ -109,13 +129,34 @@ struct InboxLayout: View {
     private func submit() {
         let text = draft.value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        guard tod.addToInbox(text) != nil else {
+        guard let added = tod.addToInbox(text) else {
+            NSSound.beep()
+            return
+        }
+        say(added)
+        // toyl's no: the line's kept, to be put right.
+        if case .refused = added {
             NSSound.beep()
             return
         }
         Haptics.perform(.alignment)
         // Kept open for the next one: tasks come in runs.
         draft.value = ""
+    }
+
+    /// What it came to, under the field for a few seconds (a task says nothing: it's in the list).
+    private func say(_ added: ToylCommand.Added) {
+        guard let text = added.said else {
+            said.value = nil
+            return
+        }
+        var no = false
+        if case .refused = added { no = true }
+        let shown = Said(text: text, no: no, at: Date())
+        said.value = shown
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [said] in
+            if said.value == shown { said.value = nil }
+        }
     }
 
     private func cancel() {

@@ -25,11 +25,13 @@ struct IdeaQuick: Equatable {
     let due: String?      // "YYYY-MM-DD", a deadline
     let time: String?     // "HH:MM"
     let target: String?   // "YYYY-MM-DD", an aim
+    /// "HH:MM", said with the aim ("by fri 5pm"): for toyl, which takes an aim as a deadline.
+    var targetTime: String? = nil
 
     static func parse(_ input: String, now: Date = Date(), weekStart: Int = 1) -> IdeaQuick {
         // "#" is only ever text here: tod's quick add would take it for a list.
         var text = replacing(spaces, in: input.replacingOccurrences(of: "#", with: Self.hash), with: " ")
-        var due: String?, time: String?, target: String?
+        var due: String?, time: String?, target: String?, targetTime: String?
         let hasDue = matches(dueWord, in: text)
         if hasDue {
             // The deadline first, so "due next week" isn't taken for an aim.
@@ -38,9 +40,9 @@ struct IdeaQuick: Equatable {
             due = hard.due
             time = hard.time
             text = hard.title
-            target = takeAim(&text, now: now, weekStart: weekStart)
+            (target, targetTime) = takeAimTimed(&text, now: now, weekStart: weekStart).map { ($0.day, $0.time) } ?? (nil, nil)
         } else {
-            target = takeAim(&text, now: now, weekStart: weekStart)
+            (target, targetTime) = takeAimTimed(&text, now: now, weekStart: weekStart).map { ($0.day, $0.time) } ?? (nil, nil)
             let hard = TodQuick.parse(text, now: now, weekStart: weekStart)
             due = hard.due
             time = hard.time
@@ -49,7 +51,7 @@ struct IdeaQuick: Equatable {
         let title = replacing(spaces, in: text, with: " ")
             .trimmingCharacters(in: CharacterSet.whitespaces.union(CharacterSet(charactersIn: ",;:-–—")))
             .replacingOccurrences(of: Self.hash, with: "#")
-        return IdeaQuick(title: title, due: due, time: time, target: target)
+        return IdeaQuick(title: title, due: due, time: time, target: target, targetTime: targetTime)
     }
 
     /// "Today" … "Fri" … "Dec 5", as tod says a day, for a deadline; and its time, if it has one.
@@ -81,14 +83,19 @@ struct IdeaQuick: Equatable {
     // MARK: - aims
 
     /// Takes the first aim out of `text`, if there's one: its day.
-    private static func takeAim(_ text: inout String, now: Date, weekStart: Int) -> String? {
+    static func takeAim(_ text: inout String, now: Date, weekStart: Int) -> String? {
+        takeAimTimed(&text, now: now, weekStart: weekStart)?.day
+    }
+
+    /// The first aim, with the time said with it ("by fri 5pm"), if one was.
+    static func takeAimTimed(_ text: inout String, now: Date, weekStart: Int) -> (day: String, time: String?)? {
         let ns = text as NSString
         let whole = NSRange(location: 0, length: ns.length)
         // A while off ("in a month or so", "next week", "early dec"): an aim, said loosely or not.
         for match in horizon.matches(in: text, range: whole) {
             guard let day = resolve(match, in: ns, now: now, weekStart: weekStart) else { continue }
             text = ns.replacingCharacters(in: match.range, with: " ")
-            return day
+            return (day, nil)
         }
         // A day said loosely: "by fri", "around the 5th", "~dec 1", "tomorrow-ish".
         for match in loose.matches(in: text, range: whole) {
@@ -106,7 +113,7 @@ struct IdeaQuick: Equatable {
                     end += tail.range.length
                 }
                 text = ns.replacingCharacters(in: NSRange(location: match.range.location, length: end - match.range.location), with: " ")
-                return due
+                return (due, read.time)
             }
         }
         // A day with a loose ending: "fri-ish", "dec 5 or so".
@@ -120,7 +127,7 @@ struct IdeaQuick: Equatable {
                 let start = (before as NSString).range(of: phrase, options: .backwards).location
                 guard start != NSNotFound else { continue }
                 text = ns.replacingCharacters(in: NSRange(location: start, length: tail.range.location + tail.range.length - start), with: " ")
-                return due
+                return (due, read.time)
             }
         }
         return nil
@@ -143,6 +150,11 @@ struct IdeaQuick: Equatable {
         }
         let today = calendar.startOfDay(for: now)
         if let unit = group("unit"), let amount = group("amount").map(Self.amount) {
+            // A span only with a word to say it's one ("in 3 weeks", "2 weeks or so"): "review 3
+            // months of statements" and "plan 2 weeks of meals" are counts, not days.
+            let said = text.substring(with: match.range).lowercased()
+            guard said.range(of: #"^(?:by|in|within|around|about|roughly|sometime|aim(?:ing)?\s+for|~)\b|^~|(?:or\s+so|ish)$"#,
+                             options: .regularExpression) != nil else { return nil }
             let component: Calendar.Component = unit.hasPrefix("day") ? .day : unit.hasPrefix("week") ? .weekOfYear : .month
             return calendar.date(byAdding: component, value: amount, to: today).map(day)
         }
@@ -181,8 +193,13 @@ struct IdeaQuick: Equatable {
             case nil: parts.day = by ? 1 : 15
             }
             guard var date = calendar.date(from: parts) else { return nil }
-            // A month that's been: next year's.
-            if date < today, let later = calendar.date(byAdding: .year, value: 1, to: date) { date = later }
+            // A month that's over: next year's. This month: this one (not before today).
+            let monthEnd = calendar.date(from: DateComponents(year: parts.year, month: number + 1, day: length)) ?? date
+            if monthEnd < today, let later = calendar.date(byAdding: .year, value: 1, to: date) {
+                date = later
+            } else if date < today {
+                date = today
+            }
             return day(date)
         }
         return nil
@@ -388,7 +405,9 @@ extension TodStore {
         let idea = IdeaQuick.parse(text, weekStart: weekStart)
         guard let dump = lists.first(where: \.isDump) else { return nil }
         if !hasAims {
-            return add(title: idea.title, due: idea.due ?? idea.target, time: idea.time, listId: dump.id)?.id
+            // An aim's a deadline here, at the time said with it ("by fri 5pm"), if one was.
+            let time = idea.due == nil ? idea.targetTime ?? idea.time : idea.time
+            return add(title: idea.title, due: idea.due ?? idea.target, time: time, listId: dump.id)?.id
         }
         return add(title: idea.title, due: idea.due, time: idea.time, listId: dump.id, target: idea.target)?.id
     }
