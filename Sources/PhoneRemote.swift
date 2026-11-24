@@ -507,7 +507,8 @@ final class NotchPhoneControls: PhoneControls {
         return PhoneSnapshot(
             mac: PhoneNetwork.computerName, look: state.theme == .midnight ? "midnight" : "standard", now: now.timeIntervalSince1970,
             pages: pages,
-            requests: agents.approvals.map { .init(id: $0.id, project: $0.project, action: $0.action, detail: $0.detail, host: $0.host) },
+            // (Requests for your OK aren't answered from Oyl any more.)
+            requests: [],
             agents: agents.sessions.map { session in
                 .init(id: session.id, name: session.project, doing: session.summary, state: Self.state(of: session.activity), host: session.host,
                       since: session.since.timeIntervalSince1970, claude: session.isClaude)
@@ -534,9 +535,8 @@ final class NotchPhoneControls: PhoneControls {
 
     func perform(_ action: PhoneAction) -> Bool {
         switch action {
-        case let .allow(id), let .deny(id):
-            guard let approval = state.agents.approvals.first(where: { $0.id == id }) else { return false }
-            if case .allow = action { state.agents.answer(approval, allow: true) } else { state.agents.answer(approval, allow: false) }
+        case .allow, .deny:
+            return false
         case .playPause: state.nowPlaying.togglePlayPause()
         case .next: state.nowPlaying.next()
         case .previous: state.nowPlaying.previous()

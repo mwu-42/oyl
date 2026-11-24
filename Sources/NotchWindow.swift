@@ -377,7 +377,6 @@ final class NotchState: ObservableObject {
     }
 
     var mode: NotchMode {
-        // (A request for your OK doesn't open it: it's a card in the corner; see `ApprovalCorner`.)
         if isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
         // Midnight Oyl pinned open, on display (but not over Mission Control's desktops).
         if isPinned && theme == .midnight && !isViewingDesktops && !isTakingShot { return .expanded }
@@ -672,7 +671,6 @@ final class NotchController {
     private let walkers = WalkerOverlay()
     private let closedLyrics: ClosedLyrics
     private var dock: DockController?
-    private var approvalCorner: ApprovalCorner?
     private var spaceLabel: SpaceLabel?
     private var pictureInPicture: PictureInPicture?
     /// Four fingers up: the desktops in a list (see `DesktopsViewer`), while it's on.
@@ -681,7 +679,6 @@ final class NotchController {
     private var projectsWindow: ProjectsWindowController?
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
-    private var approveTaps: TapWatcher?
     private var shiftTaps: TapWatcher?
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
@@ -730,7 +727,6 @@ final class NotchController {
         }
         state.gestures = gestures
         dock = DockController(state: state)
-        approvalCorner = ApprovalCorner(state: state, agents: agents, gestures: gestures)
         spaceLabel = SpaceLabel(state: state)
         spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
         pictureInPicture = PictureInPicture(state: state)
@@ -841,10 +837,6 @@ final class NotchController {
         }
         gestures.onTurn = { [weak self] in self?.state.turn(by: $0) }
         gestures.onScrub = { [weak self] in self?.state.scrub(by: $0) }
-        gestures.onApprove = { [weak agents] in
-            guard let agents, let approval = agents.approvals.first else { return }
-            agents.answer(approval, allow: true)
-        }
         // In Midnight Oyl, two fists make the hand the pointer; leaving it puts the pointer down.
         state.$theme
             .removeDuplicates()
@@ -858,14 +850,6 @@ final class NotchController {
             .removeDuplicates()
             .sink { [weak self] available in
                 MainActor.assumeIsolated { self?.gestures.lyricsAvailable = available }
-            }
-            .store(in: &cancellables)
-        // An agent waiting for your OK opens the notch, and the camera looks for a thumbs up.
-        agents.$approvals
-            .map { !$0.isEmpty }
-            .removeDuplicates()
-            .sink { [weak self] waiting in
-                MainActor.assumeIsolated { self?.gestures.approving = waiting }
             }
             .store(in: &cancellables)
         // Oyls on the menu bar come and go with what the app's up to.
@@ -928,25 +912,12 @@ final class NotchController {
         ])
         // Command on its own twice, either one, quickly (the second pressed within a quarter of a
         // second of letting go of the first): a screenshot of part of the screen (as ⇧⌘4), but
-        // not while Oyl's off. Never an OK on the way, if the second was the right one.
+        // not while Oyl's off.
         commandTaps = TapWatcher(.command, gap: ModifierTaps.commandGap, actions: [
             2: { [weak self] in
-                self?.approveTaps?.interrupt()
                 guard self?.state.isOff == false, Feature.screenshotTaps.isOn else { return }
                 AreaScreenshot.take()
             },
-        ])
-        // The right Command key tapped on its own, while a request's waiting for your OK (its card's
-        // in the corner): allowed, as its Allow would, once it's plain no second tap is coming (two
-        // are a screenshot, so it waits as long as they can be apart). (With a key, it's a
-        // shortcut, not a tap.)
-        approveTaps = TapWatcher(.command, side: ModifierTaps.rightCommand, gap: ModifierTaps.commandGap, actions: [
-            1: { [weak self] in
-                guard let self, !self.state.isOff, Feature.approveTap.isOn, let approval = self.state.agents.approvals.first else { return }
-                self.state.agents.answer(approval, allow: true)
-                Haptics.perform(.levelChange, performanceTime: .now)
-            },
-            2: {},
         ])
         // The right Shift key on its own twice, quickly: the desktops' list, as four fingers up
         // bring it (or put away, if it's up).
@@ -1064,13 +1035,12 @@ final class NotchController {
     }
 
     /// Three taps of control switch Oyl off, or back on. Off, it's put away, closing first if it's
-    /// open, and listens only for the taps: the Mac's let sleep (as quitting does) and Claude Code
-    /// asks for its OKs the usual way. Timers carry on, and still chime. Either way it blinks, the
+    /// open, and listens only for the taps: the Mac's let sleep (as quitting does). Timers carry
+    /// on, and still chime. Either way it blinks, the
     /// closed notch popping out and back, so the taps are seen to have been heard.
     private func switchOff(_ off: Bool) {
         guard off != state.isOff else { return }
         state.isOff = off
-        state.agents.isAway = off
         guard off else {
             rest()
             blink()

@@ -16,7 +16,7 @@ enum HandGesture {
     case pinch     // turned like a knob for volume; with the pinky up, dragged sideways to scrub through the song
     case peace     // takes a selfie
     case ok        // stops watching
-    case thumbsUp  // approves an agent's request; looked for only while one is waiting
+    case thumbsUp  // told apart from a fist and a point, but does nothing
     case announce  // the thumb holding the ring finger down, the other three up: every Oyl says what it's doing
     case tiltLeft  // that same hand tipped over to the left: Oyls dash left and line up (or come back)
     case tiltRight // tipped over to the right: Oyls dash off to the right (or stop lining up)
@@ -95,8 +95,8 @@ extension NotchState {
             toggleLyrics()
         case .pinch, .peace, .ok, .thumbsUp, .announce, .tiltLeft, .tiltRight, .rock, .fist:
             // Handled elsewhere: GestureWatcher has a pinch call turn(by:) or scrub(by:), peace
-            // take a selfie, OK stop watching, a thumbs up approve and the rock sign make the hand
-            // the pointer; the Oyls on the menu bar (NotchController) take the rest.
+            // take a selfie, OK stop watching, and the rock sign make the hand the pointer (a thumbs
+            // up does nothing); the Oyls on the menu bar (NotchController) take the rest.
             break
         }
     }
@@ -122,7 +122,7 @@ extension NotchState {
 }
 
 /// Watches the camera for hand gestures while the pointer is over the open notch (until you hold
-/// up an OK), and for a thumbs up while an agent waits for your OK. In Midnight Oyl, the rock 'n'
+/// up an OK). In Midnight Oyl, the rock 'n'
 /// roll sign (the thumb and little finger out) makes the hand the pointer, all over the screen,
 /// until it's made again (see `PointerMode`). The camera, and so its green light, is on only while
 /// watching. (macOS keeps the light on for at least three seconds after the camera starts, however
@@ -163,8 +163,6 @@ final class GestureWatcher: ObservableObject {
 
     /// The pointer is over the open notch: all gestures count.
     var hovering = false { didSet { if hovering != oldValue { update() } } }
-    /// An agent is waiting for your OK: a thumbs up counts, wherever the pointer is.
-    var approving = false { didSet { if approving != oldValue { update() } } }
     /// The mirror's showing: the camera's on for it, gestures or no (and read for them only when
     /// they're on).
     var mirroring = false {
@@ -226,7 +224,6 @@ final class GestureWatcher: ObservableObject {
     var onTurn: (Double) -> Void = { _ in }
     /// A sideways pinch let go, with how far it went, in seconds.
     var onScrub: (Double) -> Void = { _ in }
-    var onApprove: () -> Void = {}
     /// A selfie's been saved here (you and your screen), and the camera's picture of you, for
     /// its Oyl to hold up.
     var onSelfie: (URL, NSImage) -> Void = { _, _ in }
@@ -297,8 +294,8 @@ final class GestureWatcher: ObservableObject {
     }
 
     /// Gestures count: they're on, and the pointer's over the open notch (or the camera's been
-    /// woken from the keyboard) or an OK's wanted.
-    private var reading: Bool { isEnabled && (attending || approving) }
+    /// woken from the keyboard).
+    private var reading: Bool { isEnabled && attending }
 
     /// The gestures count as they do with the pointer over the open notch.
     private var attending: Bool { hovering || woken }
@@ -355,7 +352,7 @@ final class GestureWatcher: ObservableObject {
     /// The band's up to show the hands in, and gestures are on.
     private var showingHands: Bool { displaying && isEnabled }
 
-    /// Watches while hovering, woken or approving (or with the mirror up, the band open with
+    /// Watches while hovering or woken (or with the mirror up, the band open with
     /// gestures on or the hand the pointer), and stops once none is true, or Oyl's resting.
     private func update() {
         let pointing = pointer.isOn
@@ -572,11 +569,10 @@ final class GestureWatcher: ObservableObject {
     private func fire(_ gesture: HandGesture) {
         // One that's been turned off does nothing.
         if let feature = Feature(gesture), !feature.isOn { return }
-        // Without the pointer over the notch (or the camera woken), it's only on for a thumbs up.
+        // Only with the pointer over the notch (or the camera woken).
         switch gesture {
         case .thumbsUp:
-            guard approving else { return }
-            onApprove()
+            return
         case _ where !attending:
             return
         case .ok:

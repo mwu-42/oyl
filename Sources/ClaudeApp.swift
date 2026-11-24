@@ -53,8 +53,6 @@ final class ClaudeAppChats: @unchecked Sendable {
     private var unpaired: [String] = []
     private var last: Chat?
     private var approvalButtons: (allow: AXUIElement, deny: AXUIElement)?
-    /// The sidebar's entries for the tasks waiting on you, by name, to open.
-    private var entries: [String: AXUIElement] = [:]
     /// Each status a waiting task's been seen with, logged once.
     private var statuses: Set<String> = []
 
@@ -95,55 +93,6 @@ final class ClaudeAppChats: @unchecked Sendable {
         }
     }
 
-    /// Presses the app's own Allow (or Deny) for the request it's showing; for a `task` waiting in
-    /// the sidebar, opens it first and presses them once its prompt's up, or if none comes (a task
-    /// wanting something else of you), leaves it open, `unanswered`.
-    func respond(allow: Bool, task: String? = nil, unanswered: @escaping @Sendable () -> Void = {}) {
-        queue.async { [weak self] in
-            guard let self else { return }
-            guard let task else {
-                guard let buttons = self.approvalButtons else { return }
-                AXUIElementPerformAction(allow ? buttons.allow : buttons.deny, kAXPressAction as CFString)
-                self.approvalButtons = nil
-                self.check()
-                return
-            }
-            guard let entry = self.entries[task] else { return unanswered() }
-            AXUIElementPerformAction(entry, kAXPressAction as CFString)
-            self.press(allow: allow, tries: 20, unanswered: unanswered)
-        }
-    }
-
-    /// The app brought forward, on whatever it's showing.
-    @MainActor
-    static func bringForward() {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else { return }
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: configuration) { _, _ in }
-    }
-
-    /// Opens a task waiting in the sidebar, to be answered there.
-    func open(task: String) {
-        queue.async { [weak self] in
-            guard let entry = self?.entries[task] else { return }
-            AXUIElementPerformAction(entry, kAXPressAction as CFString)
-        }
-    }
-
-    /// Presses Allow (or Deny) once the prompt's up, looking every 0.15 s, `tries` more times.
-    private func press(allow: Bool, tries: Int, unanswered: @escaping @Sendable () -> Void) {
-        let windows = app.map(ButtonReader.windows(of:)) ?? []
-        if let buttons = windows.lazy.compactMap({ self.approvalButtons(in: $0) }).first {
-            AXUIElementPerformAction(allow ? buttons.allow : buttons.deny, kAXPressAction as CFString)
-            approvalButtons = nil
-            check()
-            return
-        }
-        guard tries > 0 else { return unanswered() }
-        queue.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.press(allow: allow, tries: tries - 1, unanswered: unanswered) }
-    }
-
     private func check() {
         guard let app else { return }
         // Its main window too, when it's on a Space you're not on (a fullscreen one of its own).
@@ -160,7 +109,6 @@ final class ClaudeAppChats: @unchecked Sendable {
                 waiting.append(Waiting(name: found.name, status: found.status))
             }
         }
-        self.entries = entries
         let title = Self.chatName(writing ?? windows.first.flatMap { Self.text($0, kAXTitleAttribute) } ?? "")
         // The one showing is asked about by its own prompt.
         if approvalButtons != nil { waiting.removeAll { $0.name == title } }

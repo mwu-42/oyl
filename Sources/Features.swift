@@ -27,22 +27,19 @@ enum Feature: String, CaseIterable, Sendable {
 
     // Agents (and each of the radar's own, by its ID; see `AgentRadar`).
     case claudeCode
-    /// Claude Code's requests answered from the notch, rather than where it runs.
-    case approvals
     case claudeChats, cowork
     /// Looking for apps that talk to an AI service, to offer to watch them.
     case discovery
 
     // Hand gestures, each.
-    case palmGesture, pointGesture, pinchGesture, peaceGesture, hornsGesture, pinkyGesture, thumbsUpGesture,
-         oylsGesture, rockGesture
+    case palmGesture, pointGesture, pinchGesture, peaceGesture, hornsGesture, pinkyGesture, oylsGesture,
+         rockGesture
 
     // Keys.
     case screenshotTaps, offTaps, songKeys, missionControl
     /// Control and option together: the camera on for the gestures for a moment, or (twice) till
     /// they're tapped twice again.
     case cameraKeys
-    case approveTap
     /// Command-period: the emoji picker, from any app, as on Windows.
     case emojiKey
 
@@ -76,10 +73,9 @@ enum Feature: String, CaseIterable, Sendable {
         case .peace: self = .peaceGesture
         case .horns: self = .hornsGesture
         case .pinky: self = .pinkyGesture
-        case .thumbsUp: self = .thumbsUpGesture
         case .announce, .tiltLeft, .tiltRight: self = .oylsGesture
         case .rock: self = .rockGesture
-        case .ok, .fist: return nil
+        case .ok, .fist, .thumbsUp: return nil
         }
     }
 }

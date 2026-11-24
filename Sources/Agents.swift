@@ -74,40 +74,7 @@ final class AgentMonitor: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
     /// The Claude app is installed but Oyl can't read its window yet.
     @Published private(set) var offersChats = false
-    /// Agents waiting for your OK, oldest first.
-    @Published private(set) var approvals: [Approval] = []
-    /// Oyl's switched off: Claude Code asks for its OKs the usual way, straight off, rather than
-    /// waiting on a notch no one can see. Those already waiting are handed back. (So it does when
-    /// answering in the notch is turned off.)
-    var isAway = false {
-        didSet {
-            guard isAway != oldValue else { return }
-            handOff()
-        }
-    }
-
-    /// Whether Claude Code asks the usual way, rather than in the notch.
-    private var handsOff: Bool { isAway || !Feature.approvals.isOn || !Feature.claudeCode.isOn }
-
-    private func handOff() {
-        let off = handsOff
-        AgentInbox.setAway(off)
-        guard off, !codeApprovals.isEmpty else { return }
-        codeApprovals.forEach { AgentInbox.answer($0.id, allow: nil) }
-        codeApprovals = []
-        updateApprovals()
-    }
-
     private static let chatID = "claude-app"
-    private var codeApprovals: [Approval] = []
-    private var appApproval: Approval?
-    private var appApprovalDismissed = false
-    private var appApprovalTimeout: DispatchWorkItem?
-    /// The Claude app's tasks waiting on you in its sidebar, not the one showing: a card each.
-    private var taskApprovals: [Approval] = []
-    /// Tasks whose cards have gone (answered, or given up on): until when they're not asked
-    /// about again, or (nil) till they stop waiting.
-    private var quietTasks: [String: Date?] = [:]
     private lazy var chats = ClaudeAppChats { [weak self] chat in
         DispatchQueue.main.async {
             MainActor.assumeIsolated { self?.apply(chat) }
@@ -174,21 +141,6 @@ final class AgentMonitor: ObservableObject {
                 MainActor.assumeIsolated { self?.apply(events) }
             }
         }
-        watch(AgentInbox.requests) { [weak self] in
-            let requests = AgentInbox.waitingRequests()
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard let self, requests != self.codeApprovals else { return }
-                    // Asked just as Oyl was switched off.
-                    if self.handsOff {
-                        requests.forEach { AgentInbox.answer($0.id, allow: nil) }
-                        return
-                    }
-                    self.codeApprovals = requests
-                    self.updateApprovals()
-                }
-            }
-        }
         sweep = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.tidy() }
         }
@@ -224,89 +176,6 @@ final class AgentMonitor: ObservableObject {
     /// walks off instead.
     var working: [AgentSession] {
         sessions.filter { $0.activity.priority > 1 }
-    }
-
-    func answer(_ approval: Approval, allow: Bool) {
-        switch approval.source {
-        case .claudeCode:
-            AgentInbox.answer(approval.id, allow: allow)
-            codeApprovals.removeAll { $0.id == approval.id }
-        case .claudeApp:
-            guard let task = approval.task else {
-                chats.respond(allow: allow)
-                appApproval = nil
-                break
-            }
-            // It's opened, and answered once its prompt's up; with none, it's left open in front.
-            chats.respond(allow: allow, task: task) {
-                DispatchQueue.main.async { MainActor.assumeIsolated { ClaudeAppChats.bringForward() } }
-            }
-            quiet(task, for: 4)
-        }
-        updateApprovals()
-    }
-
-    /// Leaves the request to be answered where the agent is, and goes there.
-    func answerInApp(_ approval: Approval) {
-        switch approval.source {
-        case .claudeCode:
-            AgentInbox.answer(approval.id, allow: nil)
-            codeApprovals.removeAll { $0.id == approval.id }
-        case .claudeApp:
-            guard let task = approval.task else {
-                appApproval = nil
-                appApprovalDismissed = true
-                break
-            }
-            chats.open(task: task)
-            ClaudeAppChats.bringForward()
-            quiet(task, for: nil)
-            updateApprovals()
-            return
-        }
-        if let session = sessions.first(where: { $0.id == approval.session }) { reveal(session) }
-        updateApprovals()
-    }
-
-    /// No card for `task` for `seconds` (just answered: its sidebar takes a moment to catch up), or
-    /// (nil) till it stops waiting.
-    private func quiet(_ task: String, for seconds: TimeInterval?) {
-        quietTasks[task] = seconds.map { Date().addingTimeInterval($0) }
-        taskApprovals.removeAll { $0.task == task }
-    }
-
-    /// A card for each task waiting in the Claude app's sidebar, whichever page is showing (the
-    /// one showing has its own, by its prompt). Like the rest, each gives up after a while, the
-    /// camera with it, and isn't asked again till that task's stopped waiting and waits anew.
-    private func showWaiting(_ waiting: [ClaudeAppChats.Waiting]) {
-        let now = Date()
-        let names = Set(waiting.map(\.name))
-        quietTasks = quietTasks.filter { names.contains($0.key) && ($0.value.map { $0 > now } ?? true) }
-        taskApprovals = waiting.filter { quietTasks[$0.name] == nil }.map { task in
-            if let shown = taskApprovals.first(where: { $0.task == task.name }) { return shown }
-            let id = "\(Self.chatID):task:\(task.name)"
-            DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(AgentInbox.approvalWait)) { [weak self] in
-                MainActor.assumeIsolated {
-                    guard let self, self.taskApprovals.contains(where: { $0.id == id }) else { return }
-                    self.quiet(task.name, for: nil)
-                    self.updateApprovals()
-                }
-            }
-            let session = sessions.first { $0.id.hasPrefix(Self.coworkPrefix) && $0.project == task.name }?.id
-            return Approval(id: id, source: .claudeApp, session: session, project: task.name, host: "Claude app",
-                            action: task.status, detail: nil, task: task.name)
-        }
-    }
-
-    /// Claude Code's requests name only the session; its project and app come from there.
-    private func updateApprovals() {
-        let named = codeApprovals.map { approval in
-            guard let session = sessions.first(where: { $0.id == approval.session }) else { return approval }
-            return Approval(id: approval.id, source: approval.source, session: approval.session, project: session.project,
-                            host: session.host, action: approval.action, detail: approval.detail)
-        }
-        let all = named + [appApproval].compactMap { $0 } + taskApprovals
-        if all != approvals { approvals = all }
     }
 
     /// Sets the sessions, and sends off any that has just finished.
@@ -352,7 +221,6 @@ final class AgentMonitor: ObservableObject {
         }
         self.programs.follow(programs)
         discovery.follow(Feature.discovery.isOn, skipping: radar.unsuggestable)
-        handOff()
         // Turned off: their Oyls go.
         let sessions = self.sessions.filter { session in
             if session.id == Self.chatID { return Feature.claudeChats.isOn }
@@ -487,37 +355,8 @@ final class AgentMonitor: ObservableObject {
         guard let chat else {
             if let index { sessions.remove(at: index) }
             publish(sessions)
-            appApproval = nil
-            showWaiting([])
-            updateApprovals()
             return
         }
-        showWaiting(chat.waiting)
-        // Its own Allow and Deny buttons are up: it's waiting for you. Like Claude Code's
-        // requests, the card (and the camera looking for a thumbs up) gives up after a while,
-        // leaving it to be answered in the app.
-        if chat.needsApproval {
-            if !appApprovalDismissed, appApproval == nil {
-                appApproval = Approval(id: Self.chatID, source: .claudeApp, session: Self.chatID, project: chat.title,
-                                       host: "Claude app", action: "Wants your OK to use a tool", detail: nil)
-                let timeout = DispatchWorkItem { [weak self] in
-                    MainActor.assumeIsolated {
-                        guard let self, self.appApproval != nil else { return }
-                        self.appApproval = nil
-                        self.appApprovalDismissed = true
-                        self.updateApprovals()
-                    }
-                }
-                appApprovalTimeout = timeout
-                DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(AgentInbox.approvalWait), execute: timeout)
-            }
-        } else {
-            appApprovalTimeout?.cancel()
-            appApprovalTimeout = nil
-            appApproval = nil
-            appApprovalDismissed = false
-        }
-        updateApprovals()
         // A Cowork task's its own Oyl already: one asking for you is shown as waiting there, on its
         // page or in the sidebar.
         for waiting in chat.waiting {
@@ -606,7 +445,6 @@ final class AgentMonitor: ObservableObject {
             if let index { sessions[index] = session } else { sessions.append(session) }
         }
         publish(sessions)
-        updateApprovals()
     }
 
     /// Drops agents whose process has quit (or, without one, that have been quiet for hours), or

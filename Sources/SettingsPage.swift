@@ -143,7 +143,6 @@ struct SettingsPage: View {
         case .agents:
             var items = [
                 feature(.claudeCode, "Claude Code", "In a terminal, an editor or the Claude app's Code tab"),
-                feature(.approvals, "Answer Claude Code here", "Allow or deny its requests from a card in the corner, or with a thumbs up"),
                 feature(.claudeChats, "Claude app chats", "The chat showing in the Claude app"),
                 feature(.cowork, "Cowork tasks", "Each of the Claude app's Cowork tasks"),
             ]
@@ -175,7 +174,6 @@ struct SettingsPage: View {
                 feature(.peaceGesture, "✌️ Selfie", "Saved in Pictures, beside your screen"),
                 feature(.hornsGesture, "🤟 Keep awake", "Keeps the Mac awake, or stops"),
                 feature(.pinkyGesture, "Pinky: lyrics", "Shows the lyrics, and the music \(oyl) sings"),
-                feature(.thumbsUpGesture, "👍 Allow", "Answers Claude Code's request yes"),
                 feature(.oylsGesture, "\(oyl)s' gestures", "Thumb on the ring finger: they say what they're doing; tip it to line them up or send them off"),
             ]
             if midnight {
@@ -184,7 +182,6 @@ struct SettingsPage: View {
             return items
         case .keys:
             var items = [
-                feature(.approveTap, "Right ⌘ Allow", "The right Command key tapped once on its own, while something's waiting for your OK: it's allowed (just that once; the first, if there are a few)"),
                 feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
