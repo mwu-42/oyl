@@ -84,7 +84,22 @@ final class AgentChimes {
         let unseen = heard.filter { !Self.isInFront($0.1) }
         guard let (kind, session) = unseen.first(where: { $0.0 == .waiting }) ?? unseen.first else { return }
         lastChime = now
-        ChimeSettings.shared.voice(for: Self.source(of: session)).play(kind, midnight: theme == .midnight)
+        // Its desktop's sound, if it has one and the desktop can be told; else its app's.
+        let source = Self.source(of: session), midnight = theme == .midnight
+        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier,
+              ChimeSettings.shared.hasDeskSounds else {
+            ChimeSettings.shared.voice(for: source).play(kind, midnight: midnight)
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let number = SessionDesk.space(of: session, app: pid)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    let desk = number.flatMap(SessionDesk.desktop).flatMap { ChimeSettings.shared.desk($0) }
+                    (desk ?? ChimeSettings.shared.voice(for: source)).play(kind, midnight: midnight)
+                }
+            }
+        }
     }
 }
 
@@ -93,10 +108,16 @@ struct ChimeVoice: Equatable, Identifiable {
     let id: String
     let name: String
 
-    static let round = ChimeVoice(id: "tone:round", name: "Low round")
+    /// Oyl's own, each low and round, done rising: Ember (the first, and the usual), a warm low
+    /// tone; Hearth, lower and longer, a hum; Driftwood, knocked wood; Lantern, a soft bell;
+    /// Moonrise, a little higher and slow to come in; Pebble, short and plucked; Low Tide, low,
+    /// swelling in; Ripple, four quick notes up.
+    static let round = ChimeVoice(id: "tone:round", name: "Ember")
     static let silent = ChimeVoice(id: "none", name: "Silent")
-    static let tones = [round, ChimeVoice(id: "tone:hum", name: "Hum"), ChimeVoice(id: "tone:wood", name: "Wood"),
-                        ChimeVoice(id: "tone:bell", name: "Soft bell")]
+    static let tones = [round, ChimeVoice(id: "tone:hum", name: "Hearth"), ChimeVoice(id: "tone:wood", name: "Driftwood"),
+                        ChimeVoice(id: "tone:bell", name: "Lantern"), ChimeVoice(id: "tone:moonrise", name: "Moonrise"),
+                        ChimeVoice(id: "tone:pebble", name: "Pebble"), ChimeVoice(id: "tone:tide", name: "Low Tide"),
+                        ChimeVoice(id: "tone:ripple", name: "Ripple")]
 
     /// Oyl's sounds folder: any sound file put in it can be chosen.
     nonisolated static func folder(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
@@ -146,7 +167,8 @@ struct ChimeVoice: Equatable, Identifiable {
     }
 }
 
-/// Which sound each place a Claude runs has: kept in the defaults, with the places seen so far (in
+/// Which sound each place a Claude runs has, and each desktop that's been given its own (from the
+/// desktops' list): kept in the defaults, with the places seen so far (in
 /// the order they were), each shown on the Agents settings while sounds are on. One with none of
 /// its own sounds as everywhere else does.
 @MainActor
@@ -159,14 +181,34 @@ final class ChimeSettings: ObservableObject {
     /// The most places kept (the oldest let go of past it).
     static let most = 12
 
+    static let desksKey = "chimes.desks"
+
     @Published private(set) var sources: [String]
     @Published private(set) var voices: [String: String]
+    /// Desktops' own sounds, by what they're kept under (see `SpaceGroups.keys`).
+    @Published private(set) var desks: [String: String]
     private let defaults: UserDefaults
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         sources = defaults.stringArray(forKey: Self.sourcesKey) ?? []
         voices = defaults.dictionary(forKey: Self.voicesKey) as? [String: String] ?? [:]
+        desks = defaults.dictionary(forKey: Self.desksKey) as? [String: String] ?? [:]
+    }
+
+    var hasDeskSounds: Bool { !desks.isEmpty }
+
+    /// A desktop's own sound, if it has one.
+    func desk(_ space: CurrentSpace, among all: [ChimeVoice] = ChimeVoice.all()) -> ChimeVoice? {
+        SpaceGroups.keys(of: space).lazy.compactMap { self.desks[$0] }.first.flatMap { id in all.first { $0.id == id } }
+    }
+
+    /// A desktop given its own sound (or, none, back to its app's).
+    func setDesk(_ space: CurrentSpace, to voice: ChimeVoice?) {
+        for key in SpaceGroups.keys(of: space) { desks[key] = voice?.id }
+        // Too many: the oldest fullscreen windows' let go of.
+        if desks.count > 300 { for key in desks.keys.filter({ $0.hasPrefix("window:") }).prefix(desks.count - 300) { desks[key] = nil } }
+        defaults.set(desks, forKey: Self.desksKey)
     }
 
     /// A place a Claude's been seen running in.
@@ -209,7 +251,7 @@ final class ChimeSettings: ObservableObject {
 /// Oyl's own soft tones, made as sound (16-bit, mono), low: around D3 to A3. Each note mostly a
 /// pure tone, with a little of its overtones over it that fade sooner (warm, not bright), coming in
 /// gently and dying away. Done is three notes rising, a small ta-da; waiting two soft taps of one,
-/// asking. Four of them: low round, a hum, wood, a soft bell. In Midnight Oyl's, softer still,
+/// asking. Eight of them, each with a name (see `ChimeVoice.tones`). In Midnight Oyl's, softer still,
 /// slower to fade, with a faint shimmer.
 enum ChimeTone {
     struct Note: Equatable {
@@ -232,12 +274,12 @@ enum ChimeTone {
 
     static let rate = 44_100
 
-    /// `kind` in `style` ("round", "hum", "wood", "bell"). Done rises, D3, F♯3, A3, a small ta-da;
+    /// `kind` in `style` (see `ChimeVoice.tones`). Done rises, D3, F♯3, A3, a small ta-da;
     /// waiting is two soft taps of A3, asking.
     nonisolated static func notes(_ kind: AgentChimes.Kind, style: String = "round", midnight: Bool) -> [Note] {
         let soft = midnight ? 1.7 : 1.0
         let shimmer = midnight ? [Overtone(ratio: 6, level: 0.05, fade: 0.6)] : []
-        let pitches: [Double] = kind == .done ? [146.83, 185.0, 220.0] : [220.0, 220.0]
+        let pitches: [Double] = kind == .done ? (style == "ripple" ? [146.83, 164.81, 185.0, 220.0] : [146.83, 185.0, 220.0]) : [220.0, 220.0]
         func run(attack: Double, fade: Double, gap: Double, overtones: [Overtone], scale: Double = 1) -> [Note] {
             let gap = (kind == .done ? gap * 0.75 : gap) * (midnight ? 1.2 : 1)
             return pitches.enumerated().map { index, pitch in
@@ -255,6 +297,14 @@ enum ChimeTone {
         case "bell":
             return run(attack: 0.006, fade: 0.4, gap: 0.17,
                        overtones: [Overtone(ratio: 2.76, level: 0.16, fade: 0.5), Overtone(ratio: 5.4, level: 0.05, fade: 0.3)], scale: 0.75)
+        case "moonrise":
+            return run(attack: 0.05, fade: 0.26, gap: 0.16, overtones: [Overtone(ratio: 2, level: 0.14, fade: 0.5)], scale: 1.12)
+        case "pebble":
+            return run(attack: 0.003, fade: 0.06, gap: 0.09, overtones: [Overtone(ratio: 2, level: 0.1, fade: 0.4)])
+        case "tide":
+            return run(attack: 0.09, fade: 0.3, gap: 0.22, overtones: [Overtone(ratio: 2, level: 0.18, fade: 0.55)], scale: 0.67)
+        case "ripple":
+            return run(attack: 0.006, fade: 0.1, gap: 0.085, overtones: [Overtone(ratio: 2, level: 0.2, fade: 0.45)])
         default:
             return run(attack: 0.012, fade: 0.2, gap: 0.13, overtones: [Overtone(ratio: 2, level: 0.22, fade: 0.45)])
         }
@@ -300,5 +350,57 @@ enum ChimeTone {
         data.append(contentsOf: Array("data".utf8)); put(UInt32(pcm.count * 2))
         for sample in pcm { put(sample) }
         return data
+    }
+}
+
+/// Which desktop a Claude's on: its app's only one, if its windows are all on one; else, the one
+/// with the window whose title names its folder (an editor's), as the window server says (with
+/// Screen Recording allowed) or accessibility does. Nil if it can't be told.
+enum SessionDesk {
+    /// The Space's number (off the main thread).
+    static func space(of session: AgentSession, app pid: pid_t) -> Int? {
+        let windows = SpaceApps.windows(of: pid)
+        let spaces = Set(windows.filter { $0.spaces.count == 1 }.map { $0.spaces[0] })
+        if spaces.count == 1 { return spaces.first }
+        guard !session.project.isEmpty else { return nil }
+        if let window = windows.first(where: { $0.title.map { AgentChimes.title($0, names: session.project) } ?? false }),
+           window.spaces.count == 1 {
+            return window.spaces[0]
+        }
+        for (title, number) in titledWindows(pid) where AgentChimes.title(title, names: session.project) {
+            let on = SpaceApps.spaces(ofWindow: number)
+            if on.count == 1 { return on[0] }
+        }
+        return nil
+    }
+
+    /// The desktop with that number, on any screen.
+    @MainActor
+    static func desktop(_ number: Int) -> CurrentSpace? {
+        for screen in NSScreen.screens {
+            guard let display = FullscreenSpace.display(for: screen) else { continue }
+            if let space = Spaces.all(in: display, boot: Spaces.bootTime, appName: { NSRunningApplication(processIdentifier: $0)?.localizedName })
+                .spaces.first(where: { $0.id == number }) { return space }
+        }
+        return nil
+    }
+
+    private typealias GetWindow = @convention(c) (AXUIElement, UnsafeMutablePointer<CGWindowID>) -> AXError
+    private static let getWindow = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "_AXUIElementGetWindow").map { unsafeBitCast($0, to: GetWindow.self) }
+
+    /// `pid`'s windows that accessibility can see, each title and number.
+    private static func titledWindows(_ pid: pid_t) -> [(String, CGWindowID)] {
+        guard let getWindow else { return [] }
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success, let windows = value as? [AXUIElement] else { return [] }
+        return windows.compactMap { window in
+            var title: CFTypeRef?
+            var number: CGWindowID = 0
+            guard AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success, let title = title as? String,
+                  getWindow(window, &number) == .success, number != 0 else { return nil }
+            return (title, number)
+        }
     }
 }

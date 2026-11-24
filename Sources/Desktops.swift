@@ -365,6 +365,28 @@ enum SpaceApps {
     /// The Space showing, the others, and the user's: all of them.
     private static let everySpace: Int32 = 7
 
+    /// Each of `pid`'s ordinary windows: its number, its title (if the window server says, as it does
+    /// with Screen Recording allowed), and the Spaces it's on. Off the main thread.
+    static func windows(of pid: pid_t) -> [(number: CGWindowID, title: String?, spaces: [Int])] {
+        guard let connection, let copySpaces else { return [] }
+        let id = connection()
+        let list = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return list.compactMap { info in
+            guard info[kCGWindowLayer as String] as? Int == 0, info[kCGWindowOwnerPID as String] as? pid_t == pid,
+                  let number = info[kCGWindowNumber as String] as? CGWindowID,
+                  let box = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let frame = CGRect(dictionaryRepresentation: box as CFDictionary), frame.width >= 50, frame.height >= 50 else { return nil }
+            let spaces = copySpaces(id, everySpace, [NSNumber(value: number)] as CFArray)?.takeRetainedValue() as? [NSNumber] ?? []
+            return (number, info[kCGWindowName as String] as? String, spaces.map(\.intValue))
+        }
+    }
+
+    /// The Spaces window `number` is on.
+    static func spaces(ofWindow number: CGWindowID) -> [Int] {
+        guard let connection, let copySpaces else { return [] }
+        return (copySpaces(connection(), everySpace, [NSNumber(value: number)] as CFArray)?.takeRetainedValue() as? [NSNumber] ?? []).map(\.intValue)
+    }
+
     /// As they are now (a few milliseconds: off the main thread).
     static func read() -> [Int: [pid_t]] {
         guard let connection, let copySpaces else { return [:] }
@@ -646,6 +668,19 @@ final class DesktopsModel: ObservableObject {
         let shown = Set(items.map(\.id))
         return lineFrames.first { shown.contains($0.key) && $0.value.contains(point) }?.key
     }
+    /// The desktop whose sound's being picked (see `DeskSoundPicker`), while sounds are on.
+    @Published var picking: String?
+    /// Whether a desktop's sound can be picked here (sounds are on).
+    @Published var picksSounds = false
+    /// Each desktop's own sound's name, for its row.
+    @Published var soundNames: [String: String] = [:]
+    var soundChoices: () -> [ChimeVoice] = { [] }
+    var soundOf: (String) -> ChimeVoice? = { _ in nil }
+    var chooseSound: (String, ChimeVoice?) -> Void = { _, _ in }
+    var hearSound: (ChimeVoice) -> Void = { _ in }
+    /// What a desktop with none of its own sounds like: its app's, or everywhere else's.
+    var fallbackSound: String = ChimeVoice.round.name
+
     /// Shift-clicked first: where what's grouped begins, once another's shift-clicked.
     @Published var anchor: String?
 
@@ -968,6 +1003,14 @@ private struct PlainDesks: View {
         .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.84)))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(.white.opacity(0.09)))
         .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
+        // A desktop's sound being picked: beside the card.
+        .overlay(alignment: .topTrailing) {
+            if model.picking != nil {
+                DeskSoundPicker(model: model)
+                    .offset(x: DeskSoundPicker.width + 12)
+                    .transition(.opacity)
+            }
+        }
         .opacity(shown)
         .offset(y: (1 - shown) * 16)
         .animation(model.settle(), value: model.progress)
@@ -1001,6 +1044,14 @@ private struct MidnightDesks: View {
                 .animation(model.settle(delay: 0.2), value: model.progress)
         }
         .frame(width: 470, alignment: .leading)
+        // A desktop's sound being picked: off to its right, under the sky.
+        .overlay(alignment: .topTrailing) {
+            if model.picking != nil {
+                DeskSoundPicker(model: model)
+                    .offset(x: DeskSoundPicker.width + 40, y: 36)
+                    .transition(.modifier(active: FoldDrift(amount: 1), identity: FoldDrift(amount: 0)))
+            }
+        }
         .padding(.leading, model.size.width * 0.19)
         .padding(.top, model.size.height * 0.22)
     }
@@ -1103,6 +1154,79 @@ private struct DesktopsRows: View {
     }
 }
 
+/// A desktop's sound, picked from a list as an alarm's is on a phone: its app's (none of its own),
+/// Oyl's named tones, the sounds folder's, or silent. Clicking one plays it and picks it, marked
+/// with a check (in Midnight Oyl's, a glint). In Oyl's look a black card beside the list; in
+/// Midnight's, the names in the heading face off to the right, under a line in italics.
+private struct DeskSoundPicker: View {
+    @ObservedObject var model: DesktopsModel
+    @Environment(\.notchTheme) private var theme
+    @StateObject private var hovered = LocalState<String?>(nil)
+    static let width: CGFloat = 210
+
+    var body: some View {
+        let midnight = theme == .midnight, id = model.picking ?? ""
+        let name = model.desks.first { $0.id == id }?.name ?? ""
+        let own = model.soundOf(id)
+        let choices: [ChimeVoice?] = [nil] + model.soundChoices().map { Optional($0) }
+        VStack(alignment: .leading, spacing: midnight ? 2 : 0) {
+            Text(midnight ? "the sound of \(name)" : "Sound for \(name)")
+                .font(midnight ? Midnight.italic(14) : .system(size: 11, weight: .semibold))
+                .foregroundStyle(midnight ? Midnight.silver.opacity(0.7) : .white.opacity(0.55))
+                .lineLimit(1)
+                .padding(.horizontal, 10)
+                .padding(.bottom, midnight ? 6 : 4)
+            ForEach(Array(choices.enumerated()), id: \.offset) { _, choice in
+                row(choice, picked: choice?.id == own?.id, midnight: midnight)
+            }
+        }
+        .padding(.vertical, midnight ? 4 : 8)
+        .frame(width: Self.width, alignment: .leading)
+        .background {
+            if !midnight {
+                RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.black.opacity(0.86))
+                    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.white.opacity(0.09)))
+                    .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
+            }
+        }
+    }
+
+    private func row(_ choice: ChimeVoice?, picked: Bool, midnight: Bool) -> some View {
+        let key = choice?.id ?? "app"
+        let lit = hovered.value == key
+        return HStack(spacing: 8) {
+            ZStack {
+                if picked {
+                    if midnight {
+                        FourPointStar().fill(Midnight.starlight).frame(width: 8, height: 8)
+                            .shadow(color: Midnight.moonlight.opacity(0.6), radius: 3)
+                    } else {
+                        Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(.white)
+                    }
+                }
+            }
+            .frame(width: 12)
+            Text(choice?.name ?? "Its app's sound")
+                .font(midnight ? Midnight.font(.heading, size: 14.5, weight: picked ? .bold : .regular) : .system(size: 12.5, weight: picked ? .semibold : .regular))
+                .foregroundStyle(midnight ? Midnight.white.opacity(picked || lit ? 1 : 0.7) : .white.opacity(picked || lit ? 1 : 0.8))
+                .lineLimit(1)
+                .offset(x: midnight && lit ? 3 : 0)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: midnight ? 24 : 24)
+        .background(DeskHighlight(lit: lit).padding(.horizontal, midnight ? 0 : 4))
+        .contentShape(Rectangle())
+        .onHover { inside in hovered.value = inside ? key : (hovered.value == key ? nil : hovered.value) }
+        .onTapGesture {
+            guard let id = model.picking else { return }
+            model.chooseSound(id, choice)
+            if let choice { model.hearSound(choice) } else if let fallback = model.soundOf(id) ?? model.soundChoices().first { model.hearSound(fallback) }
+        }
+        .animation(.easeOut(duration: 0.12), value: lit)
+    }
+}
+
 /// Midnight's lines folding away (or a hint giving way to the next): out of sight to the left,
 /// into a blur.
 private struct FoldDrift: ViewModifier {
@@ -1182,9 +1306,20 @@ private struct DeskRow: View {
             marker(midnight: midnight)
             name(midnight: midnight)
             if desk.namesApps, !renaming { appNames(midnight: midnight) }
+            if let sound = model.soundNames[desk.id], !renaming {
+                Text("♪ " + sound)
+                    .font(midnight ? Midnight.italic(12) : .system(size: 10.5, weight: .medium))
+                    .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.38))
+                    .lineLimit(1)
+            }
             icons(midnight: midnight)
             Spacer(minLength: 8)
             if showsActions {
+                if model.picksSounds {
+                    DeskAction(word: "sound", symbol: "speaker.wave.2", help: "Its sound when a Claude's done here") {
+                        withAnimation(model.shuffle) { model.picking = model.picking == desk.id ? nil : desk.id }
+                    }
+                }
                 if grouped { takeOutButton(midnight: midnight) }
             }
         }
@@ -1698,6 +1833,17 @@ final class DesktopsViewer {
         model.renamedGroup = { id, name in SpaceGroups().rename(id, to: name) }
         model.folded = { id, folded in SpaceGroups().fold(id, folded) }
         model.regroup = { [weak self] change in self?.regroup(change) }
+        model.soundChoices = { ChimeVoice.all().filter { !$0.id.hasPrefix("system:") } }
+        model.soundOf = { [weak self] id in
+            guard let space = self?.spaces.first(where: { $0.key == id }) else { return nil }
+            return ChimeSettings.shared.desk(space)
+        }
+        model.chooseSound = { [weak self] id, voice in
+            guard let self, let space = self.spaces.first(where: { $0.key == id }) else { return }
+            ChimeSettings.shared.setDesk(space, to: voice)
+            self.showSounds()
+        }
+        model.hearSound = { [weak self] voice in voice.play(.done, midnight: self?.model.theme == .midnight) }
     }
 
     /// Watching for the Mac waking, the screens changing, and Spaces changing while it's up.
@@ -1816,6 +1962,8 @@ final class DesktopsViewer {
     private func escape() {
         if model.renaming != nil {
             model.finishRenaming(keeping: false)
+        } else if model.picking != nil {
+            withAnimation(model.shuffle) { model.picking = nil }
         } else if model.anchor != nil {
             withAnimation(model.shuffle) { model.anchor = nil }
         } else {
@@ -1888,6 +2036,7 @@ final class DesktopsViewer {
         model.dragAt = nil
         model.dragShift = .zero
         model.anchor = nil
+        model.picking = nil
     }
 
     /// The Spaces, then what's on each.
@@ -1922,6 +2071,17 @@ final class DesktopsViewer {
                                isCurrent: index == all.current, apps: before[space.key] ?? [],
                                group: SpaceGroups.group(of: space, in: groups)?.id)
         }
+        showSounds()
+    }
+
+    /// Each desktop's own sound, named on its row; and whether sounds are on to pick them.
+    private func showSounds() {
+        let all = ChimeVoice.all(), chimes = ChimeSettings.shared
+        model.picksSounds = Feature.agentSounds.isOn
+        model.fallbackSound = chimes.voice(for: ChimeSettings.elsewhere, among: all).name
+        var names: [String: String] = [:]
+        for space in spaces { if let voice = chimes.desk(space, among: all) { names[space.key] = voice.name } }
+        model.soundNames = model.picksSounds ? names : [:]
     }
 
     /// The groups as they're kept, shown again (the desktops as they were read).
