@@ -1064,10 +1064,8 @@ final class NotchController {
         }
     }
 
-    /// As Oyl quits: the projects saved now, not the moment after an edit they'd otherwise wait;
-    /// and the desktops not left half put in order (the button held down in Mission Control).
+    /// As Oyl quits: the projects saved now, not the moment after an edit they'd otherwise wait.
     func quitting() {
-        SpaceArranger.stop()
         state.projects.flush()
     }
 

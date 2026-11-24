@@ -53,7 +53,7 @@ enum Feature: String, CaseIterable, Sendable {
     case spaceLabel
     /// Picture in picture for any window, over every desktop: ⌃⌥P, or from Oyl's Dock.
     case pictureInPicture
-    /// Four fingers up: the desktops in a list, to go to, rename and put in order.
+    /// Four fingers up: the desktops in a list, to go to and rename.
     case desktopsView
     /// Right Shift twice: the same list.
     case desktopsKey
