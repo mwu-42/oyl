@@ -196,6 +196,8 @@ struct SettingsPage: View {
                                      hint: "Each morning at \(morning.time), a one-word prompt to Claude (Haiku, through Claude Code, on your plan) starts your 5-hour limit window, so it resets that much sooner. ‹ › change the time. The Mac has to be awake: missed while it sleeps, it's sent when it wakes, within 4 hours. " + morning.lastSaid,
                                      isOn: Feature.morningClaude.isOn, action: { Features.shared.toggle(.morningClaude) },
                                      adjust: (down: { morning.move(by: -1) }, up: { morning.move(by: 1) })))
+            items.append(feature(.claudeChain, "↻ And as each one ends",
+                                 "When a window ends with none going, another one-word prompt starts the next, till 2 AM: from \(morning.time), at \(morning.chainSaid) if you're not using Claude meanwhile (it waits for yours if you are)"))
             if let front = state.front, !radar.knows(front.id) {
                 items.append(SettingItem(id: "front", title: "Watch \(front.name)", hint: "As an agent: \(hint(for: front))",
                                          action: { radar.add(front) }, isButton: true))

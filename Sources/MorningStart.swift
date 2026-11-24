@@ -40,6 +40,10 @@ final class MorningStart: ObservableObject {
 
     private let defaults: UserDefaults
     private var timer: Timer?
+    /// When the next window's to be looked at, as this one ends (see `chainCheck`).
+    private var chainTimer: Timer?
+    private var chainRetries = 0
+    private var watchingWindow: AnyCancellable?
     private var observers: [Any] = []
     private var following: AnyCancellable?
     private var sending = false
@@ -84,13 +88,81 @@ final class MorningStart: ObservableObject {
         let workspace = NSWorkspace.shared.notificationCenter
         observers = [
             workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.check() }
+                MainActor.assumeIsolated {
+                    self?.check()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 20) { self?.chainCheck() }
+                }
             },
             NotificationCenter.default.addObserver(forName: .NSSystemClockDidChange, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.check() }
             },
         ]
         following = Features.shared.follow(.morningClaude) { [weak self] _ in self?.check() }
+        // A window going (yours, or one this started): looked at again just after it ends.
+        watchingWindow = ClaudeLimit.shared.$reading
+            .compactMap { $0?.resets }
+            .removeDuplicates()
+            .sink { [weak self] resets in
+                MainActor.assumeIsolated { self?.chainAfter(resets) }
+            }
+        // As Oyl starts, or the Mac wakes: one might have ended meanwhile.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.chainCheck() }
+    }
+
+    // MARK: One window after another
+
+    /// The latest one's sent: 2 AM.
+    nonisolated static let cutoff = 2 * 60
+    /// Never two less than this apart, whatever's read.
+    nonisolated static let apart: TimeInterval = 4.5 * 3600
+
+    /// Whether `date` is in the day's hours for it: from the morning's time to the cutoff (past
+    /// midnight, the next morning's side of it).
+    nonisolated static func inHours(_ date: Date, from start: Int, until cutoff: Int = cutoff, calendar: Calendar = .current) -> Bool {
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        let minute = (parts.hour ?? 0) * 60 + (parts.minute ?? 0)
+        return cutoff <= start ? (minute >= start || minute <= cutoff) : (minute >= start && minute <= cutoff)
+    }
+
+    /// When they'd be sent in a day with nobody else starting one: every five hours from the
+    /// morning's time, while it's before the cutoff (minutes after midnight, past 24 h the next day's).
+    nonisolated static func chainTimes(from start: Int, until cutoff: Int = cutoff) -> [Int] {
+        let end = cutoff <= start ? cutoff + 24 * 60 : cutoff
+        return Array(stride(from: start, through: end, by: 5 * 60))
+    }
+
+    /// The chain's times, said: "7:00 AM, 12:00 PM, 5:00 PM, 10:00 PM".
+    var chainSaid: String { Self.chainTimes(from: minutes).map { Self.describe($0 % (24 * 60)) }.joined(separator: ", ") }
+
+    /// Looked at again just after the window ending at `resets` does.
+    private func chainAfter(_ resets: Date) {
+        guard Feature.claudeChain.isOn else { return }
+        let at = max(resets.addingTimeInterval(30), Date().addingTimeInterval(5))
+        if let fire = chainTimer?.fireDate, fire <= at, fire > Date() { return }
+        chainTimer?.invalidate()
+        let timer = Timer(fire: at, interval: 0, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.chainCheck() }
+        }
+        timer.tolerance = 20
+        RunLoop.main.add(timer, forMode: .common)
+        chainTimer = timer
+    }
+
+    /// A window's (likely) ended: in the day's hours, if none's going now, another's started.
+    func chainCheck(now: Date = Date()) {
+        chainTimer?.invalidate()
+        chainTimer = nil
+        guard Feature.claudeChain.isOn, !sending, Self.inHours(now, from: minutes) else { return }
+        if let sent, now.timeIntervalSince(sent) < Self.apart { chainAfter(sent.addingTimeInterval(5 * 3600)); return }
+        ClaudeLimit.shared.readNow { [weak self] reading in
+            guard let self else { return }
+            if let reading, reading.isCurrent(at: Date()), let resets = reading.resets {
+                // Going already (you've been using it): after this one, then.
+                self.chainAfter(resets)
+            } else {
+                self.send(chained: true)
+            }
+        }
     }
 
     /// Sent if it's due; then the clock set for the next time.
@@ -149,36 +221,53 @@ final class MorningStart: ObservableObject {
 
     // MARK: Sending
 
-    private func send() {
+    /// The prompt sent: the morning's (`chained` false), or one as a window ends.
+    private func send(chained: Bool = false) {
         guard !sending else { return }
         sending = true
         let now = Date()
-        let tried = defaults.object(forKey: Self.triedKey) as? Date
-        // A new morning: its tries counted afresh.
-        if tried.map({ $0 < Self.moment(on: now, minutes: minutes) }) ?? true { triedToday = 0 }
-        triedToday += 1
-        defaults.set(now, forKey: Self.triedKey)
+        if !chained {
+            let tried = defaults.object(forKey: Self.triedKey) as? Date
+            // A new morning: its tries counted afresh.
+            if tried.map({ $0 < Self.moment(on: now, minutes: minutes) }) ?? true { triedToday = 0 }
+            triedToday += 1
+            defaults.set(now, forKey: Self.triedKey)
+        }
         DispatchQueue.global(qos: .utility).async {
             let result = Self.ask()
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self.finished(result) }
+                MainActor.assumeIsolated { self.finished(result, chained: chained) }
             }
         }
     }
 
-    private func finished(_ result: Result<Void, Failure>) {
+    private func finished(_ result: Result<Void, Failure>, chained: Bool = false) {
         sending = false
         switch result {
         case .success:
             sent = Date()
             failed = nil
+            chainRetries = 0
             defaults.set(sent, forKey: Self.sentKey)
+            // When this window ends, read a moment from now (and till then, five hours on).
+            if let sent { chainAfter(sent.addingTimeInterval(5 * 3600)) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { ClaudeLimit.shared.readNow { _ in } }
             defaults.removeObject(forKey: Self.failedKey)
             Self.log.notice("Claude's window started early")
         case .failure(let why):
             failed = why.said
             defaults.set(why.said, forKey: Self.failedKey)
             Self.log.notice("Claude's morning prompt didn't go: \(why.said, privacy: .public)")
+            // A window's: once more, a few minutes on.
+            if chained {
+                chainRetries += 1
+                if chainRetries < 2 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.retry) { [weak self] in
+                        MainActor.assumeIsolated { self?.chainCheck() }
+                    }
+                }
+                return
+            }
             // Again in a few minutes, while there are tries left.
             if triedToday < Self.tries {
                 DispatchQueue.main.asyncAfter(deadline: .now() + Self.retry + 5) { [weak self] in

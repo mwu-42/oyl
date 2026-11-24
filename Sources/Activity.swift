@@ -511,6 +511,7 @@ struct ClaudeWindowRow: View {
         .settingsMenu(.notch) {
             FeatureToggle(.claudeLimitBar, "On the bar, beside the notch (what's left)")
             FeatureToggle(.morningClaude, "Started early each morning, at \(MorningStart.shared.time)")
+            FeatureToggle(.claudeChain, "Started again as each one ends, till 2 AM")
             FeatureToggle(.claudeLimit, "Here, on the stats page")
         }
     }

@@ -66,6 +66,21 @@ final class ClaudeLimit: ObservableObject {
         schedule(in: 1)
     }
 
+    /// Read now, whatever the settings (for the windows started one after another, see
+    /// `MorningStart`): `done` told what it says, nil if it didn't say.
+    func readNow(_ done: @escaping @MainActor (Reading?) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let result = ClaudeCode.run("/usage", patience: 30)
+            let read: Reading? = if case .success(let output) = result, output.status == 0 { Self.parse(output.said) } else { nil }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    if let read, read != self.reading { self.reading = read }
+                    done(read)
+                }
+            }
+        }
+    }
+
     /// Something's happened that may have used some (an agent's done): read again soon.
     func nudge() {
         guard Self.isWanted, !isResting else { return }
