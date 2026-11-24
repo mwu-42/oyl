@@ -7,8 +7,10 @@ enum Layout {
     static let artSize: CGFloat = 94
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
-    /// (With a row under Claude's tokens for what they'd cost.)
-    static let activityHeight: CGFloat = 172
+    /// (With a row under Claude's tokens for what they'd cost, and one for its 5-hour window.)
+    static var activityHeight: CGFloat { 172 + (Feature.claudeLimit.isOn ? 24 : 0) }
+    /// The system's part of it, over Claude's rows.
+    static let activitySystemHeight: CGFloat = 172 - 22 - 24
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.
     static let githubHeight: CGFloat = 54
     static var activityWithGitHub: CGFloat { activityHeight + 8 + githubHeight }
@@ -127,26 +129,21 @@ struct CompactLayout {
     let dictating: Bool
     /// The timer held on the notch, while nothing's being dictated.
     let focus: ReminderTimer?
-    /// How much of Claude's 5-hour window is used, while there's nothing else on the notch.
-    let limit: ClaudeLimit.Reading?
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil, limit: ClaudeLimit.Reading? = nil) {
+    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil) {
         self.dictating = dictating
         self.focus = dictating ? nil : focus
-        self.limit = dictating || focus != nil ? nil : limit
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    var isEmpty: Bool { !dictating && focus == nil && limit == nil }
+    var isEmpty: Bool { !dictating && focus == nil }
 
-    /// How far it reaches either side of the notch: for a timer, room for its name and its time;
-    /// for Claude's window, its gauge and its figure.
-    var wing: CGFloat { focus != nil ? Self.timerWing : limit != nil ? Self.limitWing : inset + (isEmpty ? 0 : art) + 10 }
+    /// How far it reaches either side of the notch: for a timer, room for its name and its time.
+    var wing: CGFloat { focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
     static let timerWing: CGFloat = 70
-    static let limitWing: CGFloat = 42
 }
 
 @MainActor
@@ -417,12 +414,8 @@ final class NotchState: ObservableObject {
 
     var compact: CompactLayout {
         CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
-                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil,
-                      limit: Feature.claudeLimit.isOn ? claudeLimit.flatMap { $0.isCurrent(at: Date()) ? $0 : nil } : nil)
+                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil)
     }
-
-    /// How much of Claude's 5-hour window is used, as last read (see `ClaudeLimit`).
-    @Published var claudeLimit: ClaudeLimit.Reading?
 
     /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
     /// each timer and reminder, staying awake, a low battery, a late night, a selfie; or with
@@ -694,6 +687,8 @@ final class NotchController {
     private var missionControl: MissionControl?
     /// Your desktops' groups, marked over Mission Control while it's open.
     private let missionGroups = MissionGroups()
+    /// A sound as a Claude finishes, or starts waiting for you.
+    private let chimes = AgentChimes()
     /// The lid's shut with no other screen on.
     private var isShut = false
     private let stats = SystemStats()
@@ -726,14 +721,17 @@ final class NotchController {
         walkers.setShown(state.oylsVisible)
         walkers.dimsBar = state.dimsMenuBar
         walkers.showsCountdowns = state.showsCountdowns
-        // Claude's 5-hour window on the closed notch, as it's read; read again soon once a Claude
-        // that was working is done.
-        ClaudeLimit.shared.$reading
-            .removeDuplicates()
-            .sink { [weak self] reading in
-                MainActor.assumeIsolated { self?.state.claudeLimit = reading }
+        // A sound as a Claude finishes, or starts waiting for you (with it turned on).
+        agents.$sessions
+            .sink { [weak self] sessions in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.chimes.update(sessions, theme: self.state.theme, isOff: self.state.isOff)
+                }
             }
             .store(in: &cancellables)
+        // Claude's 5-hour window (on the usage page), read again soon once a Claude that was
+        // working is done.
         agents.$sessions
             .map { $0.filter { $0.isClaude && $0.activity.priority > 1 }.count }
             .removeDuplicates()
@@ -957,7 +955,13 @@ final class NotchController {
         ])
         missionControl = MissionControl { [weak self] showing in
             self?.viewDesktops(showing && Feature.missionControl.isOn)
-            self?.missionGroups.showing(showing && self?.state.isOff == false)
+            if self?.state.isOff == false { self?.missionGroups.showing(showing) }
+        }
+        // Three fingers up (Mission Control's swipe): its row's looked for at once, in case the
+        // Dock's word of it is late, or never comes.
+        Trackpads.shared.threeUp = { [weak self] in
+            guard let self, !self.state.isOff else { return }
+            self.missionGroups.expect()
         }
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped

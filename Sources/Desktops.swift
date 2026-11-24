@@ -30,8 +30,11 @@ enum DesktopSwipe: Equatable {
 /// go; it's over as soon as one lifts, and nothing more's made of them till they're all off. (Three
 /// are left alone: they're Mission Control's, and the hand pointer's.)
 struct SwipeRecognizer {
-    /// How many fingers.
+    /// How many fingers (four for Oyl's own; three to see Mission Control's swipe begin).
     static let fingers = 4
+    let count: Int
+
+    init(fingers: Int = Self.fingers) { count = fingers }
     /// How far up or down, of the trackpad's height, is the whole way.
     static let travel = 0.16
     /// How far they go before it's decided which way.
@@ -52,10 +55,10 @@ struct SwipeRecognizer {
     mutating func frame(touching: Int, x: Double, y: Double, at time: Double) -> [DesktopSwipe] {
         switch phase {
         case .idle:
-            if touching == Self.fingers { phase = .watching(x: x, y: y) }
+            if touching == count { phase = .watching(x: x, y: y) }
             return []
         case .watching(let startX, let startY):
-            guard touching == Self.fingers else {
+            guard touching == count else {
                 phase = touching == 0 ? .idle : .done
                 return []
             }
@@ -68,11 +71,11 @@ struct SwipeRecognizer {
             phase = .swiping(up: up > 0, from: startY, last: y, at: time, speed: 0)
             return [.began(up: up > 0), .moved(Self.progress(up: up > 0, from: startY, to: y))]
         case .swiping(let upward, let start, let last, let at, var speed):
-            if touching > Self.fingers {
+            if touching > count {
                 phase = .done
                 return [.cancelled]
             }
-            guard touching == Self.fingers else {
+            guard touching == count else {
                 phase = touching == 0 ? .idle : .done
                 return [.ended(Self.progress(up: upward, from: start, to: last), speed: speed)]
             }
@@ -104,6 +107,8 @@ final class Trackpads: @unchecked Sendable {
 
     /// Told of each swipe.
     @MainActor var swiped: (DesktopSwipe) -> Void = { _ in }
+    /// Told as three fingers begin up (Mission Control's swipe, which macOS answers itself).
+    @MainActor var threeUp: () -> Void = {}
 
     private typealias Callback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
     private typealias CreateList = @convention(c) () -> Unmanaged<CFArray>?
@@ -136,6 +141,7 @@ final class Trackpads: @unchecked Sendable {
     private var list: CFArray?
     private var devices: [UnsafeMutableRawPointer] = []
     private var recognizer = SwipeRecognizer()
+    private var three = SwipeRecognizer(fingers: 3)
 
     /// Every trackpad read, from now (each one there is now; `restart` finds any since).
     @MainActor
@@ -152,6 +158,7 @@ final class Trackpads: @unchecked Sendable {
             list = array
             devices = found
             recognizer = SwipeRecognizer()
+            three = SwipeRecognizer(fingers: 3)
         }
         for device in found {
             register(device, Self.frame)
@@ -211,7 +218,14 @@ final class Trackpads: @unchecked Sendable {
             x /= Double(touching)
             y /= Double(touching)
         }
-        let swipes = lock.withLock { recognizer.frame(touching: touching, x: x, y: y, at: time) }
+        let (swipes, threes) = lock.withLock {
+            (recognizer.frame(touching: touching, x: x, y: y, at: time), three.frame(touching: touching, x: x, y: y, at: time))
+        }
+        if threes.contains(.began(up: true)) {
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { Trackpads.shared.threeUp() }
+            }
+        }
         guard !swipes.isEmpty else { return }
         DispatchQueue.main.async {
             MainActor.assumeIsolated { for swipe in swipes { Trackpads.shared.swiped(swipe) } }
@@ -1315,11 +1329,15 @@ private struct DeskHeading: View {
                     .transition(.opacity)
             }
             if !renaming, model.isSplit(group.id) {
-                // Its desktops apart in Mission Control: said, to drag them together there.
-                Text(midnight ? "parted" : "split")
-                    .font(midnight ? Midnight.italic(12.5) : .system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(LimitWing.tint(85, theme: theme).opacity(midnight ? 0.85 : 1))
-                    .help("Its desktops aren't next to each other in Mission Control: drag them together there")
+                // Its desktops apart in Mission Control: marked as it marks them there, dashed in amber.
+                Path { path in
+                    path.move(to: CGPoint(x: 1, y: 1))
+                    path.addLine(to: CGPoint(x: 17, y: 1))
+                }
+                .stroke(MissionMark.amber(theme).opacity(midnight ? 0.85 : 1),
+                        style: StrokeStyle(lineWidth: midnight ? 1.2 : 2, lineCap: .round, dash: midnight ? [1, 3.5] : [4, 3]))
+                .frame(width: 18, height: 2)
+                .help("Its desktops aren't next to each other in Mission Control")
             }
             Spacer(minLength: 8)
             if !renaming, model.dragging == nil, model.anchor == nil, model.hovered == id || model.selected == id {

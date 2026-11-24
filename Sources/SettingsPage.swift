@@ -134,7 +134,7 @@ struct SettingsPage: View {
             }
             items += [
                 feature(.spaceLabel, "Desktop's name", "Top left of the bar: the desktop you're on. Click it to rename it"),
-                feature(.claudeLimit, "Claude's 5 hours", "On the closed notch: how much of Claude's 5-hour limit window is used, as Claude Code's /usage says, read every few minutes"),
+                feature(.claudeLimit, "Claude's 5 hours", "On the usage page, in orange: how much of Claude's 5-hour limit window is used and when it resets, as Claude Code's /usage says, read every few minutes"),
                 feature(.agentOyls, "Agents' \(oyl)s", "One for each agent at work"),
                 feature(.musicOyl, "Music \(oyl)", "Dancing (or reading) to what's playing"),
                 feature(.timerOyls, "Timers' \(oyl)s", "One for each timer and reminder"),
@@ -164,6 +164,9 @@ struct SettingsPage: View {
                                          remove: { radar.decline(agent) }))
             }
             items.append(feature(.discovery, "Find new agents", "Offer to watch apps that talk to an AI service"))
+            items.append(feature(.agentSounds, "🔔 Sound when Claude's done", midnight
+                ? "A soft sound as a Claude finishes its turn (Submarine), another as it starts waiting for you, for a permission or a question (Purr)"
+                : "A sound as a Claude finishes its turn (Glass), another as it starts waiting for you, for a permission or a question (Ping)"))
             let morning = MorningStart.shared
             items.append(SettingItem(id: Feature.morningClaude.rawValue, title: "☀ Claude at \(morning.time)",
                                      hint: "Each morning at \(morning.time), a one-word prompt to Claude (Haiku, through Claude Code, on your plan) starts your 5-hour limit window, so it resets that much sooner. ‹ › change the time. The Mac has to be awake: missed while it sleeps, it's sent when it wakes, within 4 hours. " + morning.lastSaid,

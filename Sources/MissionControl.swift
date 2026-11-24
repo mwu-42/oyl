@@ -22,6 +22,8 @@ final class MissionControl {
     private var retrying: Timer?
     /// Its windows for them have been seen this time, so once they're gone, so is it.
     private var sawWindows = false
+    /// Checks in a row its windows weren't seen (one's a flicker, as a swipe settles).
+    private var misses = 0
 
     init(changed: @escaping @MainActor (Bool) -> Void) {
         self.changed = changed
@@ -74,6 +76,7 @@ final class MissionControl {
 
     private func begin() {
         sawWindows = false
+        misses = 0
         isShowing = true
         checking?.invalidate()
         checking = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -81,8 +84,10 @@ final class MissionControl {
                 guard let self else { return }
                 if Self.dockWindowsUp() {
                     self.sawWindows = true
+                    self.misses = 0
                 } else if self.sawWindows {
-                    self.end()
+                    self.misses += 1
+                    if self.misses >= 2 { self.end() }
                 }
             }
         }

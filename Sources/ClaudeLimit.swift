@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import os
 
-/// How much of Claude's 5-hour limit window is used, for the closed notch: Claude Code's own
+/// How much of Claude's 5-hour limit window is used, for the usage page: Claude Code's own
 /// `/usage`, which it answers itself in a second or two (no prompt, no model: it asks Anthropic for
 /// the plan's usage, as it signs in), read every few minutes ("Current session: 87% used · resets
 /// Nov 23 at 11:09pm"). Read again soon after an agent's done, when the Mac wakes, and as the
@@ -164,6 +164,17 @@ final class ClaudeLimit: ObservableObject {
     }
 
     // MARK: Saying it
+
+    /// "87% used · resets 11:09 PM", for the usage page.
+    nonisolated static func short(_ reading: Reading) -> String {
+        let used = "\(reading.percent)% used"
+        guard let resets = reading.resets else { return used }
+        let formatter = DateFormatter()
+        formatter.timeStyle = .short
+        formatter.dateStyle = Calendar.current.isDate(resets, inSameDayAs: reading.at) ? .none : .short
+        formatter.doesRelativeDateFormatting = true
+        return used + " · resets " + formatter.string(from: resets).replacingOccurrences(of: "\u{202F}", with: " ")
+    }
 
     /// "87% of Claude's 5-hour window used · resets 11:09 PM", for the notch's hint.
     nonisolated static func describe(_ reading: Reading) -> String {

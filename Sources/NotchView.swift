@@ -156,8 +156,6 @@ struct CompactNotch: View {
     var body: some View {
         if let timer = layout.focus.flatMap({ focus in timers.timers.first { $0.id == focus.id } }) {
             HeldTimer(timer: timer, size: size, notchWidth: notchWidth)
-        } else if let limit = layout.limit {
-            LimitWing(reading: limit, size: size, notchWidth: notchWidth)
         } else {
             dictating
         }
@@ -220,62 +218,6 @@ struct HeldTimer: View {
             .frame(width: size.width, height: size.height)
         }
         .help("\(timer.title), held on the notch")
-    }
-}
-
-/// How much of Claude's 5-hour limit window is used, on the closed notch (see `ClaudeLimit`): a
-/// gauge on the left and the figure on the right. In Oyl's look, a ring filling up, white till
-/// 80%, then amber, and coral past 95%. In Midnight Oyl's, a moon waxing as the window fills, a
-/// crescent to full, its glow rising with it, the figure in the notch's Victorian face; it waxes
-/// (and the figure rolls) as a new reading comes.
-struct LimitWing: View {
-    let reading: ClaudeLimit.Reading
-    let size: CGSize
-    let notchWidth: CGFloat
-    @Environment(\.notchTheme) private var theme
-
-    private var fraction: Double { min(max(Double(reading.percent) / 100, 0), 1) }
-
-    /// White, amber past 80%, coral past 95% (paler in Midnight's, as its colors are).
-    static func tint(_ percent: Int, theme: NotchTheme) -> Color {
-        let color = percent >= 95 ? Color(red: 1, green: 0.48, blue: 0.42) : percent >= 80 ? Color(red: 1, green: 0.76, blue: 0.36) : .white
-        return theme.tint(color)
-    }
-
-    var body: some View {
-        let midnight = theme == .midnight, tint = Self.tint(reading.percent, theme: theme)
-        HStack(spacing: 0) {
-            // The gauge, and "5h" by it, so it's never taken for a timer.
-            HStack(spacing: 4) {
-                if midnight {
-                    WaxingMoon(fraction: fraction)
-                        .fill(Midnight.silver.opacity(0.92))
-                        .background(Circle().strokeBorder(Midnight.silver.opacity(0.28), lineWidth: 0.75))
-                        .shadow(color: Midnight.moonlight.opacity(0.15 + 0.45 * fraction), radius: 2 + 3 * fraction)
-                        .frame(width: 13, height: 13)
-                } else {
-                    TimerRing(fraction: fraction, lineWidth: 2, color: tint)
-                        .frame(width: 14, height: 14)
-                }
-                Text("5h")
-                    .notchFont(size: midnight ? 11 : 10, weight: .semibold, design: .rounded)
-                    .foregroundStyle(midnight ? Midnight.silver.opacity(0.55) : .white.opacity(0.45))
-                    .lineLimit(1)
-                    .fixedSize()
-            }
-            .frame(width: CompactLayout.limitWing - 8, alignment: .leading)
-            Spacer(minLength: notchWidth)
-            Text("\(reading.percent)%")
-                .notchFont(size: midnight ? 12.5 : 12, weight: .semibold, design: .rounded, digits: true)
-                .foregroundStyle(midnight && reading.percent < 80 ? Midnight.white.opacity(0.9) : tint)
-                .lineLimit(1)
-                .contentTransition(.numericText(value: Double(reading.percent)))
-                .frame(width: CompactLayout.limitWing - 8, alignment: .trailing)
-        }
-        .padding(.horizontal, 6)
-        .frame(width: size.width, height: size.height)
-        .animation(midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 1.2) : .easeOut(duration: 0.3), value: reading.percent)
-        .help(ClaudeLimit.describe(reading))
     }
 }
 

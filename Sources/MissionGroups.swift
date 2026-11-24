@@ -31,7 +31,7 @@ enum MissionControlRow {
 
     private nonisolated static func missionControl(_ dock: pid_t) -> AXUIElement? {
         let element = AXUIElementCreateApplication(dock)
-        AXUIElementSetMessagingTimeout(element, 0.5)
+        AXUIElementSetMessagingTimeout(element, 0.25)
         guard let group = children(element).first(where: { identifier($0) == "mc" }), !children(group).isEmpty else { return nil }
         return group
     }
@@ -109,6 +109,11 @@ struct MissionMark: Identifiable, Equatable {
     }
 }
 
+extension MissionMark {
+    /// Amber, for a split group (paler in Midnight's, as its colors are).
+    nonisolated static func amber(_ theme: NotchTheme) -> Color { theme.tint(Color(red: 1, green: 0.76, blue: 0.36)) }
+}
+
 @MainActor
 final class MissionMarksModel: ObservableObject {
     @Published var marks: [MissionMark] = []
@@ -126,14 +131,27 @@ final class MissionGroups {
     private var timer: Timer?
     private var reading = false
     private var hiding: DispatchWorkItem?
+    /// Looked for till then, though it isn't there yet (its swipe's begun, or the Dock's said so).
+    private var expecting: Date?
+    /// When its row was last there: it's gone once it hasn't been for a moment.
+    private var lastSeen: Date?
 
     var theme = NotchTheme.standard {
         didSet { for entry in panels.values { entry.model.theme = theme } }
     }
 
-    /// Mission Control's open (or not).
+    /// The Dock says Mission Control's open (or not). Open, it's looked for; closed, its row going
+    /// is what puts the marks away (so a moment's flicker of the Dock's windows doesn't).
     func showing(_ on: Bool) {
-        if on, Feature.missionControlGroups.isOn, !SpaceGroups().all.isEmpty { start() } else { stop() }
+        if on { expect() }
+    }
+
+    /// Mission Control may be coming (three fingers began up, or the Dock said so): its row looked
+    /// for a few seconds, and marked for as long as it's there.
+    func expect() {
+        guard Feature.missionControlGroups.isOn, !SpaceGroups().all.isEmpty else { return }
+        expecting = Date().addingTimeInterval(3)
+        start()
     }
 
     private func start() {
@@ -152,6 +170,8 @@ final class MissionGroups {
     private func stop() {
         timer?.invalidate()
         timer = nil
+        expecting = nil
+        lastSeen = nil
         for entry in panels.values { withAnimation(Self.ease(theme)) { entry.model.shown = false } }
         hiding?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -174,6 +194,16 @@ final class MissionGroups {
                 MainActor.assumeIsolated {
                     self.reading = false
                     guard self.timer != nil else { return }
+                    let now = Date()
+                    guard !rows.isEmpty else {
+                        // Gone (or never came): once it's not been there for a moment, and isn't
+                        // still awaited.
+                        if (self.expecting.map { now > $0 } ?? true), (self.lastSeen.map { now.timeIntervalSince($0) > 0.45 } ?? true) {
+                            self.stop()
+                        }
+                        return
+                    }
+                    self.lastSeen = now
                     self.apply(rows)
                 }
             }
@@ -239,9 +269,9 @@ final class MissionGroups {
 
 /// The marks: in Oyl's look, a white bar under each group's run of desktops and its name on a
 /// black pill under that, amber and dashed for a group that's split, its parts linked by a dashed
-/// curve and the name saying "split · drag together". In Midnight Oyl's, a fine silver line with a
-/// star under each desktop and the name in italics on a breath of night, a split group's line
-/// dotted in pale amber, its parts joined by a dotted arc, "parted"; they drift in out of a blur.
+/// curve. In Midnight Oyl's, a fine silver line with a star under each desktop and the name in
+/// italics on a breath of night, a split group's in pale amber, its parts joined by a dotted arc;
+/// they drift in out of a blur. Only the names are words.
 struct MissionMarksView: View {
     @ObservedObject var model: MissionMarksModel
 
@@ -253,19 +283,6 @@ struct MissionMarksView: View {
                 MissionMarkView(mark: mark, midnight: midnight)
                     .frame(width: max(mark.frame.width, 60))
                     .position(x: mark.frame.midX, y: mark.frame.maxY + 18)
-            }
-            // Once, under the row, what a split group wants.
-            if let split = model.marks.filter(\.isSplit).map(\.frame).reduce(nil, { ($0 ?? $1).union($1) }) {
-                Text(midnight ? "drag the parted desktops back together" : "drag a split group's desktops next to each other")
-                    .font(midnight ? Midnight.italic(13) : .system(size: 11, weight: .medium))
-                    .foregroundStyle(LimitWing.tint(85, theme: model.theme).opacity(midnight ? 0.8 : 0.95))
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 3)
-                    .background {
-                        if midnight { Capsule().fill(Midnight.ink.opacity(0.65)).blur(radius: 6) } else { Capsule().fill(Color.black.opacity(0.7)) }
-                    }
-                    .fixedSize()
-                    .position(x: split.midX, y: split.maxY + 74)
             }
         }
         .frame(width: model.size.width, height: model.size.height, alignment: .topLeading)
@@ -290,7 +307,7 @@ struct MissionMarksView: View {
                     path.addCurve(to: end, control1: CGPoint(x: start.x, y: dip), control2: CGPoint(x: end.x, y: dip))
                 }
             }
-            .stroke(LimitWing.tint(85, theme: model.theme).opacity(midnight ? 0.55 : 0.8),
+            .stroke(MissionMark.amber(model.theme).opacity(midnight ? 0.55 : 0.8),
                     style: StrokeStyle(lineWidth: midnight ? 0.9 : 1.5, lineCap: .round, dash: midnight ? [1, 5] : [5, 4]))
             .shadow(color: midnight ? Midnight.moonlight.opacity(0.3) : .clear, radius: 3)
         }
@@ -302,11 +319,8 @@ private struct MissionMarkView: View {
     let midnight: Bool
     @Environment(\.notchTheme) private var theme
 
-    private var tint: Color { mark.isSplit ? LimitWing.tint(85, theme: theme) : (midnight ? Midnight.silver : .white) }
-    private var label: String {
-        guard mark.isSplit else { return mark.name }
-        return midnight ? "\(mark.name), parted" : "\(mark.name) · split"
-    }
+    private var tint: Color { mark.isSplit ? MissionMark.amber(theme) : (midnight ? Midnight.silver : .white) }
+    private var label: String { mark.name }
 
     var body: some View {
         VStack(spacing: midnight ? 5 : 4) {

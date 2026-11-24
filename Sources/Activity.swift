@@ -265,7 +265,7 @@ struct ActivityPage: View {
                     .notchFont(size: 10, weight: .medium, digits: true)
                     .foregroundStyle(.white.opacity(0.4))
             }
-            .frame(maxWidth: .infinity, maxHeight: Layout.activityHeight - 22 - 24, alignment: .topLeading)  // Claude's rows under it
+            .frame(maxWidth: .infinity, maxHeight: Layout.activitySystemHeight, alignment: .topLeading)  // Claude's rows under it
         }
     }
 
@@ -360,14 +360,21 @@ private struct Sparkline: View {
 /// today and in the last five hours.
 struct ClaudeUsageRows: View {
     let totals: TokenUsage.Totals?
+    @ObservedObject private var limit = ClaudeLimit.shared
+    @ObservedObject private var features = Features.shared
     @Environment(\.notchTheme) private var theme
     private var tint: Color { theme.tint(ActivityPage.tint) }
+
+    /// Claude's own orange, for its 5-hour window (paler in Midnight's, as its colors are).
+    static let orange = Color(red: 1, green: 0.55, blue: 0.2)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             tokens
+            if features.isOn(.claudeLimit) { ClaudeWindowRow(reading: limit.reading) }
             if let totals, totals.today > 0 || totals.lastFiveHours > 0 { spent(totals) }
         }
+        .onAppear { limit.nudge() }
     }
 
     private var tokens: some View {
@@ -455,6 +462,53 @@ struct ClaudeUsageRows: View {
             .foregroundStyle(.white.opacity(0.85))
             .lineLimit(1)
     }
+}
+
+/// How much of Claude's 5-hour limit window is used, in orange (see `ClaudeLimit`): a bar filling
+/// in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets.
+struct ClaudeWindowRow: View {
+    let reading: ClaudeLimit.Reading?
+    var now = Date()
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        let orange = theme.tint(ClaudeUsageRows.orange)
+        let reading = self.reading.flatMap { $0.isCurrent(at: now) ? $0 : nil }
+        let fraction = reading.map { min(max(Double($0.percent) / 100, 0), 1) } ?? 0
+        return HStack(spacing: 8) {
+            Text("5 hours")
+                .notchFont(size: 11, weight: .medium)
+                .foregroundStyle(orange.opacity(0.85))
+                .frame(width: 54, alignment: .leading)
+            Group {
+                if theme == .midnight {
+                    WaxingMoon(fraction: fraction)
+                        .fill(orange.opacity(0.9))
+                        .background(Circle().strokeBorder(orange.opacity(0.3), lineWidth: 0.75))
+                        .shadow(color: orange.opacity(0.2 + 0.4 * fraction), radius: 2 + 3 * fraction)
+                        .frame(width: 13, height: 13)
+                        .frame(width: 92, alignment: .leading)
+                } else {
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(orange.opacity(0.18))
+                            Capsule().fill(orange).frame(width: geometry.size.width * fraction)
+                        }
+                    }
+                    .frame(width: 92, height: 5)
+                }
+            }
+            Text(reading.map(ClaudeLimit.short) ?? "not read yet")
+                .notchFont(size: 11, weight: .medium, digits: true)
+                .foregroundStyle(orange.opacity(reading == nil ? 0.5 : 0.95))
+                .lineLimit(1)
+                .contentTransition(.numericText(value: Double(reading?.percent ?? 0)))
+        }
+        .frame(height: 16)
+        .animation(theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 1.2) : .easeOut(duration: 0.3), value: reading?.percent)
+        .help(reading.map(ClaudeLimit.describe) ?? "Claude's 5-hour limit window, as Claude Code's /usage says")
+    }
+
 }
 
 private struct HourlyBars: View {
