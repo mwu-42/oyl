@@ -26,6 +26,9 @@ final class ClaudeLimit: ObservableObject {
 
     @Published private(set) var reading: Reading?
 
+    /// Read while it's shown anywhere: on the usage page, or on the bar.
+    static var isWanted: Bool { Feature.claudeLimit.isOn || Feature.claudeLimitBar.isOn }
+
     /// How often it's read, and how soon again after something's happened.
     static let every: TimeInterval = 3 * 60
     static let soonest: TimeInterval = 30
@@ -49,18 +52,23 @@ final class ClaudeLimit: ObservableObject {
                 MainActor.assumeIsolated { self?.schedule(in: 5) }
             },
         ]
-        following = Features.shared.follow(.claudeLimit) { [weak self] on in
-            guard let self else { return }
-            if on { self.schedule(in: 1) } else {
-                self.stop()
-                self.reading = nil
+        following = Features.shared.changed
+            .filter { $0.0 == .claudeLimit || $0.0 == .claudeLimitBar }
+            .sink { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if Self.isWanted { self.schedule(in: 1) } else {
+                        self.stop()
+                        self.reading = nil
+                    }
+                }
             }
-        }
+        schedule(in: 1)
     }
 
     /// Something's happened that may have used some (an agent's done): read again soon.
     func nudge() {
-        guard Feature.claudeLimit.isOn, !isResting else { return }
+        guard Self.isWanted, !isResting else { return }
         let since = lastAsked.map { Date().timeIntervalSince($0) } ?? .infinity
         schedule(in: max(Self.soonest - since, 2))
     }
@@ -71,7 +79,7 @@ final class ClaudeLimit: ObservableObject {
     }
 
     private func schedule(in seconds: TimeInterval) {
-        guard Feature.claudeLimit.isOn, !isResting else { return }
+        guard Self.isWanted, !isResting else { return }
         timer?.invalidate()
         let timer = Timer(timeInterval: max(seconds, 1), repeats: false) { [weak self] _ in
             MainActor.assumeIsolated { self?.ask() }
@@ -82,7 +90,7 @@ final class ClaudeLimit: ObservableObject {
     }
 
     private func ask() {
-        guard !asking, Feature.claudeLimit.isOn, !isResting else { return }
+        guard !asking, Self.isWanted, !isResting else { return }
         asking = true
         lastAsked = Date()
         DispatchQueue.global(qos: .utility).async {

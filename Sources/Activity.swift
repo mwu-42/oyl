@@ -318,7 +318,7 @@ private struct Meter: View {
         GeometryReader { geometry in
             ZStack(alignment: .leading) {
                 Capsule().fill(.white.opacity(0.12))
-                Capsule().fill(fraction > 0.85 ? theme.tint(Oyl.noteYellow) : tint)
+                Capsule().fill(tint.opacity(fraction > 0.85 ? 1 : 0.85))
                     .frame(width: geometry.size.width * min(max(fraction, 0), 1))
             }
         }
@@ -365,8 +365,6 @@ struct ClaudeUsageRows: View {
     @Environment(\.notchTheme) private var theme
     private var tint: Color { theme.tint(ActivityPage.tint) }
 
-    /// Claude's own orange, for its 5-hour window (paler in Midnight's, as its colors are).
-    static let orange = Color(red: 1, green: 0.55, blue: 0.2)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -464,15 +462,16 @@ struct ClaudeUsageRows: View {
     }
 }
 
-/// How much of Claude's 5-hour limit window is used, in orange (see `ClaudeLimit`): a bar filling
-/// in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets.
+/// How much of Claude's 5-hour limit window is used, in the page's pink (see `ClaudeLimit`): a bar
+/// filling in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets.
 struct ClaudeWindowRow: View {
     let reading: ClaudeLimit.Reading?
     var now = Date()
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
-        let orange = theme.tint(ClaudeUsageRows.orange)
+        // The page's pink, as everything on it is.
+        let orange = theme.tint(ActivityPage.tint)
         let reading = self.reading.flatMap { $0.isCurrent(at: now) ? $0 : nil }
         let fraction = reading.map { min(max(Double($0.percent) / 100, 0), 1) } ?? 0
         return HStack(spacing: 8) {

@@ -437,12 +437,14 @@ struct ContributionsRow: View {
         (0..<53).map { week in (0..<7).map { GitHubContributions.Day(date: "\(week)-\($0)", weekday: $0, count: 0, level: 0) } }
 }
 
-/// Midnight Oyl's grid, a star chart (see `ContributionsRow`).
+/// Midnight Oyl's grid, a star chart (see `ContributionsRow`), its stars in the page's pink, as
+/// Midnight has it (paler).
 private struct StarChart: View {
     let weeks: [[GitHubContributions.Day]]
     let layout: ContributionLayout
     let today: String?
     let pointed: String?
+    private let pink = NotchTheme.midnight.tint(ActivityPage.tint)
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
@@ -456,7 +458,7 @@ private struct StarChart: View {
                         lines.addLine(to: layout.center(week: index, weekday: next.weekday))
                     }
                 }
-                context.stroke(lines, with: .color(Midnight.starlight.opacity(0.22)), lineWidth: 0.5)
+                context.stroke(lines, with: .color(pink.opacity(0.22)), lineWidth: 0.5)
                 let unit = layout.cell / 5
                 for (index, week) in weeks.enumerated() {
                     for day in week {
@@ -467,7 +469,7 @@ private struct StarChart: View {
                         if isPointed {
                             let reach = layout.pitch * 1.6
                             context.fill(Path(ellipseIn: CGRect(x: center.x - reach, y: center.y - reach, width: 2 * reach, height: 2 * reach)),
-                                         with: .radialGradient(Gradient(colors: [Midnight.moonlight.opacity(0.35), Midnight.moonlight.opacity(0)]),
+                                         with: .radialGradient(Gradient(colors: [pink.opacity(0.35), pink.opacity(0)]),
                                                                center: center, startRadius: 0, endRadius: reach))
                         }
                         let swell: CGFloat = isPointed ? 1.5 : 1
@@ -475,16 +477,16 @@ private struct StarChart: View {
                         switch day.level {
                         case 0:
                             star.opacity = isPointed ? 0.5 : 0.14
-                            star.fill(dot(center, 0.45 * unit * swell), with: .color(Midnight.starlight))
+                            star.fill(dot(center, 0.45 * unit * swell), with: .color(pink))
                         case 1, 2:
                             star.opacity = day.level == 1 ? 0.45 : 0.65
-                            star.fill(dot(center, (day.level == 1 ? 0.8 : 1.1) * unit * swell), with: .color(Midnight.starlight))
+                            star.fill(dot(center, (day.level == 1 ? 0.8 : 1.1) * unit * swell), with: .color(pink))
                         default:
                             star.opacity = (day.level == 3 ? 0.7 : 0.85) + 0.15 * twinkle
                             if day.level == 4 {
                                 let reach = (2.2 + 0.5 * twinkle) * unit * swell
                                 star.fill(FourPointStar().path(in: CGRect(x: center.x - reach, y: center.y - reach, width: 2 * reach, height: 2 * reach)),
-                                          with: .color(Midnight.starlight))
+                                          with: .color(pink))
                             }
                             star.fill(dot(center, (day.level == 3 ? 1.35 : 1.1) * unit * swell * (0.9 + 0.2 * twinkle)),
                                       with: .color(Midnight.white))
@@ -492,7 +494,7 @@ private struct StarChart: View {
                         if day.date == today {
                             let ring = 2.3 * unit
                             context.stroke(Path(ellipseIn: CGRect(x: center.x - ring, y: center.y - ring, width: 2 * ring, height: 2 * ring)),
-                                           with: .color(Midnight.moonlight.opacity(0.6)), lineWidth: 0.5)
+                                           with: .color(pink.opacity(0.6)), lineWidth: 0.5)
                         }
                     }
                 }

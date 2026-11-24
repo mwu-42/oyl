@@ -63,6 +63,8 @@ enum Feature: String, CaseIterable, Sendable {
     case openAtLogin
     /// How much of Claude's 5-hour window is used, on the closed notch (see `ClaudeLimit`).
     case claudeLimit
+    /// What's left of it, on the menu bar beside the notch (see `BarLimit`).
+    case claudeLimitBar
     /// Your desktops' groups marked over macOS's Mission Control (see `MissionGroups`).
     case missionControlGroups
     /// A sound when a Claude's done, or waiting for you (see `AgentChimes`).
@@ -77,7 +79,7 @@ enum Feature: String, CaseIterable, Sendable {
     var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? !Self.offToBegin.contains(self) }
 
     /// Off till they're turned on: what sends things in your name.
-    static let offToBegin: Set<Feature> = [.morningClaude, .agentSounds, .holdScreenshots]
+    static let offToBegin: Set<Feature> = [.morningClaude, .agentSounds, .holdScreenshots, .claudeLimitBar]
 
     /// What a gesture does, if it can be turned off.
     init?(_ gesture: HandGesture) {

@@ -685,6 +685,8 @@ final class NotchController {
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
+    /// What's left of Claude's 5-hour window, on the bar beside the notch.
+    private var barLimit: BarLimit?
     /// Your desktops' groups, marked over Mission Control while it's open.
     private let missionGroups = MissionGroups()
     /// A sound as a Claude finishes, or starts waiting for you.
@@ -753,6 +755,12 @@ final class NotchController {
         state.gestures = gestures
         dock = DockController(state: state)
         spaceLabel = SpaceLabel(state: state)
+        barLimit = BarLimit(state: state)
+        // The lyrics on the bar keep clear of it.
+        barLimit?.reachChanged = { [weak self] in
+            guard let self, let screen = self.screen else { return }
+            self.showClosedLyrics(on: screen)
+        }
         spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
         pictureInPicture = PictureInPicture(state: state)
         Features.shared.follow(.desktopsView) { [weak self] _ in self?.followDesktops() }
@@ -1213,7 +1221,7 @@ final class NotchController {
         let playing = state.nowPlaying
         closedLyrics.show(wanted: state.wantsLyricsByNotch, paused: state.wouldShowLyricsByNotch && !playing.isPlaying,
                           lyrics: playing.lyrics?.trackID == playing.track?.id ? playing.lyrics : nil, seed: playing.track?.id ?? "", on: screen, metrics: state.metrics,
-                          beside: state.compact.isEmpty ? 0 : state.compact.wing,
+                          beside: max(state.compact.isEmpty ? 0 : state.compact.wing, barLimit?.reach ?? 0),
                           opened: state.mode == .expanded || state.theme != .midnight)
     }
 
