@@ -682,6 +682,7 @@ final class NotchController {
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var approveTaps: TapWatcher?
+    private var shiftTaps: TapWatcher?
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
@@ -733,7 +734,9 @@ final class NotchController {
         spaceLabel = SpaceLabel(state: state)
         spaceLabel?.onSpan = { [weak self] span in self?.walkers.keepClear = span }
         pictureInPicture = PictureInPicture(state: state)
-        Features.shared.follow(.desktopsView) { [weak self] on in self?.followDesktops(on) }
+        Features.shared.follow(.desktopsView) { [weak self] _ in self?.followDesktops() }
+            .store(in: &cancellables)
+        Features.shared.follow(.desktopsKey) { [weak self] _ in self?.followDesktops() }
             .store(in: &cancellables)
 
         let center = NotificationCenter.default
@@ -945,6 +948,14 @@ final class NotchController {
             },
             2: {},
         ])
+        // The right Shift key on its own twice, quickly: the desktops' list, as four fingers up
+        // bring it (or put away, if it's up).
+        shiftTaps = TapWatcher(.shift, side: ModifierTaps.rightShift, gap: ModifierTaps.shiftGap, actions: [
+            2: { [weak self] in
+                guard let self, !self.state.isOff, Feature.desktopsKey.isOn else { return }
+                self.desktops?.toggle()
+            },
+        ])
         missionControl = MissionControl { [weak self] showing in self?.viewDesktops(showing && Feature.missionControl.isOn) }
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
@@ -1006,23 +1017,26 @@ final class NotchController {
         castOyls()
     }
 
-    /// Four fingers up for the desktops, or not: the trackpads read only while it's on.
-    private func followDesktops(_ on: Bool) {
-        guard on else {
+    /// The desktops' list, while four fingers up or right Shift twice brings it (either's on):
+    /// the trackpads read only while four fingers up do.
+    private func followDesktops() {
+        guard Feature.desktopsView.isOn || Feature.desktopsKey.isOn else {
             desktops?.stop()
             desktops = nil
             return
         }
-        guard desktops == nil else { return }
-        let viewer = DesktopsViewer()
-        viewer.theme = state.theme
-        viewer.isResting = state.isResting
-        viewer.isAllowed = { [weak self] in
-            guard let self else { return false }
-            return !self.state.isOff && !self.state.isResting
+        if desktops == nil {
+            let viewer = DesktopsViewer()
+            viewer.theme = state.theme
+            viewer.isResting = state.isResting
+            viewer.isAllowed = { [weak self] in
+                guard let self else { return false }
+                return !self.state.isOff && !self.state.isResting
+            }
+            viewer.start()
+            desktops = viewer
         }
-        viewer.start()
-        desktops = viewer
+        desktops?.readTrackpads(Feature.desktopsView.isOn)
     }
 
     /// Stops drawing the notch and the Oyls, watching the camera, reading your voice, analyzing
@@ -1080,8 +1094,10 @@ final class NotchController {
         }
     }
 
-    /// As Oyl quits: the projects saved now, not the moment after an edit they'd otherwise wait.
+    /// As Oyl quits: the projects saved now, not the moment after an edit they'd otherwise wait;
+    /// and the desktops not left half put in order (the button held down in Mission Control).
     func quitting() {
+        SpaceArranger.stop()
         state.projects.flush()
     }
 

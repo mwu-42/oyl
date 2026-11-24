@@ -58,6 +58,8 @@ enum Feature: String, CaseIterable, Sendable {
     case pictureInPicture
     /// Four fingers up: the desktops in a list, to go to, rename and put in order.
     case desktopsView
+    /// Right Shift twice: the same list.
+    case desktopsKey
 
     case openAtLogin
 

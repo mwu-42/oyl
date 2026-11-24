@@ -31,6 +31,10 @@ struct ModifierTaps {
 
     /// The right Command key's bit in an event's flags, and the left's.
     static let rightCommand = (this: UInt(0x10), other: UInt(0x08))
+    /// The right Shift key's, and the left's.
+    static let rightShift = (this: UInt(0x04), other: UInt(0x02))
+    /// Shift's: two taps quick enough not to be the start of typing a capital, thought better of.
+    static let shiftGap: TimeInterval = 0.3
 
     init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, most: Int, longest: TimeInterval = Self.press,
          gap: TimeInterval = Self.usualGap) {

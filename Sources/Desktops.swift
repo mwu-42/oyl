@@ -377,6 +377,10 @@ enum SpaceApps {
 /// turning System Integrity Protection off): it's opened, each Space that's out of place is
 /// dragged along its row to where it goes, as you'd drag it, and it's closed again, by going to the
 /// Space picked (or back to the one you were on). The pointer's put back where it was.
+///
+/// It can be stopped at any moment, from any thread (`stop`): as Oyl quits (a `kill` too) or is
+/// turned off, or as you press Escape. The button's let go at once if it's being held, so nothing's
+/// left dragging, and Mission Control's closed if it's still open; nothing more's posted after.
 enum SpaceArranger {
     struct Move: Equatable {
         let from: Int
@@ -398,18 +402,90 @@ enum SpaceArranger {
     /// Whether it can be: Oyl allowed in Accessibility, to read Mission Control and drag in it.
     static var canArrange: Bool { AXIsProcessTrusted() }
 
+    /// Longest it may take, all told, before it gives up where it is.
+    static let patience: TimeInterval = 15
+
+    /// What's under way: whether it is, whether it's been stopped, where the button's held down
+    /// (if it is), and whether it opened Mission Control. Posting and stopping both go through the
+    /// lock, so once it's stopped nothing more is posted.
+    private struct Run {
+        var isRunning = false
+        var isStopped = false
+        var holding: CGPoint?
+        var openedMissionControl = false
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var current = Run()
+
+    /// Whether it's putting them in order now.
+    static var isRunning: Bool { lock.withLock { current.isRunning } }
+
+    /// Stopped where it is: the button let go if it's held, and (unless Escape's doing it already)
+    /// Mission Control closed if it was opened for this.
+    static func stop(closing: Bool = true) {
+        let was = lock.withLock { () -> Run in
+            let was = current
+            current.isStopped = true
+            if let point = current.holding {
+                mouse(.leftMouseUp, at: point, CGEventSource(stateID: .hidSystemState))
+                current.holding = nil
+            }
+            return was
+        }
+        guard was.isRunning, !was.isStopped, closing, was.openedMissionControl, missionControl() != nil else { return }
+        toggleMissionControl()
+    }
+
     /// `moves` made along the row of `count` Spaces on `display`, then to the Space at `goTo` (in
     /// the order they're put in), or back to the one you were on. On a thread of its own, as it
     /// waits on Mission Control; `done` is told on the main one whether it all went.
     static func arrange(_ moves: [Move], count: Int, on display: CGDirectDisplayID, goTo: Int?,
                         done: @escaping @MainActor @Sendable (Bool) -> Void) {
+        let starting = lock.withLock { () -> Bool in
+            guard !current.isRunning else { return false }
+            current = Run(isRunning: true)
+            return true
+        }
+        guard starting else { return }
         DispatchQueue.global(qos: .userInitiated).async {
             let went = run(moves, count: count, on: display, goTo: goTo)
+            lock.withLock {
+                // (Never left held, whatever happened.)
+                if let point = current.holding { mouse(.leftMouseUp, at: point, CGEventSource(stateID: .hidSystemState)) }
+                current = Run()
+            }
             DispatchQueue.main.async { MainActor.assumeIsolated { done(went) } }
         }
     }
 
+    /// Whether it should stop: it's been stopped, it's taken too long, or you've pressed Escape
+    /// (which closes Mission Control itself).
+    private static func shouldStop(by deadline: Date) -> Bool {
+        if lock.withLock({ current.isStopped }) { return true }
+        if CGEventSource.keyState(.hidSystemState, key: 53) {
+            stop(closing: false)
+            return true
+        }
+        if Date() > deadline {
+            stop()
+            return true
+        }
+        return false
+    }
+
+    /// A rest of `seconds`, cut short if it's stopped: whether it was.
+    private static func pause(_ seconds: TimeInterval, by deadline: Date) -> Bool {
+        let end = Date().addingTimeInterval(seconds)
+        while Date() < end {
+            if shouldStop(by: deadline) { return true }
+            Thread.sleep(forTimeInterval: min(0.02, max(end.timeIntervalSinceNow, 0)))
+        }
+        return shouldStop(by: deadline)
+    }
+
     private static func run(_ moves: [Move], count: Int, on display: CGDirectDisplayID, goTo: Int?) -> Bool {
+        let deadline = Date().addingTimeInterval(patience)
         let pointer = CGEvent(source: nil)?.location
         defer {
             if let pointer {
@@ -417,52 +493,59 @@ enum SpaceArranger {
                 CGAssociateMouseAndMouseCursorPosition(1)
             }
         }
-        if missionControl() == nil { toggleMissionControl() }
-        guard let first = waitForRow(on: display, count: count) else {
-            if missionControl() != nil { toggleMissionControl() }
+        if missionControl() == nil {
+            let opening = lock.withLock { () -> Bool in
+                guard !current.isStopped else { return false }
+                current.openedMissionControl = true
+                return true
+            }
+            guard opening else { return false }
+            toggleMissionControl()
+        }
+        guard let first = waitForRow(on: display, count: count, by: deadline) else {
+            stop()
             return false
         }
         let source = CGEventSource(stateID: .hidSystemState)
         // Over the row, so it opens out from names to pictures.
         let names = slots(first)
         guard !names.isEmpty else {
-            toggleMissionControl()
+            stop()
             return false
         }
         post(.mouseMoved, at: CGPoint(x: names.reduce(0) { $0 + $1.midX } / CGFloat(names.count), y: names[0].midY), source)
-        Thread.sleep(forTimeInterval: 0.5)
-        var went = true
+        if pause(0.4, by: deadline) { return false }
         for move in moves {
             guard let row = row(on: display), case let places = slots(row), places.count == count else {
-                went = false
-                break
+                stop()
+                return false
             }
             // Dropped a little left of where the one there was: it's moved over to make room.
             let target = places[move.to]
-            drag(from: CGPoint(x: places[move.from].midX, y: places[move.from].midY),
-                 to: CGPoint(x: target.minX + target.width * 0.35, y: target.midY), source)
-            Thread.sleep(forTimeInterval: 0.5)
+            guard drag(from: CGPoint(x: places[move.from].midX, y: places[move.from].midY),
+                       to: CGPoint(x: target.minX + target.width * 0.35, y: target.midY), source, by: deadline),
+                  !pause(0.35, by: deadline) else { return false }
         }
         // Out: to the one picked, or back where you were.
+        guard !shouldStop(by: deadline) else { return false }
         if let goTo, let row = row(on: display), case let pressable = buttons(row), pressable.indices.contains(goTo) {
             AXUIElementPerformAction(pressable[goTo], kAXPressAction as CFString)
         } else if missionControl() != nil {
             toggleMissionControl()
         }
-        Thread.sleep(forTimeInterval: 0.35)
-        return went
+        Thread.sleep(forTimeInterval: 0.3)
+        return true
     }
 
     /// Mission Control's row of Spaces on `display`, once it's all there (it's only made as it
     /// opens), and a moment more for it to finish opening; nil if it isn't in 2½ seconds.
-    private static func waitForRow(on display: CGDirectDisplayID, count: Int) -> AXUIElement? {
+    private static func waitForRow(on display: CGDirectDisplayID, count: Int, by deadline: Date) -> AXUIElement? {
         let giveUp = Date().addingTimeInterval(2.5)
         while Date() < giveUp {
             if let row = row(on: display), buttons(row).count == count {
-                Thread.sleep(forTimeInterval: 0.35)
-                return row
+                return pause(0.3, by: deadline) ? nil : row
             }
-            Thread.sleep(forTimeInterval: 0.05)
+            if pause(0.05, by: deadline) { return nil }
         }
         return nil
     }
@@ -543,27 +626,97 @@ enum SpaceArranger {
         }
     }
 
+    /// A mouse event posted, unless it's been stopped; the button's kept track of, to be let go.
     private static func post(_ type: CGEventType, at point: CGPoint, _ source: CGEventSource?) {
+        lock.withLock {
+            guard !current.isStopped else { return }
+            mouse(type, at: point, source)
+            switch type {
+            case .leftMouseDown, .leftMouseDragged: current.holding = point
+            case .leftMouseUp: current.holding = nil
+            default: break
+            }
+        }
+    }
+
+    private static func mouse(_ type: CGEventType, at point: CGPoint, _ source: CGEventSource?) {
         guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left) else { return }
         if type == .leftMouseDown || type == .leftMouseUp { event.setIntegerValueField(.mouseEventClickState, value: 1) }
         event.post(tap: .cghidEventTap)
     }
 
-    /// Picked up, carried across in a fifth of a second or so, held a moment there, and let go.
-    private static func drag(from start: CGPoint, to end: CGPoint, _ source: CGEventSource?) {
+    /// Picked up, carried across in about a quarter of a second, held a moment there, and let go:
+    /// about two thirds of a second with the button down. False if it was stopped on the way (and
+    /// the button's been let go).
+    private static func drag(from start: CGPoint, to end: CGPoint, _ source: CGEventSource?, by deadline: Date) -> Bool {
         post(.mouseMoved, at: start, source)
-        Thread.sleep(forTimeInterval: 0.1)
+        if pause(0.08, by: deadline) { return false }
         post(.leftMouseDown, at: start, source)
-        Thread.sleep(forTimeInterval: 0.25)
-        let steps = 18
+        if pause(0.15, by: deadline) { return false }
+        let steps = 14
         for step in 1...steps {
             let t = Double(step) / Double(steps), eased = t * t * (3 - 2 * t)
             post(.leftMouseDragged, at: CGPoint(x: start.x + (end.x - start.x) * eased, y: start.y + (end.y - start.y) * eased), source)
-            Thread.sleep(forTimeInterval: 0.025)
+            if pause(0.018, by: deadline) { return false }
         }
-        Thread.sleep(forTimeInterval: 0.35)
+        if pause(0.25, by: deadline) { return false }
         post(.leftMouseUp, at: end, source)
+        return true
     }
+}
+
+// MARK: - Going straight to a Space
+
+/// Going to another Space at once, with no slide: each step a swipe across, as the trackpad's own
+/// comes to the Dock, posted so fast it's over before it's begun (as InstantSpaceSwitcher does on
+/// macOS 26). Where that can't be (macOS 27 wants more of it; or Accessibility isn't allowed), or
+/// it hasn't got there a moment later, Mission Control's move-a-space shortcuts take it the rest of
+/// the way. If the swipes ever go the wrong way, that's remembered, and they go the other way after.
+enum InstantSpaces {
+    static let backwardKey = "desktops.swipesBackward"
+
+    /// Whether this Mac's Dock takes them.
+    static var canSwipe: Bool { ProcessInfo.processInfo.operatingSystemVersion.majorVersion <= 26 && AXIsProcessTrusted() }
+
+    /// From the Space at `from` to the one at `to`, on `screen`.
+    @MainActor
+    static func go(from: Int, to target: Int, on screen: NSScreen) {
+        let steps = target - from
+        guard steps != 0 else { return }
+        guard canSwipe else {
+            if !SpaceKeys.go(steps) { NSSound.beep() }
+            return
+        }
+        let backward = UserDefaults.standard.bool(forKey: backwardKey)
+        DispatchQueue.global(qos: .userInitiated).async {
+            for _ in 0..<abs(steps) { swipe(right: (steps > 0) != backward, velocity: 2000 * Double(abs(steps))) }
+        }
+        // Got there? If not, the rest of the way by the shortcuts.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            guard let display = FullscreenSpace.display(for: screen),
+                  let now = Spaces.all(in: display, boot: Spaces.bootTime, appName: { _ in nil }).current, now != target else { return }
+            if now != from, (now - from).signum() != steps.signum() { UserDefaults.standard.set(!backward, forKey: backwardKey) }
+            if !SpaceKeys.go(target - now) { NSSound.beep() }
+        }
+    }
+
+    /// One swipe across, began, moved and ended, toward the Space on the right (or the left).
+    private static func swipe(right: Bool, velocity: Double) {
+        let sign: Double = right ? 1 : -1
+        for phase: Int64 in [1, 2, 4] {
+            guard let event = CGEvent(source: nil) else { continue }
+            event.setIntegerValueField(field(55), value: 30)  // the Dock's own event
+            event.setIntegerValueField(field(110), value: 23)  // a dock swipe
+            event.setIntegerValueField(field(132), value: phase)
+            event.setDoubleValueField(field(124), value: sign * 0.000016)  // how far it's gone
+            event.setIntegerValueField(field(123), value: 1)  // across
+            event.setDoubleValueField(field(129), value: sign * velocity)
+            event.setDoubleValueField(field(130), value: sign * velocity)
+            event.post(tap: .cgSessionEventTap)
+        }
+    }
+
+    private static func field(_ number: UInt32) -> CGEventField { unsafeBitCast(number, to: CGEventField.self) }
 }
 
 // MARK: - What's shown
@@ -1155,8 +1308,9 @@ final class DesktopsHostingView: NSHostingView<DesktopsView> {
 }
 
 /// Four fingers up brings it up, following them; let go most of the way (or quickly), it's up,
-/// else it goes back down. Four fingers down, Escape, or a click off the list puts it away (and
-/// the Spaces in the order they've been dragged into, if they have).
+/// else it goes back down. Right Shift twice brings it up too. Four fingers down, right Shift
+/// twice, Escape, or a click off the list puts it away (and the Spaces in the order they've been
+/// dragged into, if they have).
 @MainActor
 final class DesktopsViewer {
     let model = DesktopsModel()
@@ -1184,7 +1338,11 @@ final class DesktopsViewer {
     }
 
     var isResting = false {
-        didSet { if isResting, isUp { hide() } }
+        didSet {
+            guard isResting else { return }
+            SpaceArranger.stop()
+            if isUp { hide() }
+        }
     }
 
     init() {
@@ -1202,10 +1360,8 @@ final class DesktopsViewer {
         }
     }
 
-    /// Reading the trackpads.
+    /// Watching for the Mac waking, the screens changing, and Spaces changing while it's up.
     func start() {
-        Trackpads.shared.swiped = { [weak self] swipe in self?.swiped(swipe) }
-        Trackpads.shared.start()
         let workspace = NSWorkspace.shared.notificationCenter
         observers = [
             workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
@@ -1224,8 +1380,35 @@ final class DesktopsViewer {
         ]
     }
 
+    /// Four fingers up (and down) read off the trackpads, or not.
+    func readTrackpads(_ on: Bool) {
+        if on {
+            Trackpads.shared.swiped = { [weak self] swipe in self?.swiped(swipe) }
+            Trackpads.shared.start()
+        } else {
+            Trackpads.shared.stop()
+        }
+    }
+
+    /// Up, as four fingers up bring it (settling at once, on the look's own ease); or, up already,
+    /// away. Right Shift twice.
+    func toggle() {
+        if isUp, hiding == nil {
+            close()
+            return
+        }
+        guard !arranging, !SpaceArranger.isRunning, isAllowed() else { return }
+        if isUp { cancelHiding() } else { show() }
+        // Drawn down first, then up from there.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isUp else { return }
+            self.settle(open: true)
+        }
+    }
+
     func stop() {
         Trackpads.shared.stop()
+        SpaceArranger.stop()
         for observer in observers {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             NotificationCenter.default.removeObserver(observer)
@@ -1239,7 +1422,7 @@ final class DesktopsViewer {
     private func swiped(_ swipe: DesktopSwipe) {
         switch swipe {
         case .began(let up):
-            if up, !isUp || hiding != nil, !arranging, isAllowed(), !MissionControlSwipe.isTheSystems() {
+            if up, !isUp || hiding != nil, !arranging, !SpaceArranger.isRunning, isAllowed(), !MissionControlSwipe.isTheSystems() {
                 following = true
                 if !isUp { show() } else { cancelHiding() }
             } else if !up, isUp, hiding == nil {
@@ -1286,20 +1469,23 @@ final class DesktopsViewer {
         }
     }
 
-    /// Down and away, then (with `desk` picked) to it: straight away, or once they've been put in
-    /// order, if they've been dragged into one.
+    /// Away. With `desk` picked, gone at once (no easing out) and straight to it, with no slide;
+    /// once they've been put in order, if they've been dragged into one. Otherwise down and away.
     func close(goingTo desk: DesktopsModel.Desk? = nil) {
         guard isUp, hiding == nil else { return }
         following = nil
         model.finishRenaming(keeping: true)
-        settle(open: false)
-        if model.isRearranged {
-            goingTo = desk?.id
-        } else if let desk, let target = spaces.firstIndex(where: { $0.key == desk.id }), let current, target != current {
-            // A moment for it to start going.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-                if !SpaceKeys.go(target - current) { NSSound.beep() }
-            }
+        guard let desk else {
+            settle(open: false)
+            return
+        }
+        let wanted = model.isRearranged ? model.desks.map(\.id) : nil
+        let from = current, target = spaces.firstIndex { $0.key == desk.id }, screen = screen
+        hide()
+        if let wanted {
+            arrange(wanted, goingTo: desk.id)
+        } else if let from, let target, let screen {
+            InstantSpaces.go(from: from, to: target, on: screen)
         }
     }
 
@@ -1476,7 +1662,11 @@ final class DesktopsViewer {
         let moves = SpaceArranger.moves(from: order, to: wanted)
         let currentKey = now.current.map { order[$0] }
         let goTo = goal.flatMap { $0 == currentKey ? nil : wanted.firstIndex(of: $0) }
-        guard !moves.isEmpty else { return }
+        guard !moves.isEmpty else {
+            // In order already: just there, if it's somewhere else.
+            if let goal, let target = order.firstIndex(of: goal), let from = now.current { InstantSpaces.go(from: from, to: target, on: screen) }
+            return
+        }
         arranging = true
         SpaceArranger.arrange(moves, count: order.count, on: number, goTo: goTo) { [weak self] went in
             guard let self else { return }
