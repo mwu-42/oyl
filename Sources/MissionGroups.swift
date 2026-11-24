@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import os
 
 // Your desktops' groups (see `SpaceGroups`), marked over macOS's own Mission Control while it's open:
 // under its row of desktops, each group's run of them bracketed and named; a group whose desktops
@@ -172,10 +173,11 @@ final class MissionGroups {
         hiding?.cancel()
         hiding = nil
         guard timer == nil else { return }
-        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
+        // Ten times a second, so they keep up as the row opens out under the pointer.
+        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
-        timer.tolerance = 0.03
+        timer.tolerance = 0.02
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
         poll()
@@ -213,10 +215,11 @@ final class MissionGroups {
                     let now = Date()
                     self.downs = up ? 0 : self.downs + 1
                     guard up else {
-                        // Not there (or only its row's left, as it closes): the marks away at once;
-                        // done looking once it's been so a moment, and isn't still awaited.
-                        self.hideMarks()
-                        if self.downs >= 2, (self.expecting.map { now > $0 } ?? true) || self.lastSeen != nil { self.stop() }
+                        // Not there (or only its row's left, as it closes) two reads running (one's
+                        // a flicker, as the row opens out): the marks away; done looking a moment
+                        // on, unless it's still awaited.
+                        if self.downs >= 2 { self.hideMarks() }
+                        if self.downs >= 3, (self.expecting.map { now > $0 } ?? true) || self.lastSeen != nil { self.stop() }
                         return
                     }
                     self.lastSeen = now
@@ -243,7 +246,10 @@ final class MissionGroups {
             guard let row, let display = FullscreenSpace.display(for: screen) else { continue }
             let spaces = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }.spaces
             // Mid-drag the row and the Spaces can disagree for a moment: the marks stay as they were.
-            guard spaces.count == row.frames.count else { continue }
+            guard spaces.count == row.frames.count else {
+                Self.log.info("Mission Control's row has \(row.frames.count) desktops, the Spaces \(spaces.count): marks left as they were")
+                continue
+            }
             let top = primaryHeight - screen.frame.maxY
             let frames = row.frames.map { $0.offsetBy(dx: -screen.frame.minX, dy: -top) }
             let marks = MissionMark.marks(frames: frames, groups: spaces.map { space in
@@ -258,7 +264,15 @@ final class MissionGroups {
         entry.model.size = screen.frame.size
         if entry.panel.frame != screen.frame { entry.panel.setFrame(screen.frame, display: false) }
         if entry.model.marks != marks {
-            withAnimation(Self.ease(theme)) { entry.model.marks = marks }
+            if entry.model.shown {
+                // Following the row as it moves.
+                withAnimation(Self.ease(theme)) { entry.model.marks = marks }
+            } else {
+                // Coming up: straight where they go, not from where they were last time.
+                var still = Transaction()
+                still.disablesAnimations = true
+                withTransaction(still) { entry.model.marks = marks }
+            }
         }
         if !entry.panel.isVisible { entry.panel.orderFrontRegardless() }
         if !entry.model.shown { withAnimation(Self.ease(theme).delay(0.05)) { entry.model.shown = true } }
@@ -284,10 +298,12 @@ final class MissionGroups {
         return (panel, model)
     }
 
-    /// Oyl's plain ease; Midnight's slow drift.
+    /// Oyl's plain ease; Midnight's drift (quick enough to keep up with the row).
     static func ease(_ theme: NotchTheme) -> Animation {
-        theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 0.4) : .easeOut(duration: 0.18)
+        theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 0.28) : .easeOut(duration: 0.12)
     }
+
+    private static let log = Logger(subsystem: "local.nott", category: "mission-groups")
 }
 
 /// The marks: in Oyl's look, a white bar under each group's run of desktops and its name on a
