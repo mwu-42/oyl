@@ -146,7 +146,18 @@ final class MissionGroups {
     /// The Dock says Mission Control's open, or that it's gone (as you go to a desktop, or come back
     /// to the one you were on): open, it's looked for; gone, the marks go at once.
     func showing(_ on: Bool) {
-        if on { expect() } else { stop() }
+        if on { expect() } else {
+            stop()
+            // Desktops put together in it: a group now all one is done away with.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { SpaceGroups.tidy() }
+        }
+    }
+
+    init() {
+        // And as you go to another Space (a window tiled into another's, too).
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { SpaceGroups.tidy() }
+        }
     }
 
     /// Mission Control may be coming (three fingers began up, or the Dock said so): its row looked

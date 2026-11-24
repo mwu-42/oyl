@@ -561,6 +561,45 @@ struct SpaceGroups {
         })
     }
 
+    /// Whether `group`'s desktops are now all one: every desktop of it there still is (by what it
+    /// was kept under) made part of one fullscreen Space of several (`combined`, each such Space's
+    /// keys: its own, each window's, and the Spaces they came from), at least two of them.
+    nonisolated static func isCombined(_ group: Group, into combined: [Set<String>], present: Set<String>) -> Bool {
+        combined.contains { together in
+            let inside = group.members.filter { together.contains($0) }
+            // What's in no Space now (a window's from before a restart) doesn't count against it.
+            let elsewhere = group.members.filter { !together.contains($0) && present.contains($0) }
+            return elsewhere.isEmpty && inside.count >= 2
+        }
+    }
+
+    /// Groups whose desktops have all been combined into one fullscreen Space: done away with (a
+    /// group of one isn't one). Their ids.
+    @discardableResult
+    func dissolveCombined(_ combined: [Set<String>], present: Set<String>) -> [String] {
+        let groups = all
+        let gone = groups.filter { Self.isCombined($0, into: combined, present: present) }.map(\.id)
+        if !gone.isEmpty { save(groups.filter { !gone.contains($0.id) }) }
+        return gone
+    }
+
+    /// The groups looked over on every screen, and any that's been combined into one done away
+    /// with (as desktops are put together in Mission Control, or a window's tiled into another's).
+    @MainActor
+    static func tidy() {
+        let store = SpaceGroups()
+        guard !store.all.isEmpty else { return }
+        var combined: [Set<String>] = [], present = Set<String>()
+        for screen in NSScreen.screens {
+            guard let display = FullscreenSpace.display(for: screen) else { continue }
+            let all = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }
+            for space in all.spaces { present.formUnion(keys(of: space)) }
+            combined += Spaces.combined(in: display, boot: Spaces.bootTime)
+        }
+        for together in combined { present.formUnion(together) }
+        store.dissolveCombined(combined, present: present)
+    }
+
     private static func without(_ spaces: [CurrentSpace], in groups: [Group]) -> [Group] {
         let keys = Set(spaces.flatMap(Self.keys))
         return groups.map { group in
@@ -2140,6 +2179,7 @@ final class DesktopsViewer {
         current = all.current
         let names = SpaceNames()
         let before = Dictionary(model.desks.map { ($0.id, $0.apps) }, uniquingKeysWith: { first, _ in first })
+        SpaceGroups.tidy()
         let groups = SpaceGroups().all
         model.groups = groups.map { DesktopsModel.Group(id: $0.id, name: $0.name, folded: $0.folded) }
         model.desks = all.spaces.enumerated().map { index, space in

@@ -61,6 +61,26 @@ enum Spaces {
 
     private static func number(_ value: Any?) -> Int? { (value as? NSNumber)?.intValue }
 
+    /// Each fullscreen Space made of several (apps put side by side, in Mission Control or by
+    /// tiling a window into another's): everything those were kept under, its own key, each of its
+    /// windows' (a fullscreen app's window key, see `CurrentSpace.window`), and the Spaces they
+    /// came from.
+    static func combined(in display: [String: Any], boot: Int) -> [Set<String>] {
+        (display["Spaces"] as? [[String: Any]] ?? []).compactMap { space in
+            guard number(space["type"]) == FullscreenSpace.fullscreenType,
+                  let tiles = (space["TileLayoutManager"] as? [String: Any])?["TileSpaces"] as? [[String: Any]], tiles.count > 1 else { return nil }
+            var keys = Set<String>()
+            if let uuid = (space["uuid"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) { keys.insert("space:" + uuid) }
+            else if let id = number(space["ManagedSpaceID"]) { keys.insert("space:id\(id)") }
+            if let window = number(space["fs_wid"]) { keys.insert("window:\(boot)-\(window)") }
+            for tile in tiles {
+                if let window = number(tile["fs_wid"]) ?? number(tile["TileWindowID"]) { keys.insert("window:\(boot)-\(window)") }
+                if let from = (tile["fromSpace"] as? String).flatMap({ $0.isEmpty ? nil : $0 }) { keys.insert("space:" + from) }
+            }
+            return keys
+        }
+    }
+
     /// When the Mac started, in seconds since 1970.
     static let bootTime: Int = {
         var time = timeval()
