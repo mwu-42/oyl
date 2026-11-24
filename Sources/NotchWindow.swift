@@ -905,6 +905,7 @@ final class NotchController {
                     self?.projectsWindow?.theme = theme
                     self?.desktops?.theme = theme
                     self?.missionGroups.theme = theme
+                    ScreenshotHold.shared.theme = theme
                 }
             }
             .store(in: &cancellables)

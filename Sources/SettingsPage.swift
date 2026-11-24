@@ -261,6 +261,7 @@ struct SettingsPage: View {
                 feature(.airDropShelf, "AirDrops shown on it", "What comes by AirDrop: the Dock up, the shelf open and it picked out, not a Finder window (other apps' Show in Finder is still Finder's)"),
                 feature(.claudeShelf, "Claude's files on it", "What Claude Code's just written or edited (orange)"),
                 feature(.labelScreenshots, "Label screenshots", "Named for what's in them, read on the Mac"),
+                feature(.holdScreenshots, "Screenshots held 10 s", "A screenshot's thumbnail kept up in the corner for 10 seconds, as Oyl's own (macOS's turned off meanwhile, so the file's saved at once): drag it where it's wanted, click it to open it, point at it to keep it"),
             ]
         case .oyl:
             var items = [

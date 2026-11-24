@@ -67,6 +67,8 @@ enum Feature: String, CaseIterable, Sendable {
     case missionControlGroups
     /// A sound when a Claude's done, or waiting for you (see `AgentChimes`).
     case agentSounds
+    /// A screenshot's thumbnail held for 10 s, as Oyl's own (see `ScreenshotHold`).
+    case holdScreenshots
     /// Claude's 5-hour window started early, with a prompt each morning (see `MorningStart`).
     case morningClaude
 
@@ -75,7 +77,7 @@ enum Feature: String, CaseIterable, Sendable {
     var isOn: Bool { UserDefaults.standard.object(forKey: key) as? Bool ?? !Self.offToBegin.contains(self) }
 
     /// Off till they're turned on: what sends things in your name.
-    static let offToBegin: Set<Feature> = [.morningClaude, .agentSounds]
+    static let offToBegin: Set<Feature> = [.morningClaude, .agentSounds, .holdScreenshots]
 
     /// What a gesture does, if it can be turned off.
     init?(_ gesture: HandGesture) {

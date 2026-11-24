@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      agents: AgentMonitor())
         MorningStart.shared.start()
         ClaudeLimit.shared.start()
+        ScreenshotHold.shared.start()
 
         // `kill`/`pkill` skip applicationWillTerminate; route them through it so a keep-awake
         // session never outlives the app (lid sleep especially). It carries on if Oyl's back soon.
@@ -75,5 +76,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         awake?.pause()
         MacDock.quitting(forGood: !backSoon)
         AirDropReveal.quitting(forGood: !backSoon)
+        ScreenshotHold.shared.quitting(forGood: !backSoon)
     }
 }
