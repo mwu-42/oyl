@@ -465,18 +465,46 @@ final class Shelf: ObservableObject {
         unlabeled.removeFirst()
         let url = item.url, movie = item.kind == .recording
         labeling = url
+        // Drags so far: one after this, and it may have been this that was dragged.
+        let drags = NSPasteboard(name: .drag).changeCount
         Task { @MainActor [weak self] in
             let label = await Task.detached(priority: .utility) { await ScreenshotLabeler.label(for: url, movie: movie) }.value
             guard let self else { return }
             self.labeling = nil
             self.labels[url.path] = label ?? ""
             self.saveLabels()
-            if label != nil, item.date >= self.renamingSince, Self.hasMacOSName(url), FileManager.default.fileExists(atPath: url.path) {
-                self.renameToLabel(item)
-            }
+            if label != nil, item.date >= self.renamingSince, Self.hasMacOSName(url) { self.renameWhenSettled(item, drags: drags) }
             self.labelNext()
         }
     }
+
+    /// How long a new screenshot keeps the name macOS gave it, as it's most likely to be dragged
+    /// somewhere (or its path dropped into a terminal) straight away.
+    nonisolated static let keepsItsName: TimeInterval = 30
+
+    /// Renamed to its label once it's been there `keepsItsName`, and nothing's being dragged; never,
+    /// if anything's been dragged since it came (it may have been this, and where it went goes by
+    /// its name), or it's gone.
+    private func renameWhenSettled(_ item: Item, drags: Int) {
+        let wait = max(item.date.addingTimeInterval(Self.keepsItsName).timeIntervalSinceNow, 0)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, Feature.labelScreenshots.isOn else { return }
+                guard Self.keepsName(dragsThen: drags, dragsNow: NSPasteboard(name: .drag).changeCount) == false else { return }
+                if NSEvent.pressedMouseButtons & 1 != 0 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                        MainActor.assumeIsolated { self?.renameWhenSettled(item, drags: drags) }
+                    }
+                    return
+                }
+                guard FileManager.default.fileExists(atPath: item.url.path), self.label(for: item) != nil else { return }
+                self.renameToLabel(item)
+            }
+        }
+    }
+
+    /// Whether a screenshot keeps its name for good: something's been dragged since it came.
+    nonisolated static func keepsName(dragsThen: Int, dragsNow: Int) -> Bool { dragsNow != dragsThen }
 
     /// Only those still about, or that might be again (taken off the shelf), and not too many.
     private func saveLabels() {

@@ -20,6 +20,10 @@ final class ApprovalCorner {
     private let state: NotchState
     private var going: DispatchWorkItem?
     private var cancellables = Set<AnyCancellable>()
+    /// macOS's thumbnail of a screenshot just taken, in the same corner: looked for while the card's
+    /// up, so the card can move up out of its way (and the thumbnail can be dragged).
+    private var lookingForThumbnail: Timer?
+    private var thumbnail: NSRect?
 
     /// From the screen's edges to the card's.
     static let margin: CGFloat = 16
@@ -75,12 +79,39 @@ final class ApprovalCorner {
             guard coming else { return }
             self.panel.orderFrontRegardless()
             self.model.shown = true
+            self.lookForThumbnail(true)
         }
     }
+
+    /// Looking, twice a second, for a screenshot's thumbnail in the corner, or not.
+    private func lookForThumbnail(_ on: Bool) {
+        lookingForThumbnail?.invalidate()
+        lookingForThumbnail = nil
+        guard on else {
+            thumbnail = nil
+            return
+        }
+        let timer = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let screen = self.screen else { return }
+                let found = ScreenshotThumbnail.frame(on: screen)
+                guard found != self.thumbnail else { return }
+                self.thumbnail = found
+                self.place()
+            }
+        }
+        timer.tolerance = 0.1
+        RunLoop.main.add(timer, forMode: .common)
+        lookingForThumbnail = timer
+    }
+
+    /// The notch's screen, where the card goes.
+    private var screen: NSScreen? { NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main }
 
     private func hide() {
         guard model.shown || model.approval != nil, going == nil else { return }
         model.shown = false
+        lookForThumbnail(false)
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.shown else { return }
             self.going = nil
@@ -91,14 +122,18 @@ final class ApprovalCorner {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
-    /// In the bottom right corner of the notch's screen, clear of the macOS Dock if it's showing.
+    /// In the bottom right corner of the notch's screen, clear of the macOS Dock if it's showing;
+    /// over a screenshot's thumbnail, while there's one there.
     private func place() {
-        guard let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main else { return }
+        guard let screen else { return }
         let size = host.fittingSize
         guard size.width > 0, size.height > 0 else { return }
         let area = screen.visibleFrame
         let inset = Self.margin - Self.room
-        let frame = NSRect(x: area.maxX - inset - size.width, y: area.minY + inset, width: size.width, height: size.height)
+        var frame = NSRect(x: area.maxX - inset - size.width, y: area.minY + inset, width: size.width, height: size.height)
+        if let thumbnail, frame.insetBy(dx: Self.room, dy: Self.room).intersects(thumbnail) {
+            frame.origin.y = min(thumbnail.maxY + inset, area.maxY - size.height)
+        }
         if panel.frame != frame { panel.setFrame(frame, display: true) }
     }
 }
@@ -313,5 +348,39 @@ private struct CornerSpecks: View {
             }
         }
         .allowsHitTesting(false)
+    }
+}
+
+/// macOS's thumbnail of a screenshot just taken (or a recording), while it's up in the screen's
+/// corner to be dragged off: where it is, from the window list (nothing of what's in it is looked
+/// at). Not the screen-wide veil as an area's being picked out, nor the toolbar.
+enum ScreenshotThumbnail {
+    static let owner = "com.apple.screencaptureui"
+
+    /// In AppKit's coordinates, on `screen`; nil if there's none.
+    @MainActor
+    static func frame(on screen: NSScreen) -> NSRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]]
+        else { return nil }
+        let top = NSScreen.screens.first?.frame.maxY ?? screen.frame.maxY
+        var bundles: [pid_t: String] = [:]
+        let frames = list.compactMap { info -> NSRect? in
+            guard let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let box = info[kCGWindowBounds as String] as? [String: CGFloat],
+                  let rect = CGRect(dictionaryRepresentation: box as CFDictionary) else { return nil }
+            if bundles[pid] == nil { bundles[pid] = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? "" }
+            guard bundles[pid] == owner else { return nil }
+            return place(rect, top: top, on: screen.frame)
+        }
+        return frames.dropFirst().reduce(frames.first) { $0?.union($1) }
+    }
+
+    /// One of its windows (`rect`, the window server's, from the top left of the main screen, whose
+    /// top is `top`), if it's a thumbnail's on the screen `frame`: small, and on its right.
+    nonisolated static func place(_ rect: CGRect, top: CGFloat, on frame: NSRect) -> NSRect? {
+        let flipped = NSRect(x: rect.minX, y: top - rect.maxY, width: rect.width, height: rect.height)
+        guard rect.width > 20, rect.height > 20, rect.width < frame.width * 0.4, rect.height < frame.height * 0.4,
+              flipped.intersects(frame), flipped.midX > frame.midX else { return nil }
+        return flipped
     }
 }
