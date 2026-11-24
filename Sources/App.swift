@@ -20,6 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationSignal: DispatchSourceSignal?
     /// Quitting only for a moment: killed to be started again, or at logout or shut down.
     private var backSoon = false
+    /// This copy's the one running (not a second, or opened only to pass AirDrop's files on).
+    private var started = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let others = NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
@@ -28,6 +30,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        // Opened only to show what AirDrop's saved, by an AirDrop that still asks Oyl, though Oyl's
+        // been quit since (see `AirDropReveal`): Finder shows it, and Oyl goes again.
+        if notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool == false, AirDropReveal.openedOnlyToShow() {
+            NSApp.terminate(nil)
+            return
+        }
+        started = true
         // Open at login, unless that's turned off. Every launch checks, so it comes back if it was
         // taken out of Login Items, and registers again when the app has moved.
         LoginItem.apply()
@@ -53,9 +62,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// AirDrop asking for what it's saved to be shown (see `AirDropReveal`): Oyl opens nothing else.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        AirDropReveal.asked(urls)
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        guard started else { return }
         controller?.quitting()
         awake?.pause()
         MacDock.quitting(forGood: !backSoon)
+        AirDropReveal.quitting(forGood: !backSoon)
     }
 }

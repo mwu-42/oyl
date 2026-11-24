@@ -220,6 +220,7 @@ struct SettingsPage: View {
                 feature(.shelf, "The shelf", "In the Dock: what's recent, to drag anywhere or convert"),
                 feature(.screenshotsShelf, "Screenshots on it", "Your latest screenshots (light green)"),
                 feature(.savedShelf, "Downloads on it", "What's just been downloaded, AirDropped or saved from a text (blue)"),
+                feature(.airDropShelf, "AirDrops shown on it", "What comes by AirDrop: the Dock up, the shelf open and it picked out, not a Finder window (other apps' Show in Finder is still Finder's)"),
                 feature(.claudeShelf, "Claude's files on it", "What Claude Code's just written or edited (orange)"),
                 feature(.labelScreenshots, "Label screenshots", "Named for what's in them, read on the Mac"),
             ]

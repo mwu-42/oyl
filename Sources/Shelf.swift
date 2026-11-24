@@ -270,6 +270,17 @@ final class Shelf: ObservableObject {
         return folders
     }
 
+    /// Whether `url`'s where the shelf would have it as what's been saved: in a folder it watches
+    /// for that, no further down than it looks.
+    nonisolated static func isWatched(_ url: URL, in folders: [Watched]) -> Bool {
+        let path = url.standardizedFileURL.pathComponents
+        return folders.contains { watched in
+            let folder = watched.folder.standardizedFileURL.pathComponents
+            guard watched.saved, path.count > folder.count, Array(path.prefix(folder.count)) == folder else { return false }
+            return path.count - folder.count - 1 <= watched.depth
+        }
+    }
+
     /// Downloads, for showing in Finder.
     static var downloads: URL { FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads", isDirectory: true) }
 
@@ -434,6 +445,7 @@ final class Shelf: ObservableObject {
         for item in all where thumbnails[item.url] == nil || thumbnailDates[item.url] != item.date { makeThumbnail(for: item) }
         unlabeled = all.filter { $0.isCapture && labels[$0.url.path] == nil && $0.url != labeling }
         labelNext()
+        pickWaiting()
     }
 
     /// What's on it, newest first: the latest few of each of screenshots, what's been saved and
@@ -563,6 +575,36 @@ final class Shelf: ObservableObject {
     func clearSelection() {
         if !selection.isEmpty { selection = [] }
         anchor = nil
+    }
+
+    /// Just come (by AirDrop, say; see `AirDropReveal`), to be picked out as Finder would: looked
+    /// for at once, and picked out as they're on it, for a few seconds while they settle.
+    private var toPickOut: (paths: Set<String>, until: Date)?
+
+    func pickOut(_ urls: [URL]) {
+        toPickOut = (Set(urls.map(\.standardizedFileURL.path)), Date().addingTimeInterval(5))
+        if isOn, UserDefaults.standard.bool(forKey: key("watching")) { watch(asking: false) }
+        pickWaiting()
+    }
+
+    /// What's waiting to be picked out that's on it now, picked out (once the last's on, or the
+    /// time's up, that's that).
+    private func pickWaiting() {
+        guard let waiting = toPickOut else { return }
+        let (picked, done) = Self.pickingOut(waiting.paths, until: waiting.until, now: Date(), in: items.map(\.url))
+        if !picked.isEmpty, picked != selection {
+            selection = picked
+            anchor = items.first { picked.contains($0.url) }?.url
+        }
+        if done { toPickOut = nil }
+    }
+
+    /// Of `order` (what's on the shelf), those of `paths`; and whether that's all there'll be:
+    /// every one of them is on it. Past `until`, none (what's picked out by then is left be).
+    nonisolated static func pickingOut(_ paths: Set<String>, until: Date, now: Date, in order: [URL]) -> (Set<URL>, Bool) {
+        guard now < until else { return ([], true) }
+        let here = order.filter { paths.contains($0.standardizedFileURL.path) }
+        return (Set(here), here.count >= paths.count)
     }
 
     /// From `from` to `to` along `order`, both ends in it; just `to` if `from`'s not there.

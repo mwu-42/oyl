@@ -100,6 +100,18 @@ final class DockController {
                 }
             }
             .store(in: &cancellables)
+        // What comes by AirDrop shown on the shelf, rather than in Finder (see `AirDropReveal`),
+        // while there's a shelf with Downloads on it to show it on.
+        state.$showsDock.combineLatest(Features.shared.changed.filter { [.shelf, .savedShelf, .airDropShelf].contains($0.0) }
+            .map { _ in () }.prepend(()))
+            .receive(on: RunLoop.main)
+            .sink { shown, _ in
+                MainActor.assumeIsolated {
+                    AirDropReveal.follow(shown && Feature.shelf.isOn && Feature.savedShelf.isOn && Feature.airDropShelf.isOn)
+                }
+            }
+            .store(in: &cancellables)
+        AirDropReveal.ready { [weak self] urls in self?.present(urls) ?? false }
         // An app opening or quitting changes its width; one quit some other way isn't asked about.
         apps.objectWillChange.receive(on: RunLoop.main).sink { [weak self] _ in
             MainActor.assumeIsolated {
@@ -115,9 +127,13 @@ final class DockController {
                 }
             }
         }.store(in: &cancellables)
-        // A click anywhere else is a no to quitting.
+        // A click anywhere else is a no to quitting, and puts away what was up unasked.
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown], handler: { [weak self] _ in
-            MainActor.assumeIsolated { self?.model.quitting = nil }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.model.quitting = nil
+                if self.presenting != nil { self.close() }
+            }
         }) {
             monitors.append(monitor)
         }
@@ -201,7 +217,9 @@ final class DockController {
             if isNear(location) || model.isKept || isPressed {
                 closing?.cancel()
                 closing = nil
-            } else {
+                // Up unasked, and come to: it goes as it always does from now on.
+                if isNear(location) { stopPresenting() }
+            } else if presenting == nil {
                 scheduleClose()
             }
             // Off it, clicks go through to what's under it.
@@ -268,13 +286,14 @@ final class DockController {
         if model.hovered != hovered { model.hovered = hovered }
     }
 
-    private func open(on screen: NSScreen) {
+    /// Up, out from the pointer; or (`fromShelf`, up unasked to show what's on it) out from the shelf.
+    private func open(on screen: NSScreen, fromShelf: Bool = false) {
         self.screen = screen
         model.screenWidth = screen.frame.width
+        apps.reload()
         // (Midnight Oyl's sky, still wilting, blooms again from where it was, rather than jumping.)
         let wilting = model.theme == .midnight && closedAt.map { Date().timeIntervalSince($0) < 0.5 } == true
-        if !wilting { model.calledFrom = NSEvent.mouseLocation.x - screen.frame.midX }
-        apps.reload()
+        if !wilting { model.calledFrom = fromShelf ? shelfTile(on: screen) : NSEvent.mouseLocation.x - screen.frame.midX }
         fit()
         panel.orderFrontRegardless()
         panel.ignoresMouseEvents = false
@@ -291,7 +310,79 @@ final class DockController {
             }
         }
         hover(at: NSEvent.mouseLocation)
-        Haptics.perform(.levelChange, performanceTime: .now)
+        // (Not up unasked: nothing was touched.)
+        if !fromShelf { Haptics.perform(.levelChange, performanceTime: .now) }
+    }
+
+    /// Where the shelf's tile is across the bar, from the screen's middle.
+    private func shelfTile(on screen: NSScreen) -> CGFloat {
+        let layout = DockLayout(apps: apps, screenWidth: screen.frame.width)
+        guard let index = DockView.ids(apps).firstIndex(of: DockView.shelfID), index < layout.frames.count else { return 0 }
+        return layout.frames[index].midX - layout.size.width / 2
+    }
+
+    // MARK: Up unasked
+
+    /// Up unasked, to show what's just come (see `present`): till the pointer's come to it (then
+    /// it goes as ever), a click elsewhere, or a while, if neither.
+    private var presenting: DispatchWorkItem?
+    /// How long it stays up unasked, if the pointer doesn't come.
+    nonisolated static let presentedFor: TimeInterval = 8
+
+    /// What's come by AirDrop (see `AirDropReveal`): the Dock up on the screen you're on, the shelf
+    /// open over it, and what's come picked out on it, as Finder would have them. Whether it could
+    /// be: not with Oyl off, or its Dock, the shelf or Downloads on it, or with none of them where
+    /// the shelf looks (then Finder shows them).
+    func present(_ urls: [URL]) -> Bool {
+        guard state.showsDock, !state.isOff, !state.isResting, Feature.shelf.isOn, Feature.savedShelf.isOn else { return false }
+        let folders = Shelf.folders(screenshots: nil, saved: true, home: FileManager.default.homeDirectoryForCurrentUser)
+        guard urls.contains(where: { Shelf.isWatched($0, in: folders) }) else { return false }
+        state.shelf.pickOut(urls)
+        presentWhenFree(tries: 20)
+        return true
+    }
+
+    /// Mission Control's up, or a screenshot's being taken: in a moment, then.
+    private func presentWhenFree(tries: Int) {
+        guard canOpen else {
+            guard tries > 0 else { return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                MainActor.assumeIsolated { self?.presentWhenFree(tries: tries - 1) }
+            }
+            return
+        }
+        let location = NSEvent.mouseLocation
+        guard let screen = model.isOpen ? self.screen : NSScreen.screens.first(where: { NSMouseInRect(location, $0.frame, false) }) ?? NSScreen.main
+        else { return }
+        opening?.cancel()
+        opening = nil
+        closing?.cancel()
+        closing = nil
+        stopPresenting()
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.presenting = nil
+                if !self.model.isKept, !self.isPressed, !self.isNear(NSEvent.mouseLocation) { self.close() }
+            }
+        }
+        presenting = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.presentedFor, execute: work)
+        let wasOpen = model.isOpen
+        if !wasOpen { open(on: screen, fromShelf: true) }
+        guard !model.shelving else { return }
+        // The bar up first, then the shelf out of its tile.
+        DispatchQueue.main.asyncAfter(deadline: .now() + (wasOpen ? 0 : model.theme == .midnight ? 0.35 : 0.18)) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.model.isOpen, !self.model.shelving else { return }
+                self.toggleShelf()
+            }
+        }
+    }
+
+    private func stopPresenting() {
+        presenting?.cancel()
+        presenting = nil
     }
 
     /// Apps asking for you, marked along the bottom edge under their icons while it's down: on the
@@ -334,6 +425,7 @@ final class DockController {
         if model.isOpen { closedAt = Date() }
         closing?.cancel()
         closing = nil
+        stopPresenting()
         model.quitting = nil
         model.shelving = false
         model.isOpen = false
