@@ -183,9 +183,10 @@ private struct InboxRow: View {
                 // A moment to see it checked before it goes.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { done() }
             } label: {
+                // In its own color, if toyl's given it one (the inbox's are plain).
                 Image(systemName: checked.value ? "checkmark.circle.fill" : "circle")
                     .notchSymbol(size: 12, weight: .regular)
-                    .foregroundStyle(.white.opacity(checked.value ? 0.9 : 0.5))
+                    .foregroundStyle(task.ringColor.map { theme.tint($0).opacity(checked.value ? 1 : 0.85) } ?? .white.opacity(checked.value ? 0.9 : 0.5))
                     .contentShape(Circle())
             }
             .buttonStyle(PressableStyle())
@@ -194,7 +195,8 @@ private struct InboxRow: View {
                 Image(systemName: mark)
                     .notchSymbol(size: 8.5, weight: .semibold)
                     .foregroundStyle(.white.opacity(checked.value ? 0.3 : 0.5))
-                    .help(mark == "envelope" ? "From an email, pulled in by toyl" : "An assignment from Canvas, brought in by toyl")
+                    .help(mark == "envelope" ? "From an email, pulled in by toyl"
+                          : mark == "calendar" ? "From a class on your calendar, brought in by toyl" : "An assignment from Canvas, brought in by toyl")
             }
             Text(task.title)
                 .notchFont(size: 12)

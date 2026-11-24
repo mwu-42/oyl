@@ -676,7 +676,8 @@ private struct IdeaRow: View {
                 Image(systemName: mark)
                     .notchSymbol(size: 8.5, weight: .semibold)
                     .foregroundStyle(.white.opacity(checked.value ? 0.3 : 0.5))
-                    .help(mark == "envelope" ? "From an email, pulled in by toyl" : "An assignment from Canvas, brought in by toyl")
+                    .help(mark == "envelope" ? "From an email, pulled in by toyl"
+                          : mark == "calendar" ? "From a class on your calendar, brought in by toyl" : "An assignment from Canvas, brought in by toyl")
             }
             Text(row.title)
                 .notchFont(size: 12)

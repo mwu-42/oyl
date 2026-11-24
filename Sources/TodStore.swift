@@ -51,11 +51,19 @@ final class TodStore: ObservableObject {
         /// toyl's own, read only: put off for someday (toyl shows it among its ideas), tied to a
         /// calendar event (so it's the calendar's, not reminded of here), where it came from
         /// (toyl's `source`: "email" for one pulled from mail, "canvas" for an assignment brought
-        /// in from Canvas), and an assignment's course.
+        /// in from Canvas, "calendar" for a class's task read off the calendar; any other, nothing
+        /// in particular), an assignment's course, and its own color ("#rrggbb", its check ring's).
         var someday = false
         var hasEvent = false
         var source: String?
         var course: String?
+        var color: String?
+
+        /// Its own color, if it has one (its check ring's).
+        var ringColor: Color? {
+            guard let color, color.hasPrefix("#"), color.count == 7, let value = Int(color.dropFirst(), radix: 16) else { return nil }
+            return Color(red: Double(value >> 16 & 255) / 255, green: Double(value >> 8 & 255) / 255, blue: Double(value & 255) / 255)
+        }
 
         /// Pulled into toyl from an email.
         var isEmail: Bool { source == "email" }
@@ -64,7 +72,7 @@ final class TodStore: ObservableObject {
 
         /// The mark it carries where it's listed, if it came from somewhere with one: ✉ for an
         /// email, 🎓 for a Canvas assignment (as SF Symbols).
-        var mark: String? { isEmail ? "envelope" : isCanvas ? "graduationcap" : nil }
+        var mark: String? { isEmail ? "envelope" : isCanvas ? "graduationcap" : source == "calendar" ? "calendar" : nil }
 
         /// When it's due, as a moment (end of the day if no time), for sorting and "what's next".
         var dueDate: Date? {
@@ -716,7 +724,8 @@ final class TodStore: ObservableObject {
                         order: (entry["order"] as? NSNumber)?.doubleValue ?? 0,
                         repeats: (entry["repeat"] as? String).flatMap(TodRepeat.init(rawValue:)), lane: lane,
                         someday: entry["someday"] as? Bool ?? false, hasEvent: entry["event"] is [String: Any],
-                        source: text(entry["source"]), course: text((entry["canvas"] as? [String: Any])?["course"]))
+                        source: text(entry["source"]), course: text((entry["canvas"] as? [String: Any])?["course"]),
+                        color: text(entry["color"]))
         }
 
         /// Repeating tasks that are done and haven't come back yet, and when they were done.
