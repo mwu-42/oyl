@@ -479,12 +479,16 @@ struct SpaceGroups {
     /// A new group of `space` and `other` (each out of any it was in), called "group" (or "group
     /// 2", and so on, if that's taken): its id.
     @discardableResult
-    func make(_ space: CurrentSpace, with other: CurrentSpace) -> String {
-        var groups = Self.without([space, other], in: all)
+    func make(_ space: CurrentSpace, with other: CurrentSpace) -> String { make([other, space]) }
+
+    /// A new group of `spaces` (each out of any it was in), named as above: its id.
+    @discardableResult
+    func make(_ spaces: [CurrentSpace]) -> String {
+        var groups = Self.without(spaces, in: all)
         let names = Set(groups.map { $0.name.lowercased() })
         let name = names.contains("group") ? (2...).lazy.map { "group \($0)" }.first { !names.contains($0) }! : "group"
         let id = UUID().uuidString
-        groups.append(Group(id: id, name: name, folded: false, members: Self.keys(of: other) + Self.keys(of: space)))
+        groups.append(Group(id: id, name: name, folded: false, members: spaces.flatMap(Self.keys)))
         save(groups)
         return id
     }
@@ -593,6 +597,8 @@ final class DesktopsModel: ObservableObject {
         case out(desk: String)
         /// A group done away with, its desktops back on their own.
         case ungroup(group: String)
+        /// A new group of these (shift-clicked from one to another), each out of any it was in.
+        case gather(desks: [String])
     }
 
     /// How far up it's come: 0 is gone, 1 all the way up.
@@ -617,6 +623,8 @@ final class DesktopsModel: ObservableObject {
     @Published var dragAt: CGPoint?
     /// A drag's just ended: the click that ends it isn't a pick.
     var justDragged = false
+    /// Shift-clicked first: where what's grouped begins, once another's shift-clicked.
+    @Published var anchor: String?
 
     var pick: (Desk) -> Void = { _ in }
     var renamed: (Desk, String) -> Void = { _, _ in }
@@ -738,12 +746,16 @@ final class DesktopsModel: ObservableObject {
         }
     }
 
-    /// What letting go would do, said under the list while dragging (and how to group, before
-    /// there are any groups).
+    /// What letting go would do, said under the list while dragging; what a shift-click would
+    /// group, once one's been shift-clicked; and how to group, before there are any groups.
     var dropHint: String? {
         func named(_ id: String) -> String { groups.first { $0.id == id }?.name ?? "the group" }
         guard let dragging else {
-            return groups.isEmpty || !desks.contains(where: { $0.group != nil }) ? "drag one onto another to group them" : nil
+            if anchor != nil {
+                let count = spannedDesks.count
+                return count > 1 ? "shift-click to group these \(count)" : "shift-click another to group everything between"
+            }
+            return groups.isEmpty || !desks.contains(where: { $0.group != nil }) ? "drag one onto another, or shift-click two, to group them" : nil
         }
         switch dropping {
         case .with(_, let other)?: return "let go to group it with “\(desks.first { $0.id == other }?.name ?? "that one")”"
@@ -754,6 +766,62 @@ final class DesktopsModel: ObservableObject {
         default: return desks.first(where: { $0.id == dragging })?.group == nil ? "onto another to group them" : "off the list to take it out"
         }
     }
+
+    // MARK: Shift-clicking
+
+    /// The lines from `from` to `to`, either way round, in the list's order.
+    nonisolated static func lines(from: String, to: String, in items: [Item]) -> ArraySlice<Item> {
+        guard let a = items.firstIndex(where: { $0.id == from }), let b = items.firstIndex(where: { $0.id == to }) else { return [] }
+        return items[min(a, b)...max(a, b)]
+    }
+
+    /// The desktops on those lines, in order: a heading among them brings all of its own.
+    nonisolated static func span(from: String, to: String, in items: [Item]) -> [Desk] {
+        var seen = Set<String>(), desks: [Desk] = []
+        for item in lines(from: from, to: to, in: items) {
+            switch item {
+            case .heading(_, let members): desks += members.filter { seen.insert($0.id).inserted }
+            case .desk(let desk, _): if seen.insert(desk.id).inserted { desks.append(desk) }
+            }
+        }
+        return desks
+    }
+
+    /// The lines lit as what a shift-click on the one pointed at would group (just the one
+    /// shift-clicked, till another's pointed at).
+    var spanned: Set<String> {
+        guard let anchor, dragging == nil else { return [] }
+        guard let hovered, hovered != anchor else { return [anchor] }
+        let lines = Self.lines(from: anchor, to: hovered, in: items).map(\.id)
+        return lines.isEmpty ? [anchor] : Set(lines)
+    }
+
+    private var spannedDesks: [Desk] {
+        guard let anchor, let hovered, hovered != anchor else { return [] }
+        return Self.span(from: anchor, to: hovered, in: items)
+    }
+
+    /// Shift-clicked: the first marks where it begins; the next makes a group of everything
+    /// between them (named straight away), unless that's a group already, just as it is. The
+    /// same one again: not marked any more.
+    func shiftClicked(_ id: String) {
+        guard let anchor else {
+            finishRenaming(keeping: true)
+            self.anchor = id
+            selected = id
+            return
+        }
+        self.anchor = nil
+        let desks = Self.span(from: anchor, to: id, in: items)
+        guard anchor != id, desks.count > 1 else { return }
+        let ids = Set(desks.map(\.id))
+        if let group = desks[0].group, desks.allSatisfy({ $0.group == group }),
+           !self.desks.contains(where: { $0.group == group && !ids.contains($0.id) }) { return }
+        selected = nil
+        regroup(.gather(desks: desks.map(\.id)))
+    }
+
+    // MARK: Dragging
 
     /// Done dragging: what letting go there does, done.
     func drop() {
@@ -775,6 +843,24 @@ final class DesktopsModel: ObservableObject {
         guard let group = groups.first(where: { $0.id == id }) else { return }
         draft = group.name
         renaming = Self.headingID(id)
+    }
+
+    /// Right-clicked on a line (`id`, the one pointed at): a desktop's or a group's name, to
+    /// type over. Whether there was one to rename.
+    @discardableResult
+    func renameLine(_ id: String?) -> Bool {
+        guard let id, dragging == nil else { return false }
+        if renaming == id { return true }
+        finishRenaming(keeping: true)
+        anchor = nil
+        if let desk = desks.first(where: { $0.id == id }) {
+            startRenaming(desk)
+        } else if let group = groups.first(where: { Self.headingID($0.id) == id }) {
+            startRenaming(group: group.id)
+        } else {
+            return false
+        }
+        return true
     }
 
     /// Done typing: what's been typed kept (`keeping`), or not. A group's left as it was if
@@ -1036,8 +1122,13 @@ private struct DeskRow: View {
     private var renaming: Bool { model.renaming == desk.id }
     private var dragged: Bool { model.dragging == desk.id }
     /// Being dragged onto: letting go puts them together.
-    private var target: Bool { model.dropTarget == desk.id }
+    /// Being dragged onto (letting go puts them together), or among what a shift-click would group.
+    private var target: Bool { model.dropTarget == desk.id || model.spanned.contains(desk.id) }
     private var lit: Bool { dragged || target || model.dragging == nil && (model.hovered == desk.id || model.selected == desk.id) }
+    /// Its own actions, pointed at or picked (not while one's dragged, or shift-clicked).
+    private var showsActions: Bool {
+        !renaming && model.dragging == nil && model.anchor == nil && (model.hovered == desk.id || model.selected == desk.id)
+    }
 
     var body: some View {
         let midnight = theme == .midnight
@@ -1047,7 +1138,7 @@ private struct DeskRow: View {
             if desk.namesApps, !renaming { appNames(midnight: midnight) }
             icons(midnight: midnight)
             Spacer(minLength: 8)
-            if lit, !renaming, model.dragging == nil {
+            if showsActions {
                 if grouped { takeOutButton(midnight: midnight) }
                 renameButton(midnight: midnight)
             }
@@ -1067,6 +1158,10 @@ private struct DeskRow: View {
         }
         .onTapGesture {
             guard !renaming, !model.justDragged else { return }
+            if NSEvent.modifierFlags.contains(.shift) {
+                withAnimation(model.shuffle) { model.shiftClicked(desk.id) }
+                return
+            }
             model.pick(desk)
         }
         .gesture(drag, including: renaming ? .subviews : .all)
@@ -1078,6 +1173,7 @@ private struct DeskRow: View {
             .onChanged { value in
                 if model.dragging != desk.id {
                     model.finishRenaming(keeping: true)
+                    model.anchor = nil
                     model.dragging = desk.id
                 }
                 model.dragShift = value.translation
@@ -1174,7 +1270,7 @@ private struct DeskHeading: View {
 
     private var id: String { DesktopsModel.headingID(group.id) }
     private var renaming: Bool { model.renaming == id }
-    private var target: Bool { model.dropTarget == id }
+    private var target: Bool { model.dropTarget == id || model.spanned.contains(id) }
     private var lit: Bool { target || model.dragging == nil && (model.hovered == id || model.selected == id) }
     /// The one you're on is in it, folded out of sight.
     private var holdsCurrent: Bool { group.folded && desks.contains(where: \.isCurrent) }
@@ -1192,7 +1288,7 @@ private struct DeskHeading: View {
                     .transition(.opacity)
             }
             Spacer(minLength: 8)
-            if lit, !renaming, model.dragging == nil {
+            if !renaming, model.dragging == nil, model.anchor == nil, model.hovered == id || model.selected == id {
                 DeskAction(word: "ungroup", symbol: "xmark", help: "Ungroup") {
                     withAnimation(model.shuffle) { model.regroup(.ungroup(group: group.id)) }
                 }
@@ -1212,7 +1308,9 @@ private struct DeskHeading: View {
         }
         .onTapGesture {
             guard !renaming, !model.justDragged else { return }
-            withAnimation(model.shuffle) { model.fold(group.id, !group.folded) }
+            withAnimation(model.shuffle) {
+                if NSEvent.modifierFlags.contains(.shift) { model.shiftClicked(id) } else { model.fold(group.id, !group.folded) }
+            }
         }
         .animation(.easeOut(duration: 0.15), value: lit)
     }
@@ -1474,9 +1572,18 @@ final class DesktopsPanel: NSPanel {
         animationBehavior = .none
     }
 
+    /// A right-click (or control-click): whether it was taken (a line renamed).
+    var rightClicked: () -> Bool = { false }
+
     override var canBecomeKey: Bool { true }
 
     override func cancelOperation(_ sender: Any?) { escape() }
+
+    override func sendEvent(_ event: NSEvent) {
+        let right = event.type == .rightMouseDown || event.type == .leftMouseDown && event.modifierFlags.contains(.control)
+        if right, rightClicked() { return }
+        super.sendEvent(event)
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
@@ -1527,6 +1634,10 @@ final class DesktopsViewer {
         panel.contentView = host
         panel.escape = { [weak self] in self?.escape() }
         panel.pressed = { [weak self] event in self?.pressed(event) ?? false }
+        panel.rightClicked = { [weak self] in
+            guard let self else { return false }
+            return self.model.renameLine(self.model.hovered)
+        }
         model.dismiss = { [weak self] in self?.close() }
         model.pick = { [weak self] desk in self?.close(goingTo: desk) }
         model.renamed = { [weak self] desk, name in self?.rename(desk, to: name) }
@@ -1647,10 +1758,12 @@ final class DesktopsViewer {
         }
     }
 
-    /// Escape: a name being typed left as it was; else away.
+    /// Escape: a name being typed left as it was; a shift-click's mark taken off; else away.
     private func escape() {
         if model.renaming != nil {
             model.finishRenaming(keeping: false)
+        } else if model.anchor != nil {
+            withAnimation(model.shuffle) { model.anchor = nil }
         } else {
             close()
         }
@@ -1720,6 +1833,7 @@ final class DesktopsViewer {
         model.dragging = nil
         model.dragAt = nil
         model.dragShift = .zero
+        model.anchor = nil
     }
 
     /// The Spaces, then what's on each.
@@ -1786,6 +1900,10 @@ final class DesktopsViewer {
             store.takeOut(space)
         case .ungroup(let group):
             store.ungroup(group)
+        case .gather(let desks):
+            let found = desks.compactMap(find)
+            guard found.count > 1 else { return }
+            made = store.make(found)
         }
         withAnimation(model.shuffle) { showGroups() }
         if let made { model.startRenaming(group: made) }
