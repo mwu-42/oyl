@@ -93,7 +93,7 @@ struct SettingsPage: View {
             ]
             // With toyl here, its setting; and while it's toyl's list, toyl's ideas and no outline.
             if TodStore.hasToyl {
-                items.append(feature(.useToyl, "toyl", "With toyl installed, Oyl's to-dos, ideas, timers and projects are toyl's"))
+                items.append(feature(.useToyl, "toyl in Oyl", "On: Oyl's to-dos, ideas, timers and lists are toyl's. Off: nothing of toyl's in Oyl, which goes back to its own (and tod's). Also on the notch's right-click"))
             }
             if state.usesToyl {
                 items += [

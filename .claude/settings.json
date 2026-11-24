@@ -9,6 +9,18 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/python3 -I -c 'import json, os, subprocess, sys\ntry:\n    active = json.load(sys.stdin).get(\"stop_hook_active\")\nexcept Exception:\n    active = False\nif active:\n    sys.exit(0)\ntry:\n    out = subprocess.run([os.path.expanduser(\"~/toyl/docs/oyl-sync/pending.sh\")], capture_output=True, text=True, timeout=20).stdout.strip()\nexcept Exception:\n    sys.exit(0)\nif out:\n    print(json.dumps({\"decision\": \"block\", \"reason\": \"toyl has changed since Oyl last took it in. Before finishing, take these entries in as the toyl-sync skill says (make the changes, test headlessly, write the latest number into ~/Oyl/.toyl-sync, commit under the standing rule), then tell the owner in a line or two what changed:\\n\\n\" + out}))'",
+            "timeout": 30,
+            "statusMessage": "Checking toyl for changes"
+          }
+        ]
+      }
     ]
   }
 }

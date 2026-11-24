@@ -55,6 +55,10 @@ struct NotchView: View {
             }
             Toggle("Midnight Oyl", isOn: Binding { state.theme == .midnight } set: { state.theme = $0 ? .midnight : .standard })
             Toggle("Oyl's Dock", isOn: $state.showsDock)
+            // toyl's to-dos, ideas, timers and lists in Oyl, or none of them.
+            if TodStore.hasToyl {
+                Toggle("toyl in Oyl", isOn: Binding { Feature.useToyl.isOn } set: { Features.shared.set(.useToyl, $0) })
+            }
             Divider()
             Button("Quit Oyl") { Quitting.quit(awake) }
             Button("Turn Off Oyl") { Quitting.turnOff(awake) }
@@ -241,7 +245,8 @@ struct LimitWing: View {
     var body: some View {
         let midnight = theme == .midnight, tint = Self.tint(reading.percent, theme: theme)
         HStack(spacing: 0) {
-            Group {
+            // The gauge, and "5h" by it, so it's never taken for a timer.
+            HStack(spacing: 4) {
                 if midnight {
                     WaxingMoon(fraction: fraction)
                         .fill(Midnight.silver.opacity(0.92))
@@ -252,8 +257,13 @@ struct LimitWing: View {
                     TimerRing(fraction: fraction, lineWidth: 2, color: tint)
                         .frame(width: 14, height: 14)
                 }
+                Text("5h")
+                    .notchFont(size: midnight ? 11 : 10, weight: .semibold, design: .rounded)
+                    .foregroundStyle(midnight ? Midnight.silver.opacity(0.55) : .white.opacity(0.45))
+                    .lineLimit(1)
+                    .fixedSize()
             }
-            .frame(width: CompactLayout.limitWing - 12, alignment: .leading)
+            .frame(width: CompactLayout.limitWing - 8, alignment: .leading)
             Spacer(minLength: notchWidth)
             Text("\(reading.percent)%")
                 .notchFont(size: midnight ? 12.5 : 12, weight: .semibold, design: .rounded, digits: true)

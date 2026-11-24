@@ -1,7 +1,9 @@
 import Foundation
 
 /// A line typed to add to toyl's list, read for its days as toyl's own quick add reads them (its
-/// `Quick`), for when Oyl adds it itself, toyl's command not being there or having broken: TickTick's
+/// `Quick`), for when Oyl adds it itself, toyl's command not being there or having broken: a day said
+/// as a slash word put in words ("/nextfri" → "next fri", "/dec5", "/in3d"; a slash word that isn't
+/// one, "/etc/hosts", stays as typed); TickTick's
 /// shorthand said in full first ("td", "tmr", "eow", "in 3d", see `Shorthand`), and "yd" or
 /// "yesterday" toyl's own; a deadline said with "due", else a day said loosely ("by fri", "next
 /// week", "end of the month"), which toyl takes as when it's due, as it has no aims; then tod's
@@ -13,6 +15,8 @@ enum ToylQuick {
         let whole = NSRange(location: 0, length: ns.length)
         let tag = TodQuick.tagPattern.firstMatch(in: input, range: whole).map { ns.substring(with: $0.range(at: 1)) }
         var text = TodQuick.tagPattern.stringByReplacingMatches(in: input, range: whole, withTemplate: " ")
+        // "/nextfri", "/nextweek", "/tmr", "/dec5": a day said as a slash word, in words again.
+        text = slashDays(text, now: now, weekStart: weekStart)
         text = Shorthand.spelledOut(text)
         let saidYesterday = cut(Shorthand.yesterday, from: &text)
         let yesterday = cut(Shorthand.yesterdayShort, from: &text) || saidYesterday
@@ -59,6 +63,41 @@ enum ToylQuick {
         var title = tidy(text)
         if title.isEmpty { title = tidy(TodQuick.tagPattern.stringByReplacingMatches(in: input, range: whole, withTemplate: " ")) }
         return TodQuick(title: title, due: due, time: time, list: tag)
+    }
+
+    // MARK: - Days as slash words
+
+    /// Each "/word" that reads as a day, in words: "/nextfri" → "next fri". Others stay as typed.
+    static func slashDays(_ text: String, now: Date, weekStart: Int) -> String {
+        var out = text
+        let ns = text as NSString
+        for match in slashWord.matches(in: text, range: NSRange(location: 0, length: ns.length)).reversed() {
+            let current = out as NSString
+            guard let phrase = dayPhrase(current.substring(with: match.range(at: 1)), now: now, weekStart: weekStart) else { continue }
+            out = current.replacingCharacters(in: match.range, with: " " + phrase + " ")
+        }
+        return out
+    }
+
+    private static let slashWord = try! NSRegularExpression(pattern: #"(?<!\S)/([\p{L}\p{N}]+)(?!\S)"#)
+    private static let runTogether: [(NSRegularExpression, String)] = [
+        (pattern(#"^endof"#), "end of "),
+        (pattern(#"\b(next|this|the)(?=[a-z])"#), "$1 "),
+        (pattern(#"^in(?=\d)"#), "in "),
+        // "dec5", "fri5pm" → "dec 5", "fri 5pm"; "3days" → "3 days" (but "5pm", "3d" stay whole).
+        (pattern(#"(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z]{3,})"#), " "),
+    ]
+
+    /// What a slash word means as a day, its words apart again ("nextfri" → "next fri",
+    /// "endofmonth" → "end of month", "in3d" → "in 3d"), if it means one; nil if it doesn't.
+    static func dayPhrase(_ word: String, now: Date = Date(), weekStart: Int = 1) -> String? {
+        var phrase = word.lowercased()
+        guard !phrase.contains("/") else { return nil }
+        for (pattern, template) in runTogether { phrase = replacing(pattern, in: phrase, with: template) }
+        phrase = tidy(phrase)
+        let read = parse("x " + phrase, now: now, weekStart: weekStart)
+        guard read.due != nil, read.title == "x", read.list == nil else { return nil }
+        return phrase
     }
 
     // MARK: - Pieces
