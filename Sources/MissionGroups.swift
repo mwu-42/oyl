@@ -135,15 +135,18 @@ final class MissionGroups {
     private var expecting: Date?
     /// When its row was last there: it's gone once it hasn't been for a moment.
     private var lastSeen: Date?
+    /// Reads in a row Mission Control's own windows weren't up, though its row could still be
+    /// read (it lingers a moment as it closes).
+    private var downs = 0
 
     var theme = NotchTheme.standard {
         didSet { for entry in panels.values { entry.model.theme = theme } }
     }
 
-    /// The Dock says Mission Control's open (or not). Open, it's looked for; closed, its row going
-    /// is what puts the marks away (so a moment's flicker of the Dock's windows doesn't).
+    /// The Dock says Mission Control's open, or that it's gone (as you go to a desktop, or come back
+    /// to the one you were on): open, it's looked for; gone, the marks go at once.
     func showing(_ on: Bool) {
-        if on { expect() }
+        if on { expect() } else { stop() }
     }
 
     /// Mission Control may be coming (three fingers began up, or the Dock said so): its row looked
@@ -172,6 +175,7 @@ final class MissionGroups {
         timer = nil
         expecting = nil
         lastSeen = nil
+        downs = 0
         for entry in panels.values { withAnimation(Self.ease(theme)) { entry.model.shown = false } }
         hiding?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -190,23 +194,31 @@ final class MissionGroups {
         reading = true
         DispatchQueue.global(qos: .userInitiated).async {
             let rows = MissionControlRow.read(dock: dock)
+            let up = !rows.isEmpty && MissionControl.dockWindowsUp()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.reading = false
                     guard self.timer != nil else { return }
                     let now = Date()
-                    guard !rows.isEmpty else {
-                        // Gone (or never came): once it's not been there for a moment, and isn't
-                        // still awaited.
-                        if (self.expecting.map { now > $0 } ?? true), (self.lastSeen.map { now.timeIntervalSince($0) > 0.45 } ?? true) {
-                            self.stop()
-                        }
+                    self.downs = up ? 0 : self.downs + 1
+                    guard up else {
+                        // Not there (or only its row's left, as it closes): the marks away at once;
+                        // done looking once it's been so a moment, and isn't still awaited.
+                        self.hideMarks()
+                        if self.downs >= 2, (self.expecting.map { now > $0 } ?? true) || self.lastSeen != nil { self.stop() }
                         return
                     }
                     self.lastSeen = now
                     self.apply(rows)
                 }
             }
+        }
+    }
+
+    /// The marks out of sight, still looking.
+    private func hideMarks() {
+        for entry in panels.values where entry.model.shown {
+            withAnimation(Self.ease(theme)) { entry.model.shown = false }
         }
     }
 

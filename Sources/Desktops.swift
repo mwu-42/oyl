@@ -787,9 +787,18 @@ final class DesktopsModel: ObservableObject {
     /// Let go at `point` (in the list): on a heading, into that group; on a desktop in a group, into
     /// it too; on one on its own, a new group of the two; off the list, out of its group. Nothing
     /// if it's let go on itself, or where it already is.
+    /// Let go between two lines (near the edge of one, rather than on it), as if putting it in
+    /// another place: inside another group's run, into it; anywhere outside its own group's, out of
+    /// it; inside its own, where it is.
     nonisolated static func drop(_ desk: Desk, at point: CGPoint, items: [Item], rowHeight: CGFloat, width: CGFloat) -> Regroup? {
-        let index = Int((point.y / max(rowHeight, 1)).rounded(.down))
-        let onList = point.x > -24 && point.x < width + 24 && items.indices.contains(index)
+        let across = point.x > -24 && point.x < width + 24
+        let rows = point.y / max(rowHeight, 1)
+        if across, rows > -0.5, rows < CGFloat(items.count) + 0.5, let gap = gap(at: point, items: items, rowHeight: rowHeight) {
+            if let group = group(at: gap, in: items) { return desk.group == group ? nil : .into(desk: desk.id, group: group) }
+            return isGrouped(desk, in: items) ? .out(desk: desk.id) : nil
+        }
+        let index = Int(rows.rounded(.down))
+        let onList = across && items.indices.contains(index)
         switch onList ? items[index] : nil {
         case .heading(let group, _)?:
             return desk.group == group.id ? nil : .into(desk: desk.id, group: group.id)
@@ -798,9 +807,44 @@ final class DesktopsModel: ObservableObject {
             if grouped, let group = other.group { return desk.group == group ? nil : .into(desk: desk.id, group: group) }
             return .with(desk: desk.id, other: other.id)
         case nil:
-            let isGrouped = items.contains { if case .heading(_, let members) = $0 { return members.contains { $0.id == desk.id } } else { return false } }
-            return isGrouped ? .out(desk: desk.id) : nil
+            return isGrouped(desk, in: items) ? .out(desk: desk.id) : nil
         }
+    }
+
+    nonisolated static func isGrouped(_ desk: Desk, in items: [Item]) -> Bool {
+        items.contains { if case .heading(_, let members) = $0 { return members.contains { $0.id == desk.id } } else { return false } }
+    }
+
+    /// The gap between lines `point` is in (0 over the first, `items.count` under the last), if it's
+    /// near a line's edge rather than on it.
+    nonisolated static func gap(at point: CGPoint, items: [Item], rowHeight: CGFloat) -> Int? {
+        let rows = point.y / max(rowHeight, 1)
+        if rows < 0 { return 0 }
+        let index = Int(rows.rounded(.down)), part = rows - CGFloat(index)
+        if index >= items.count { return items.count }
+        if part < 0.25 { return index }
+        if part > 0.75 { return index + 1 }
+        return nil
+    }
+
+    /// The group whose run the gap's inside (under its heading or between two of its desktops).
+    nonisolated static func group(at gap: Int, in items: [Item]) -> String? {
+        guard gap > 0, gap < items.count, case .desk(let below, true) = items[gap], let group = below.group else { return nil }
+        switch items[gap - 1] {
+        case .heading(let heading, _): return heading.id == group ? group : nil
+        case .desk(let above, true): return above.group == group ? group : nil
+        default: return nil
+        }
+    }
+
+    /// The gap a line's drawn in while one's dragged there, as it'd be put there (out of its group,
+    /// or into another's run).
+    var dropGap: Int? {
+        guard let dragging, let at = dragAt, desks.contains(where: { $0.id == dragging }), dropping != nil,
+              at.x > -24, at.x < listWidth + 24 else { return nil }
+        let rows = at.y / max(rowHeight, 1)
+        guard rows > -0.5, rows < CGFloat(items.count) + 0.5 else { return nil }
+        return Self.gap(at: at, items: items, rowHeight: rowHeight)
     }
 
     /// The line letting go would put it with (lit while it's dragged over).
@@ -828,7 +872,7 @@ final class DesktopsModel: ObservableObject {
         case .into(_, let group)?: return "let go to put it in “\(named(group))”"
         case .out?:
             let from = desks.first { $0.id == dragging }?.group.map(named) ?? "its group"
-            return "let go off the list to take it out of “\(from)”"
+            return "let go to take it out of “\(from)”"
         default: return desks.first(where: { $0.id == dragging })?.group == nil ? "onto another to group them" : "off the list to take it out"
         }
     }
@@ -1114,6 +1158,15 @@ private struct DesktopsRows: View {
                     .transition(midnight ? .modifier(active: FoldDrift(amount: 1), identity: FoldDrift(amount: 0)) : .opacity)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if let gap = model.dropGap {
+                DeskGapLine(width: model.listWidth - (midnight ? 30 : 12), midnight: midnight)
+                    .offset(x: midnight ? 24 : 6, y: CGFloat(gap) * height - 1)
+                    .transition(.opacity)
+                    .animation(model.shuffle, value: gap)
+                    .allowsHitTesting(false)
+            }
+        }
         .background(alignment: .topLeading) {
             if midnight {
                 // (Not through the one being dragged: it's off with the pointer.)
@@ -1224,6 +1277,29 @@ private struct DeskSoundPicker: View {
             if let choice { model.hearSound(choice) } else if let fallback = model.soundOf(id) ?? model.soundChoices().first { model.hearSound(fallback) }
         }
         .animation(.easeOut(duration: 0.12), value: lit)
+    }
+}
+
+/// Where a dragged desktop would go, between two lines: in Oyl's look a white bar; in Midnight's,
+/// a fine silver line, a star at its start.
+private struct DeskGapLine: View {
+    let width: CGFloat
+    let midnight: Bool
+
+    var body: some View {
+        if midnight {
+            HStack(spacing: 4) {
+                FourPointStar().fill(Midnight.starlight).frame(width: 7, height: 7)
+                    .shadow(color: Midnight.moonlight.opacity(0.6), radius: 3)
+                Rectangle()
+                    .fill(LinearGradient(colors: [Midnight.silver.opacity(0.8), Midnight.silver.opacity(0)], startPoint: .leading, endPoint: .trailing))
+                    .frame(height: 0.8)
+            }
+            .frame(width: width, height: 7)
+            .offset(y: -3)
+        } else {
+            Capsule().fill(Color.white.opacity(0.85)).frame(width: width, height: 2)
+        }
     }
 }
 

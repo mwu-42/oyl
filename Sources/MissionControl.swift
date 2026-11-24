@@ -101,7 +101,7 @@ final class MissionControl {
 
     /// The Dock's windows over everything else, as it shows the desktops: any of its own on
     /// screen above the desktop's, other than the Dock itself.
-    private static func dockWindowsUp() -> Bool {
+    nonisolated static func dockWindowsUp() -> Bool {
         guard let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
         let dock = Int(CGWindowLevelForKey(.dockWindow))
         return windows.contains { window in

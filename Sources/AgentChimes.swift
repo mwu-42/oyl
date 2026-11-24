@@ -274,39 +274,53 @@ enum ChimeTone {
 
     static let rate = 44_100
 
-    /// `kind` in `style` (see `ChimeVoice.tones`). Done rises, D3, F♯3, A3, a small ta-da;
-    /// waiting is two soft taps of A3, asking.
+    /// `kind` in `style` (see `ChimeVoice.tones`): each its own tune as well as its own sound, done
+    /// always rising and waiting asking, all low (none over E4).
+    /// - Ember: D3 F♯3 A3, up a major chord; waiting, two taps of A3.
+    /// - Hearth: C3 to G3, a slow fifth; waiting, G3 then C4, opening up.
+    /// - Driftwood: E3 B3 E4, knocked; waiting, E4 knocked twice.
+    /// - Lantern: G3 to D4, a bell's fifth; waiting, D4 rung twice.
+    /// - Moonrise: D3 A3 D4, up an octave slowly; waiting, A3 up to D4.
+    /// - Pebble: C4 to E4, two plucks; waiting, three quick taps of G3.
+    /// - Low Tide: A2 E3 A3, swelling; waiting, E3 rising to A3.
+    /// - Ripple: D3 E3 F♯3 A3, quick; waiting, F♯3 A3 F♯3 A3.
     nonisolated static func notes(_ kind: AgentChimes.Kind, style: String = "round", midnight: Bool) -> [Note] {
         let soft = midnight ? 1.7 : 1.0
         let shimmer = midnight ? [Overtone(ratio: 6, level: 0.05, fade: 0.6)] : []
-        let pitches: [Double] = kind == .done ? (style == "ripple" ? [146.83, 164.81, 185.0, 220.0] : [146.83, 185.0, 220.0]) : [220.0, 220.0]
-        func run(attack: Double, fade: Double, gap: Double, overtones: [Overtone], scale: Double = 1) -> [Note] {
-            let gap = (kind == .done ? gap * 0.75 : gap) * (midnight ? 1.2 : 1)
+        let done = kind == .done
+        func run(_ pitches: [Double], attack: Double, fade: Double, gap: Double, overtones: [Overtone]) -> [Note] {
+            let gap = gap * (midnight ? 1.2 : 1)
             return pitches.enumerated().map { index, pitch in
                 let last = index == pitches.count - 1
-                return Note(pitch: pitch * scale, at: Double(index) * gap, level: 0.3 + 0.03 * Double(index),
+                return Note(pitch: pitch, at: Double(index) * gap, level: 0.3 + 0.03 * Double(min(index, 3)),
                             attack: attack * soft, fade: fade * soft * (last ? 1.3 : 1), overtones: overtones + shimmer)
             }
         }
+        let warm = [Overtone(ratio: 2, level: 0.22, fade: 0.45)]
         switch style {
         case "hum":
-            return run(attack: 0.04, fade: 0.22, gap: 0.2, overtones: [Overtone(ratio: 2, level: 0.12, fade: 0.6)], scale: 0.75)
+            return run(done ? [130.81, 196.0] : [196.0, 261.63], attack: 0.04, fade: 0.26, gap: done ? 0.24 : 0.2,
+                       overtones: [Overtone(ratio: 2, level: 0.12, fade: 0.6)])
         case "wood":
-            return run(attack: 0.004, fade: 0.07, gap: 0.11,
-                       overtones: [Overtone(ratio: 2, level: 0.35, fade: 0.5), Overtone(ratio: 3, level: 0.15, fade: 0.35)], scale: 1.5)
+            return run(done ? [164.81, 246.94, 329.63] : [329.63, 329.63], attack: 0.004, fade: 0.07, gap: 0.1,
+                       overtones: [Overtone(ratio: 2, level: 0.35, fade: 0.5), Overtone(ratio: 3, level: 0.15, fade: 0.35)])
         case "bell":
-            return run(attack: 0.006, fade: 0.4, gap: 0.17,
-                       overtones: [Overtone(ratio: 2.76, level: 0.16, fade: 0.5), Overtone(ratio: 5.4, level: 0.05, fade: 0.3)], scale: 0.75)
+            return run(done ? [196.0, 293.66] : [293.66, 293.66], attack: 0.006, fade: 0.4, gap: 0.2,
+                       overtones: [Overtone(ratio: 2.76, level: 0.16, fade: 0.5), Overtone(ratio: 5.4, level: 0.05, fade: 0.3)])
         case "moonrise":
-            return run(attack: 0.05, fade: 0.26, gap: 0.16, overtones: [Overtone(ratio: 2, level: 0.14, fade: 0.5)], scale: 1.12)
+            return run(done ? [146.83, 220.0, 293.66] : [220.0, 293.66], attack: 0.05, fade: 0.26, gap: 0.17,
+                       overtones: [Overtone(ratio: 2, level: 0.14, fade: 0.5)])
         case "pebble":
-            return run(attack: 0.003, fade: 0.06, gap: 0.09, overtones: [Overtone(ratio: 2, level: 0.1, fade: 0.4)])
+            return run(done ? [261.63, 329.63] : [196.0, 196.0, 196.0], attack: 0.003, fade: 0.06, gap: done ? 0.1 : 0.08,
+                       overtones: [Overtone(ratio: 2, level: 0.1, fade: 0.4)])
         case "tide":
-            return run(attack: 0.09, fade: 0.3, gap: 0.22, overtones: [Overtone(ratio: 2, level: 0.18, fade: 0.55)], scale: 0.67)
+            return run(done ? [110.0, 164.81, 220.0] : [164.81, 220.0], attack: 0.09, fade: 0.3, gap: 0.22,
+                       overtones: [Overtone(ratio: 2, level: 0.18, fade: 0.55)])
         case "ripple":
-            return run(attack: 0.006, fade: 0.1, gap: 0.085, overtones: [Overtone(ratio: 2, level: 0.2, fade: 0.45)])
+            return run(done ? [146.83, 164.81, 185.0, 220.0] : [185.0, 220.0, 185.0, 220.0], attack: 0.006, fade: 0.1, gap: 0.085,
+                       overtones: [Overtone(ratio: 2, level: 0.2, fade: 0.45)])
         default:
-            return run(attack: 0.012, fade: 0.2, gap: 0.13, overtones: [Overtone(ratio: 2, level: 0.22, fade: 0.45)])
+            return run(done ? [146.83, 185.0, 220.0] : [220.0, 220.0], attack: 0.012, fade: 0.2, gap: done ? 0.1 : 0.13, overtones: warm)
         }
     }
 
