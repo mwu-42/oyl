@@ -47,6 +47,7 @@ struct SettingsPage: View {
     @ObservedObject var radar = AgentRadar.shared
     @ObservedObject var features = Features.shared
     @ObservedObject var morning = MorningStart.shared
+    @ObservedObject var chimes = ChimeSettings.shared
 
     var body: some View {
         SettingsLayout(section: $state.settingsSection, items: Self.items(state.settingsSection, state: state),
@@ -164,9 +165,31 @@ struct SettingsPage: View {
                                          remove: { radar.decline(agent) }))
             }
             items.append(feature(.discovery, "Find new agents", "Offer to watch apps that talk to an AI service"))
-            items.append(feature(.agentSounds, "🔔 Sound when Claude's done", midnight
-                ? "A soft sound as a Claude finishes its turn (Submarine), another as it starts waiting for you, for a permission or a question (Purr)"
-                : "A sound as a Claude finishes its turn (Glass), another as it starts waiting for you, for a permission or a question (Ping)"))
+            items.append(feature(.agentSounds, "🔔 Sound when Claude's done",
+                                 "A low, soft sound as a Claude finishes its turn (two notes down), another as it starts waiting for you, for a permission or a question (two notes up); each place it runs can have its own"))
+            if Feature.agentSounds.isOn {
+                // Each place a Claude's been seen running, and everywhere else: click to hear it, ‹ › for another.
+                let chimes = ChimeSettings.shared
+                for source in chimes.sources + [ChimeSettings.elsewhere] {
+                    items.append(SettingItem(id: "chime " + source, title: "🔔 \(source): \(chimes.says(source))",
+                                             hint: "Click to hear it; ‹ › for another: Oyl's tones, any sound file in its sounds folder, macOS's, or none",
+                                             action: { chimes.voice(for: source).play(.done, midnight: midnight) }, isButton: true,
+                                             adjust: (down: {
+                                                 chimes.step(source, by: -1)
+                                                 chimes.voice(for: source).play(.done, midnight: midnight)
+                                             }, up: {
+                                                 chimes.step(source, by: 1)
+                                                 chimes.voice(for: source).play(.done, midnight: midnight)
+                                             })))
+                }
+                items.append(SettingItem(id: "chime folder", title: "Sounds folder…",
+                                         hint: "Any sound file put here (WAV, AIFF, MP3, M4A) can be a place's sound",
+                                         action: {
+                                             let folder = ChimeVoice.folder()
+                                             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                                             NSWorkspace.shared.open(folder)
+                                         }, isButton: true))
+            }
             let morning = MorningStart.shared
             items.append(SettingItem(id: Feature.morningClaude.rawValue, title: "☀ Claude at \(morning.time)",
                                      hint: "Each morning at \(morning.time), a one-word prompt to Claude (Haiku, through Claude Code, on your plan) starts your 5-hour limit window, so it resets that much sooner. ‹ › change the time. The Mac has to be awake: missed while it sleeps, it's sent when it wakes, within 4 hours. " + morning.lastSaid,

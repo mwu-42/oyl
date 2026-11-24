@@ -743,7 +743,7 @@ enum AgentWindow {
     /// The nearest ancestor of `pid` that's an app with windows (VS Code for its extension, Terminal
     /// for its shells).
     @MainActor
-    private static func hostApp(of pid: Int32) -> NSRunningApplication? {
+    static func hostApp(of pid: Int32) -> NSRunningApplication? {
         var current = pid
         for _ in 0..<12 where current > 1 {
             if let app = NSRunningApplication(processIdentifier: current), app.activationPolicy == .regular { return app }
