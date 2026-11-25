@@ -58,6 +58,60 @@ final class TodStore: ObservableObject {
         var source: String?
         var course: String?
         var color: String?
+        /// toyl's: the one link it watches, and what toyl last saw there (see `Watch`).
+        var watch: Watch?
+
+        /// What a task watches in toyl: a pull request, an issue or a repository on GitHub, a Google
+        /// doc, a file or folder on the Mac, or any page; and what toyl last saw there.
+        struct Watch: Equatable {
+            let link: String
+            let kind: String
+            var state: String?
+            var count: Int?
+            var changed: Date?
+
+            /// Where a click goes: the page, or the file or folder.
+            var url: URL? {
+                if link.hasPrefix("/") || link.hasPrefix("~") { return URL(fileURLWithPath: (link as NSString).expandingTildeInPath) }
+                return URL(string: link).flatMap { ["http", "https"].contains($0.scheme?.lowercased() ?? "") ? $0 : nil }
+            }
+
+            /// How it's going, short: "pr merged", "issue open", "3 commits", "edited 2h ago"; nil
+            /// for a page (nothing's looked at) or before toyl's seen anything.
+            func status(now: Date = Date()) -> String? {
+                switch kind {
+                case "pr", "issue":
+                    return state.map { "\(kind) \($0)" }
+                case "repo", "folder":
+                    if let count { return count == 1 ? "1 commit" : "\(count) commits" }
+                    return changed.map { "changed " + Self.ago($0, now: now) }
+                case "doc", "file":
+                    return changed.map { "edited " + Self.ago($0, now: now) }
+                default:
+                    return nil
+                }
+            }
+
+            /// "just now", "5m ago", "2h ago", "3d ago".
+            static func ago(_ date: Date, now: Date) -> String {
+                let seconds = max(now.timeIntervalSince(date), 0)
+                switch seconds {
+                case ..<60: return "just now"
+                case ..<3600: return "\(Int(seconds / 60))m ago"
+                case ..<86_400: return "\(Int(seconds / 3600))h ago"
+                default: return "\(Int(seconds / 86_400))d ago"
+                }
+            }
+
+            init?(_ entry: Any?) {
+                guard let entry = entry as? [String: Any], let link = entry["link"] as? String, !link.isEmpty else { return nil }
+                self.link = link
+                kind = entry["kind"] as? String ?? "page"
+                state = entry["state"] as? String
+                count = (entry["count"] as? NSNumber)?.intValue
+                changed = (entry["changed"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue / 1000) }
+            }
+        }
 
         /// Its own color, if it has one (its check ring's).
         var ringColor: Color? {
@@ -725,7 +779,7 @@ final class TodStore: ObservableObject {
                         repeats: (entry["repeat"] as? String).flatMap(TodRepeat.init(rawValue:)), lane: lane,
                         someday: entry["someday"] as? Bool ?? false, hasEvent: entry["event"] is [String: Any],
                         source: text(entry["source"]), course: text((entry["canvas"] as? [String: Any])?["course"]),
-                        color: text(entry["color"]))
+                        color: text(entry["color"]), watch: Task.Watch(entry["watch"]))
         }
 
         /// Repeating tasks that are done and haven't come back yet, and when they were done.
