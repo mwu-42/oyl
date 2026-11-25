@@ -2234,6 +2234,7 @@ final class DesktopsViewer {
     private var current: Int?
     /// Up at all: coming up, up, or going.
     private(set) var isUp = false
+    private var shownAt = Date.distantPast
     /// A swipe being followed, and which way.
     private var following: Bool?
     private var hiding: DispatchWorkItem?
@@ -2300,14 +2301,51 @@ final class DesktopsViewer {
             NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { _ in
                 MainActor.assumeIsolated { Trackpads.shared.restart() }
             },
-            // Swiped across to another Space while it's up: that one's the one you're on.
+            // On another Space while it's up. Just up (four fingers up as the last swipe across
+            // was still sliding), or coming up with the fingers: brought along to this one, as
+            // it'd be left on the one slid away from. Up a while (gone to another desktop not by a
+            // swipe across, which puts it away as it begins): away too. The same one still
+            // (Mission Control come and gone): read again.
             workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self, self.isUp, self.following == nil, self.hiding == nil else { return }
-                    self.load()
-                }
+                MainActor.assumeIsolated { self?.spaceChanged() }
             },
         ]
+        DockSwipes.shared.swipedAcross = { [weak self] in self?.swipedAway() }
+    }
+
+    /// Up this long, it's just up: a Space change is its coming up catching up, not your going.
+    nonisolated static let justUp: TimeInterval = 1.5
+
+    /// Whether a change of Space with it up puts it away (rather than bringing it along).
+    nonisolated static func goesAway(moved: Bool, following: Bool, upFor: TimeInterval) -> Bool {
+        moved && !following && upFor > justUp
+    }
+
+    private func spaceChanged() {
+        guard isUp, hiding == nil else { return }
+        let now = screen.flatMap { Spaces.current(on: $0) }
+        let moved = now != nil && current.map { spaces.indices.contains($0) && spaces[$0].key != now?.key } ?? true
+        let upFor = Date().timeIntervalSince(shownAt)
+        if Self.goesAway(moved: moved, following: following != nil, upFor: upFor) {
+            Self.log.notice("On another desktop with the desktops' list up: put away")
+            hide()
+            return
+        }
+        if moved {
+            Self.log.notice("The desktops' list came up as the desktop changed (\(String(format: "%.2f", upFor), privacy: .public) s up): brought along to this one")
+            panel.orderOut(nil)
+            panel.orderFrontRegardless()
+            panel.makeKey()
+        }
+        load()
+    }
+
+    /// Swiped across to another desktop while it's up: away at once, as the swipe begins (it'd be
+    /// left behind on this one, out of sight, holding Mission Control back still).
+    private func swipedAway() {
+        guard isUp else { return }
+        Self.log.notice("Swiped across to another desktop: the desktops' list away")
+        hide()
     }
 
     /// Four fingers up (and down) read off the trackpads, or not.
@@ -2477,6 +2515,7 @@ final class DesktopsViewer {
         panel.orderFrontRegardless()
         panel.makeKey()
         isUp = true
+        shownAt = Date()
         // Three fingers up (or down) don't open Mission Control (or App Exposé) over it.
         DockSwipes.shared.block(true)
         Self.log.notice("The desktops' list up")
@@ -2533,8 +2572,8 @@ final class DesktopsViewer {
         readAgents()
     }
 
-    /// Which desktops agents are at work on, now (see `AgentLife`): by their app's windows, else
-    /// (a Claude) where it was last seen.
+    /// Which desktops agents are at work on, now (see `AgentLife`): by their app's windows (and
+    /// then remembered as seen there), else (a Claude) where it was last seen.
     private func readAgents() {
         readingAgents?.cancel()
         let candidates = working().compactMap { session -> (AgentSession, pid_t)? in
@@ -2543,23 +2582,32 @@ final class DesktopsViewer {
         }
         guard !candidates.isEmpty else {
             if !model.atWork.isEmpty { model.atWork = [:] }
+            Self.log.notice("Agents at work: none")
             return
         }
         readingAgents = Task { @MainActor [weak self] in
             let (sessions, numbers) = await Task.detached(priority: .userInitiated) { () -> ([(AgentSession, pid_t)], [Int?]) in
-                let still = Set(await AgentLife.atIt(candidates.map(\.0)).map(\.id))
+                let still = Set(AgentLife.atIt(candidates.map(\.0)).map(\.id))
                 let sessions = candidates.filter { still.contains($0.0.id) }
                 return (sessions, sessions.map { SessionDesk.space(of: $0.0, app: $0.1) })
             }.value
             guard let self, !Task.isCancelled else { return }
             var counts: [String: Int] = [:]
+            var told: [String] = []
             for ((session, _), number) in zip(sessions, numbers) {
-                let space = number.flatMap { number in self.spaces.first { $0.id == number } } ?? SeenDesks.shared.desk(of: session).flatMap { seen in
-                    let keys = SpaceGroups.keys(of: seen)
-                    return self.spaces.first { SpaceGroups.keys(of: $0).contains(where: keys.contains) }
-                }
+                let byWindows = number.flatMap { number in self.spaces.first { $0.id == number } }
+                if let byWindows { SeenDesks.shared.remember(session, on: byWindows) }
+                let seen = byWindows == nil ? SeenDesks.shared.keys(of: session).flatMap { keys in
+                    self.spaces.first { SpaceGroups.keys(of: $0).contains(where: keys.contains) }
+                } : nil
+                let space = byWindows ?? seen
                 if let space { counts[space.key, default: 0] += 1 }
+                let index = space.flatMap { space in self.spaces.firstIndex { $0.key == space.key } }
+                told.append("\(session.host ?? "?") \(session.activity.title): " + (byWindows != nil ? "by its windows" : seen != nil ? "where last seen" : "not found")
+                            + (index.map { ", desktop \($0 + 1)" } ?? ""))
             }
+            let dropped = candidates.count - sessions.count
+            Self.log.notice("Agents at work: \(told.joined(separator: "; "), privacy: .public)\(dropped > 0 ? " (\(dropped) whose turn's over left out)" : "", privacy: .public)")
             if counts != self.model.atWork { self.model.atWork = counts }
         }
     }

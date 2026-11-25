@@ -7,7 +7,9 @@ import os
 /// through, as do pinches. An event tap on the Dock's own events (the kind Oyl posts to go
 /// straight to a Space, see `InstantSpaces`), which needs Oyl allowed in Accessibility; on a
 /// thread of its own, so a swipe never waits on anything else Oyl's doing; and only on while the
-/// list's up (and till a swipe it held back is over, so the Dock never sees half of one).
+/// list's up (and till a swipe it held back is over, so the Dock never sees half of one). A swipe
+/// across, to another Space, puts the list away as it begins (`swipedAcross`): it'd be left up on
+/// the Space it came from, out of sight, holding Mission Control back still.
 final class DockSwipes: @unchecked Sendable {
     static let shared = DockSwipes()
 
@@ -17,6 +19,7 @@ final class DockSwipes: @unchecked Sendable {
         /// A Dock swipe, of the Dock's own events (as opposed to its pinches).
         static let dockSwipe: Int64 = 23
         static let vertical: Int64 = 2
+        static let across: Int64 = 1
         static let began: Int64 = 1
         /// Ended, or called off.
         static let over: Int64 = 4 | 8
@@ -33,7 +36,15 @@ final class DockSwipes: @unchecked Sendable {
             if phase & Self.over != 0 { holding = false }
             return true
         }
+
+        /// Whether this one's a swipe across beginning while the list's up: it's to go.
+        static func swipesAway(kind: Int64, motion: Int64, phase: Int64, blocking: Bool) -> Bool {
+            blocking && kind == dockSwipe && motion == across && phase == began
+        }
     }
+
+    /// Run (on the main thread) as a swipe across begins while the list's up.
+    @MainActor var swipedAcross: () -> Void = {}
 
     /// The Dock's own events (kCGSEventDockControl).
     static let eventType: UInt32 = 30
@@ -94,12 +105,15 @@ final class DockSwipes: @unchecked Sendable {
         let kind = event.getIntegerValueField(Self.field(110))
         let motion = event.getIntegerValueField(Self.field(123))
         let phase = event.getIntegerValueField(Self.field(132))
-        let (held, wanted, tap) = lock.withLock { () -> (Bool, Bool, CFMachPort?) in
+        let (held, up, wanted, tap) = lock.withLock { () -> (Bool, Bool, Bool, CFMachPort?) in
             let held = gate.holds(kind: kind, motion: motion, phase: phase, blocking: blocking)
-            return (held, blocking || gate.holding, self.tap)
+            return (held, blocking, blocking || gate.holding, self.tap)
         }
         if kind == Gate.dockSwipe, phase == Gate.began {
             Self.log.notice("A swipe for the Dock began while the desktops' list was up (motion \(motion)): \(held ? "held back" : "let through", privacy: .public)")
+        }
+        if Gate.swipesAway(kind: kind, motion: motion, phase: phase, blocking: up) {
+            DispatchQueue.main.async { MainActor.assumeIsolated { DockSwipes.shared.swipedAcross() } }
         }
         // The list's away and the swipe held back is over: off till it's up again.
         if !wanted, let tap { CGEvent.tapEnable(tap: tap, enable: false) }

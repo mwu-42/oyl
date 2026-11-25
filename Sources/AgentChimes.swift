@@ -104,6 +104,7 @@ final class AgentChimes {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     let found = number.flatMap(SessionDesk.desktop)
+                    if let found { SeenDesks.shared.remember(session, on: found) }
                     let space = found ?? SeenDesks.shared.desk(of: session)
                     if deskSounds {
                         let desk = space.flatMap { ChimeSettings.shared.desk($0) }
@@ -124,8 +125,10 @@ final class AgentChimes {
 /// in front, and in an editor, its folder's window), by the session and by its app and folder.
 /// For a sound whose desktop its app's windows can't tell (an editor's windows on several, whose
 /// titles can't be read without Screen Recording, and whose windows on other Spaces accessibility
-/// doesn't see), so the desktops' list can still mark where it came from. Looked at every couple
-/// of seconds as the Claudes change, and as you go to another app or Space; kept while Oyl runs.
+/// doesn't see), so the desktops' list can still mark where it came from, and where agents are at
+/// work. Looked at every couple of seconds as the Claudes change, and as you go to another app or
+/// Space, with either the sounds or the list on; kept across Oyl's relaunches (for a fortnight),
+/// so they're not lost each time it starts again.
 @MainActor
 final class SeenDesks {
     static let shared = SeenDesks()
@@ -134,12 +137,23 @@ final class SeenDesks {
 
     /// The Claudes as they last were.
     var sessions: [AgentSession] = []
+    static let lasts: TimeInterval = 14 * 24 * 3600
+    static let storeKey = "seenDesks"
+
     /// Each one's desktop, as it's kept (see `SpaceGroups.keys`), and when it was seen there.
     private(set) var seen: [String: (keys: [String], at: Date)] = [:]
     private var lastLooked = Date.distantPast
     private var observers: [Any] = []
+    /// Where it's kept (none, in a test).
+    private let store: UserDefaults?
 
-    init() {
+    init(store: UserDefaults? = .standard, now: Date = Date()) {
+        self.store = store
+        for (name, value) in store?.dictionary(forKey: Self.storeKey) ?? [:] {
+            guard let value = value as? [String: Any], let keys = value["keys"] as? [String], !keys.isEmpty,
+                  let at = value["at"] as? Double, now.timeIntervalSince1970 - at < Self.lasts else { continue }
+            seen[name] = (keys, Date(timeIntervalSince1970: at))
+        }
         let workspace = NSWorkspace.shared.notificationCenter
         observers = [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification].map { name in
             workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -158,7 +172,7 @@ final class SeenDesks {
 
     /// The Claudes you're looking at now, if any: their desktop's the one you're on.
     func look(at date: Date, now: Bool = false) {
-        guard Feature.agentSounds.isOn, now || date.timeIntervalSince(lastLooked) >= Self.every else { return }
+        guard Feature.agentSounds.isOn || Feature.desktopsView.isOn, now || date.timeIntervalSince(lastLooked) >= Self.every else { return }
         lastLooked = date
         guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
         let here = sessions.filter { $0.pid > 0 && AgentWindow.hostApp(of: $0.pid)?.processIdentifier == front }
@@ -187,16 +201,29 @@ final class SeenDesks {
 
     func remember(_ session: AgentSession, on space: CurrentSpace, at date: Date = Date()) {
         let keys = SpaceGroups.keys(of: space)
+        // Already known there, and lately: nothing to keep.
+        let known = Self.names(of: session).allSatisfy { seen[$0]?.keys == keys && date.timeIntervalSince(seen[$0]!.at) < 60 }
         for name in Self.names(of: session) { seen[name] = (keys, date) }
         if seen.count > Self.most {
             for (name, _) in seen.sorted(by: { $0.value.at < $1.value.at }).prefix(seen.count - Self.most) { seen[name] = nil }
         }
+        if !known { save() }
+    }
+
+    private func save() {
+        store?.set(seen.mapValues { ["keys": $0.keys, "at": $0.at.timeIntervalSince1970] as [String: Any] }, forKey: Self.storeKey)
+    }
+
+    /// What the desktop `session` was last seen on is kept under: by the session, else by its app
+    /// and folder.
+    func keys(of session: AgentSession) -> [String]? {
+        Self.names(of: session).lazy.compactMap { self.seen[$0]?.keys }.first
     }
 
     /// Where `session` was last seen, if that desktop's still there: by the session, else by its
     /// app and folder.
     func desk(of session: AgentSession) -> CurrentSpace? {
-        guard let keys = Self.names(of: session).lazy.compactMap({ self.seen[$0]?.keys }).first else { return nil }
+        guard let keys = keys(of: session) else { return nil }
         for screen in NSScreen.screens {
             guard let display = FullscreenSpace.display(for: screen) else { continue }
             let spaces = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }.spaces

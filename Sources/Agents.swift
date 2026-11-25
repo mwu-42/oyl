@@ -63,15 +63,12 @@ struct AgentSession: Identifiable, Equatable {
 /// Whether an agent's doing something right now, as the desktops' list marks it: at it (not
 /// waiting on you, done or idle), and still at it, as far as can be told. What Claude Code last
 /// said it was doing can be stale (it says when it starts on something, but not always when it
-/// stops), so one that's said nothing for `quiet` has to show it: its transcript written since, a
-/// command of its still going, or its process (with all it runs) busy. The others (in a browser,
-/// an app, run as a program) are looked at all the time anyway.
+/// stops: an Esc, a command of its own like /model, a lost event), so one that's said nothing,
+/// and written nothing in its transcript, for `quiet` is looked at there: one whose turn's over
+/// isn't. (Its transcript, rather than how busy it is: thinking at length, it can be still for
+/// minutes.) The others (in a browser, an app, run as a program) are looked at all the time anyway.
 enum AgentLife {
     static let quiet: TimeInterval = 45
-    /// A second of looking, and a hundredth of a core's work in it: Claude Code at rest does next
-    /// to none (a few thousandths), streaming a reply or running a command more.
-    static let sample: TimeInterval = 1
-    static let busy = 0.01
 
     /// Thinking, writing, running…: not waiting on you, done or idle.
     nonisolated static func isAtIt(_ activity: AgentActivity) -> Bool { activity.priority == 2 }
@@ -82,49 +79,61 @@ enum AgentLife {
         return now.timeIntervalSince(max(session.lastEvent, written ?? .distantPast)) > quiet
     }
 
-    /// Whether a quiet one's still at it: a command of its going (what it runs, under it), or the
-    /// work it's done (in seconds, over `seconds`) more than at rest.
-    nonisolated static func shows(_ activity: AgentActivity, running children: Int, worked: Double, over seconds: TimeInterval) -> Bool {
-        (activity == .running && children > 0) || worked >= busy * seconds
-    }
-
-    /// Of `sessions`, those doing something right now (off the main thread: any quiet's looked at
-    /// for `sample`).
-    nonisolated static func atIt(_ sessions: [AgentSession], now: Date = Date()) async -> [AgentSession] {
-        let busy = sessions.filter { isAtIt($0.activity) }
-        let quiet = busy.filter { isQuiet($0, written: written($0.transcript), now: now) }
-        guard !quiet.isEmpty else { return busy }
-        let processes = Processes.all()
-        let trees = quiet.map { tree(under: $0.pid, among: processes) }
-        let before = trees.map { $0.map(Processes.cpuSeconds) }
-        try? await Task.sleep(nanoseconds: UInt64(sample * 1e9))
-        var still = Set<String>()
-        for (index, session) in quiet.enumerated() {
-            let worked = zip(trees[index], before[index]).reduce(0.0) { sum, pair in
-                guard let then = pair.1, let now = Processes.cpuSeconds(of: pair.0) else { return sum }
-                return sum + max(0, now - then)
+    /// From the end of a transcript, whether its turn's over: its last message (past the
+    /// bookkeeping after it, and any subagent's) Claude's, ending its turn with no tool called;
+    /// the note Claude Code writes when it's stopped; or what one of its own commands said. A
+    /// prompt, a tool's result, a tool called or a reply half written isn't. Nil if there's no
+    /// telling.
+    nonisolated static func turnIsOver(tail: String) -> Bool? {
+        for line in tail.split(separator: "\n").reversed() {
+            guard let data = line.data(using: .utf8),
+                  let entry = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let type = entry["type"] as? String, type == "user" || type == "assistant",
+                  entry["isSidechain"] as? Bool != true, entry["isMeta"] as? Bool != true,
+                  let message = entry["message"] as? [String: Any] else { continue }
+            let content = message["content"]
+            let blocks = content as? [[String: Any]] ?? []
+            if type == "assistant" {
+                if blocks.contains(where: { $0["type"] as? String == "tool_use" }) { return false }
+                return ["end_turn", "stop_sequence", "max_tokens", "refusal"].contains(message["stop_reason"] as? String ?? "")
             }
-            if shows(session.activity, running: trees[index].count - 1, worked: worked, over: sample) { still.insert(session.id) }
+            let texts = blocks.compactMap { $0["text"] as? String } + [content as? String].compactMap { $0 }
+            return texts.contains { text in
+                text.hasPrefix("[Request interrupted by user") || text.contains("<local-command-stdout>") || text.contains("<local-command-stderr>")
+            }
         }
-        let quietIDs = Set(quiet.map(\.id))
-        return busy.filter { !quietIDs.contains($0.id) || still.contains($0.id) }
+        return nil
     }
 
-    /// `pid`, and everything it's started (and they have).
-    nonisolated static func tree(under pid: pid_t, among processes: [Processes.Info]) -> [pid_t] {
-        var children: [pid_t: [pid_t]] = [:]
-        for process in processes { children[process.parent, default: []].append(process.pid) }
-        var tree = [pid], index = 0
-        while index < tree.count, tree.count < 400 {
-            tree += children[tree[index]] ?? []
-            index += 1
+    /// Of `sessions`, those doing something right now (off the main thread: a quiet one's
+    /// transcript is read).
+    nonisolated static func atIt(_ sessions: [AgentSession], now: Date = Date()) -> [AgentSession] {
+        sessions.filter { session in
+            guard isAtIt(session.activity) else { return false }
+            guard let path = session.transcript, isQuiet(session, written: written(path), now: now) else { return true }
+            return verdict(URL(fileURLWithPath: path)) != true
         }
-        return tree
     }
 
-    private nonisolated static func written(_ path: String?) -> Date? {
-        guard let path else { return nil }
-        return (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+    /// Whether its turn's over, by the end of the transcript at `url`: its last 256 KB, or (a big
+    /// entry at the end, like a long file read) 4 MB.
+    nonisolated static func verdict(_ url: URL) -> Bool? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        let size = (try? handle.seekToEnd()) ?? 0
+        for length: UInt64 in [262_144, 4_194_304] {
+            try? handle.seek(toOffset: size > length ? size - length : 0)
+            let tail = String(decoding: (try? handle.readToEnd()) ?? Data(), as: UTF8.self)
+            if let over = turnIsOver(tail: tail) { return over }
+            if size <= length { break }
+        }
+        return nil
+    }
+
+    private nonisolated static func written(_ path: String) -> Date? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        return Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
     }
 }
 
