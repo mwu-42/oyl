@@ -712,6 +712,8 @@ final class DesktopsModel: ObservableObject {
     @Published var picking: String?
     /// Whether a desktop's sound can be picked here (sounds are on).
     @Published var picksSounds = false
+    /// The time over the list (with it on).
+    @Published var showsClock = true
     /// The desktops a sound's just come from (see `DeskChimes`): which, and when.
     @Published var rang: [String: DeskChimes.Rang] = [:]
 
@@ -1089,6 +1091,19 @@ private struct PlainDesks: View {
 
     var body: some View {
         let shown = min(max(model.progress, 0), 1)
+        VStack(spacing: 18) {
+            // The time over it, the card where it always is.
+            if model.showsClock { DesksClock() }
+            card
+        }
+        .opacity(shown)
+        .offset(y: (1 - shown) * 16)
+        .animation(model.settle(), value: model.progress)
+        .frame(width: model.size.width, alignment: .top)
+        .padding(.top, max(model.size.height * 0.24 - (model.showsClock ? DesksClock.plainHeight + 18 : 0), 24))
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 4) {
             DesktopsRows(model: model)
             DesksHint(model: model)
@@ -1106,11 +1121,6 @@ private struct PlainDesks: View {
                     .transition(.opacity)
             }
         }
-        .opacity(shown)
-        .offset(y: (1 - shown) * 16)
-        .animation(model.settle(), value: model.progress)
-        .frame(width: model.size.width, alignment: .top)
-        .padding(.top, model.size.height * 0.24)
     }
 }
 
@@ -1121,6 +1131,14 @@ private struct MidnightDesks: View {
     var body: some View {
         let shown = min(max(model.progress, 0), 1)
         VStack(alignment: .leading, spacing: 16) {
+            if model.showsClock {
+                DesksClock()
+                    .opacity(shown)
+                    .offset(x: -(1 - shown) * 44)
+                    .blur(radius: (1 - shown) * 6)
+                    .animation(model.settle(delay: 0.05), value: model.progress)
+                    .padding(.bottom, 6)
+            }
             HStack(spacing: 9) {
                 FourPointStar()
                     .fill(Midnight.starlight)
@@ -1148,7 +1166,120 @@ private struct MidnightDesks: View {
             }
         }
         .padding(.leading, model.size.width * 0.19)
-        .padding(.top, model.size.height * 0.22)
+        .padding(.top, max(model.size.height * 0.22 - (model.showsClock ? DesksClock.midnightHeight + 22 : 0), 24))
+    }
+}
+
+/// The time, over the list (a fullscreen app keeps the menu bar's clock out of sight). In Oyl's
+/// look, large over the card, the day under it; in Midnight Oyl's, in its Victorian face over the
+/// title, off to the left as it is, the day in italic as it would be written ("tuesday, the 25th
+/// of november"), its colon twinkling like a star. On the Mac's own clock, 12- or 24-hour.
+struct DesksClock: View {
+    @Environment(\.notchTheme) private var theme
+    static let plainHeight: CGFloat = 66
+    static let midnightHeight: CGFloat = 64
+
+    /// Whether the Mac's clock is a 12-hour one.
+    static var twelveHour: Bool { (DateFormatter.dateFormat(fromTemplate: "j", options: 0, locale: .current) ?? "").contains("a") }
+
+    /// "10", "42" and "PM"; on a 24-hour clock "22", "42" and none.
+    static func time(_ date: Date, twelveHour: Bool, calendar: Calendar = .current) -> (hours: String, minutes: String, half: String?) {
+        let parts = calendar.dateComponents([.hour, .minute], from: date)
+        let hour = parts.hour ?? 0, minutes = String(format: "%02d", parts.minute ?? 0)
+        guard twelveHour else { return (String(format: "%02d", hour), minutes, nil) }
+        return ("\(hour % 12 == 0 ? 12 : hour % 12)", minutes, hour < 12 ? calendar.amSymbol : calendar.pmSymbol)
+    }
+
+    /// "a.m." and "p.m.", as Midnight writes them.
+    static func written(half: String) -> String {
+        switch half.uppercased() {
+        case "AM": return "a.m."
+        case "PM": return "p.m."
+        default: return half.lowercased()
+        }
+    }
+
+    /// "tuesday, the 25th of november".
+    static func written(_ date: Date, calendar: Calendar = .current) -> String {
+        let parts = calendar.dateComponents([.weekday, .day, .month], from: date)
+        let weekday = calendar.weekdaySymbols[((parts.weekday ?? 1) - 1) % 7].lowercased()
+        let month = calendar.monthSymbols[((parts.month ?? 1) - 1) % 12].lowercased()
+        let day = parts.day ?? 1
+        return "\(weekday), the \(day)\(ordinal(day)) of \(month)"
+    }
+
+    /// "st", "nd", "rd" or "th".
+    static func ordinal(_ day: Int) -> String {
+        if (11...13).contains(day % 100) { return "th" }
+        switch day % 10 {
+        case 1: return "st"
+        case 2: return "nd"
+        case 3: return "rd"
+        default: return "th"
+        }
+    }
+
+    var body: some View {
+        if theme == .midnight {
+            TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in midnight(timeline.date) }
+        } else {
+            TimelineView(.periodic(from: .now, by: 1)) { timeline in plain(timeline.date) }
+        }
+    }
+
+    private func plain(_ date: Date) -> some View {
+        let time = Self.time(date, twelveHour: Self.twelveHour)
+        return VStack(spacing: 1) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(time.hours):\(time.minutes)")
+                    .font(.system(size: 46, weight: .semibold, design: .rounded).monospacedDigit())
+                if let half = time.half {
+                    Text(half)
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.7))
+                }
+            }
+            .foregroundStyle(.white)
+            Text(date.formatted(.dateTime.weekday(.wide).month(.wide).day()))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.75))
+        }
+        .lineLimit(1)
+        .shadow(color: .black.opacity(0.5), radius: 10, y: 2)
+        .frame(height: Self.plainHeight)
+        .allowsHitTesting(false)
+    }
+
+    private func midnight(_ date: Date) -> some View {
+        let time = Self.time(date, twelveHour: Self.twelveHour)
+        // The colon twinkles, every two seconds.
+        let twinkle = 0.5 + 0.5 * cos(date.timeIntervalSinceReferenceDate * .pi)
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(time.hours)
+                Text(":")
+                    .foregroundStyle(Midnight.starlight)
+                    .opacity(0.35 + 0.65 * twinkle)
+                    .shadow(color: Midnight.starlight.opacity(0.7 * twinkle), radius: 4)
+                Text(time.minutes)
+                if let half = time.half {
+                    Text(" " + Self.written(half: half))
+                        .font(Midnight.italic(17))
+                        .foregroundStyle(Midnight.silver.opacity(0.7))
+                }
+            }
+            .font(Midnight.font(.heading, size: 40))
+            .foregroundStyle(Midnight.white.opacity(0.92))
+            Text(Self.written(date))
+                .font(Midnight.italic(15))
+                .foregroundStyle(Midnight.silver.opacity(0.62))
+                .padding(.leading, 3)
+        }
+        .lineLimit(1)
+        .fixedSize()
+        .shadow(color: Midnight.moonlight.opacity(0.22), radius: 12)
+        .frame(height: Self.midnightHeight, alignment: .leading)
+        .allowsHitTesting(false)
     }
 }
 
@@ -2244,6 +2375,7 @@ final class DesktopsViewer {
         model.selected = nil
         model.renaming = nil
         model.desks = []
+        model.showsClock = Feature.desktopsClock.isOn
         panel.setFrame(screen.frame, display: false)
         panel.alphaValue = 1
         panel.orderFrontRegardless()

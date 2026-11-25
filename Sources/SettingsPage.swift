@@ -225,9 +225,11 @@ struct SettingsPage: View {
             var items = [
                 feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
+                feature(.themeKey, "⌃ ⌃ held: Other look", "Control once, then pressed again and held a moment: Midnight Oyl, or back to Oyl's look, from any app"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
                 feature(.emojiKey, "⌘. Emoji", "The emoji picker, from any app, as on Windows"),
                 feature(.pictureInPicture, "⌃⌥P Picture in picture", "The window in front, kept up small over every desktop and fullscreen app (or right-click an app in Oyl's Dock); again to put it away"),
+                feature(.desktopsClock, "Time in the desktops", "The time and the day, over the list of your desktops"),
                 feature(.desktopsKey, "⇧⇧ Desktops", "The right Shift key twice, quickly: your desktops in a list, as four fingers up bring them (whatever macOS does with four fingers); twice again puts it away"),
                 feature(.missionControlGroups, "Groups in Mission Control", "Over macOS's own Mission Control: each group of your desktops marked under its row, and a group whose desktops aren't next to each other marked split, to drag back together there"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),

@@ -937,8 +937,12 @@ final class NotchController {
                 }
             }
             .store(in: &cancellables)
-        // Control on its own three times: Oyl off, or back on.
-        controlTaps = TapWatcher(.control, actions: [
+        // Control on its own three times: Oyl off, or back on. Once, then pressed again and held:
+        // Midnight Oyl, or back to Oyl's look.
+        controlTaps = TapWatcher(.control, held: { [weak self] in
+            guard let self, !self.state.isOff, Feature.themeKey.isOn else { return }
+            self.state.theme = self.state.theme == .midnight ? .standard : .midnight
+        }, actions: [
             3: { [weak self] in
                 // Turned off, the taps can still switch Oyl back on.
                 guard let self, self.state.isOff || Feature.offTaps.isOn else { return }

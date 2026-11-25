@@ -1,7 +1,7 @@
 import AppKit
 
 /// Quick taps of one modifier key on its own (command twice takes a screenshot, control three
-/// times switches Oyl off), or of a few pressed together (control and option, for the camera): a
+/// times switches Oyl off; control once, then pressed again and held, swaps Oyl's look), or of a few pressed together (control and option, for the camera): a
 /// tap is the key (all of them) pressed and let go within `longest`, with no other modifier with
 /// it, and each pressed within `gap` of letting go of the last (Command's quicker than the rest).
 /// A key or a click in between starts the count again, so typing, shortcuts and Oyl's own Mission
@@ -87,6 +87,17 @@ struct ModifierTaps {
         return count
     }
 
+    /// Pressed again after a tap (within `gap` of letting go of it) and still down: since when.
+    var pressedAfterTap: TimeInterval? { count == 1 ? pressedAt : nil }
+
+    /// At `time`: whether it's been pressed again after one tap and held `hold` since; told once
+    /// (the taps then don't count, so letting go of it isn't one).
+    mutating func heldAfterTap(at time: TimeInterval, for hold: TimeInterval) -> Bool {
+        guard let since = pressedAfterTap, time - since >= hold else { return false }
+        interrupted()
+        return true
+    }
+
     /// A key or a click: the taps so far don't count.
     mutating func interrupted() {
         count = 0
@@ -105,22 +116,32 @@ final class TapWatcher {
     private let each: (@MainActor (Int) -> Void)?
     private var monitors: [Any] = []
     private var settling: Timer?
+    /// Tapped once, then pressed again and held: what that does (as soon as it's held long enough).
+    private let held: (@MainActor () -> Void)?
+    private var holding: Timer?
+    /// How long the second press is held for it: longer than any tap, so it's never one.
+    static let hold: TimeInterval = 0.45
 
     init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, longest: TimeInterval = ModifierTaps.press,
-         gap: TimeInterval = ModifierTaps.usualGap, each: (@MainActor (Int) -> Void)? = nil, actions: [Int: @MainActor () -> Void]) {
+         gap: TimeInterval = ModifierTaps.usualGap, each: (@MainActor (Int) -> Void)? = nil,
+         held: (@MainActor () -> Void)? = nil, actions: [Int: @MainActor () -> Void]) {
         taps = ModifierTaps(key, side: side, most: actions.keys.max() ?? 1, longest: longest, gap: gap)
         self.actions = actions
         self.each = each
+        self.held = held
         let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         let heard = { [weak self] (event: NSEvent) in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.type != .flagsChanged {
                     self.taps.interrupted()
+                    self.holding?.invalidate()
+                    self.holding = nil
                     return
                 }
                 let before = self.taps.count
                 let most = self.taps.changed(event.modifierFlags, at: event.timestamp)
+                self.holdLater()
                 if self.taps.count > before || most != nil { self.each?(most ?? self.taps.count) }
                 if let most {
                     self.actions[most]?()
@@ -149,6 +170,22 @@ final class TapWatcher {
     /// count.
     func interrupt() {
         taps.interrupted()
+    }
+
+    /// Pressed again after a tap: told if it's still down once it's been held long enough.
+    private func holdLater() {
+        holding?.invalidate()
+        holding = nil
+        guard held != nil, let since = taps.pressedAfterTap else { return }
+        let wait = max(Self.hold - (ProcessInfo.processInfo.systemUptime - since), 0) + 0.01
+        holding = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.taps.heldAfterTap(at: ProcessInfo.processInfo.systemUptime, for: Self.hold) else { return }
+                self.settling?.invalidate()
+                self.settling = nil
+                self.held?()
+            }
+        }
     }
 
     /// Fewer taps than the most count once no more come.

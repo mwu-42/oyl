@@ -42,6 +42,10 @@ enum Feature: String, CaseIterable, Sendable {
     case cameraKeys
     /// Command-period: the emoji picker, from any app, as on Windows.
     case emojiKey
+    /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
+    case themeKey
+    /// The time, in the desktops' list.
+    case desktopsClock
 
     // The Dock's shelf, and what's on it: screenshots, what's been saved, and what Claude Code's
     // written or edited.
