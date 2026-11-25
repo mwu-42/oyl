@@ -720,6 +720,15 @@ final class DesktopsModel: ObservableObject {
     /// When the newest of them came.
     var newestRang: Date? { rang.values.map(\.at).max() }
 
+    /// How many agents are at work on each desktop (by its key), as their windows (or, for a
+    /// Claude, where it was last seen) say.
+    @Published var atWork: [String: Int] = [:]
+
+    /// A group's, folded: how many are at work on its desktops.
+    func atWork(inGroup id: String) -> Int {
+        desks.filter { $0.group == id }.reduce(0) { $0 + (atWork[$1.id] ?? 0) }
+    }
+
     /// A group's, folded: the latest of its desktops'.
     func rang(inGroup id: String) -> DeskChimes.Rang? {
         desks.filter { $0.group == id }.compactMap { rang[$0.id] }.max { $0.at < $1.at }
@@ -1564,6 +1573,7 @@ private struct DeskRow: View {
             marker(midnight: midnight)
             name(midnight: midnight)
             if desk.namesApps, !renaming { appNames(midnight: midnight) }
+            if let working = model.atWork[desk.id], working > 0, !renaming { DeskAtWork(count: working) }
             if let rang = model.rang[desk.id], !renaming { DeskRangMark(rang: rang) }
             if let sound = model.soundNames[desk.id], !renaming {
                 Text("♪ " + sound)
@@ -1734,7 +1744,8 @@ private struct DeskHeading: View {
                 .frame(width: 18, height: 2)
                 .help("Its desktops aren't next to each other in Mission Control")
             }
-            // Folded: a sound that's just come from one of its desktops.
+            // Folded: agents at work on its desktops, and a sound that's just come from one of them.
+            if group.folded, !renaming, model.atWork(inGroup: group.id) > 0 { DeskAtWork(count: model.atWork(inGroup: group.id)) }
             if group.folded, !renaming, let rang = model.rang(inGroup: group.id) { DeskRangMark(rang: rang) }
             Spacer(minLength: 8)
             if !renaming, model.dragging == nil, model.anchor == nil, model.hovered == id || model.selected == id {
@@ -2027,6 +2038,49 @@ struct DeskRangMark: View {
     }
 }
 
+/// Beside a desktop's name while agents are at work on it: in Oyl's look a dot in Claude's orange,
+/// breathing, with how many if more than one; in Midnight's a little moon going round, pale gold,
+/// the count in italic.
+struct DeskAtWork: View {
+    let count: Int
+    @Environment(\.notchTheme) private var theme
+
+    static let orange = Color(red: 0.93, green: 0.55, blue: 0.36)
+
+    var body: some View {
+        let midnight = theme == .midnight
+        let tint = midnight ? Color(red: 1, green: 0.8, blue: 0.52) : Self.orange
+        HStack(spacing: 3) {
+            TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
+                let t = timeline.date.timeIntervalSinceReferenceDate
+                if midnight {
+                    // A moon round a faint ring, once every two seconds.
+                    let angle = t * .pi
+                    ZStack {
+                        Circle().strokeBorder(tint.opacity(0.35), lineWidth: 0.7)
+                        Circle().fill(tint.opacity(0.5)).frame(width: 2.5, height: 2.5)
+                        Circle().fill(tint).frame(width: 4.5, height: 4.5)
+                            .offset(x: 5.5 * cos(angle), y: 5.5 * sin(angle))
+                            .shadow(color: tint.opacity(0.8), radius: 2.5)
+                    }
+                    .frame(width: 12, height: 12)
+                } else {
+                    let breath = 0.55 + 0.45 * (0.5 + 0.5 * sin(t * 2 * .pi / 1.4))
+                    Circle().fill(tint.opacity(breath)).frame(width: 6, height: 6)
+                        .shadow(color: tint.opacity(0.6 * breath), radius: 2.5)
+                }
+            }
+            .frame(width: midnight ? 15 : 11, height: midnight ? 15 : 11)
+            if count > 1 {
+                Text("\(count)")
+                    .font(midnight ? Midnight.italic(11) : .system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundStyle(tint.opacity(0.9))
+            }
+        }
+        .help(count == 1 ? "An agent's at work here" : "\(count) agents at work here")
+    }
+}
+
 /// A check, as a pen draws it: down to the left, then a long stroke up to the right.
 struct DeskCheck: Shape {
     func path(in rect: CGRect) -> Path {
@@ -2187,6 +2241,9 @@ final class DesktopsViewer {
     private var observers: [Any] = []
     /// Whether it can come up now (not while Oyl's off, or nothing can be seen).
     var isAllowed: () -> Bool = { true }
+    /// The agents at work now, to mark their desktops.
+    var working: () -> [AgentSession] = { [] }
+    private var readingAgents: Task<Void, Never>?
     private var rangWatch: AnyCancellable?
 
     var theme = NotchTheme.standard {
@@ -2441,6 +2498,8 @@ final class DesktopsViewer {
         hiding = nil
         readingApps?.cancel()
         readingApps = nil
+        readingAgents?.cancel()
+        readingAgents = nil
         following = nil
         panel.orderOut(nil)
         if isUp { Self.log.notice("The desktops' list away") }
@@ -2464,6 +2523,36 @@ final class DesktopsViewer {
             let apps = await Task.detached(priority: .userInitiated) { SpaceApps.read() }.value
             guard let self, !Task.isCancelled else { return }
             self.fill(apps)
+        }
+        readAgents()
+    }
+
+    /// Which desktops agents are at work on: by their app's windows, else (a Claude) where it was
+    /// last seen.
+    private func readAgents() {
+        readingAgents?.cancel()
+        let sessions = working().compactMap { session -> (AgentSession, pid_t)? in
+            guard session.pid > 0, let app = AgentWindow.hostApp(of: session.pid) else { return nil }
+            return (session, app.processIdentifier)
+        }
+        guard !sessions.isEmpty else {
+            if !model.atWork.isEmpty { model.atWork = [:] }
+            return
+        }
+        readingAgents = Task { @MainActor [weak self] in
+            let numbers = await Task.detached(priority: .userInitiated) {
+                sessions.map { SessionDesk.space(of: $0.0, app: $0.1) }
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            var counts: [String: Int] = [:]
+            for ((session, _), number) in zip(sessions, numbers) {
+                let space = number.flatMap { number in self.spaces.first { $0.id == number } } ?? SeenDesks.shared.desk(of: session).flatMap { seen in
+                    let keys = SpaceGroups.keys(of: seen)
+                    return self.spaces.first { SpaceGroups.keys(of: $0).contains(where: keys.contains) }
+                }
+                if let space { counts[space.key, default: 0] += 1 }
+            }
+            if counts != self.model.atWork { self.model.atWork = counts }
         }
     }
 

@@ -235,7 +235,7 @@ struct SettingsPage: View {
                 feature(.desktopsKey, "⇧⇧ Desktops", "The right Shift key twice, quickly: your desktops in a list, as four fingers up bring them (whatever macOS does with four fingers); twice again puts it away"),
                 feature(.missionControlGroups, "Groups in Mission Control", "Over macOS's own Mission Control: each group of your desktops marked under its row, and a group whose desktops aren't next to each other marked split, to drag back together there"),
                 feature(.shiftCamera, "⇧ held: Camera", "The right Shift key held a moment on its own: the camera on for gestures while it's held (even with them off on the notch), what it sees shown on the closed notch"),
-                feature(.optionLatest, "⌥ held: Latest Claude", "The right Option key held a moment on its own: the Claude that last finished, or began waiting for you, brought up"),
+                feature(.optionLatest, "⌥ held: Latest Claude", "Option (either one) held a moment on its own: straight to the Claude that last finished, or began waiting for you, with no slide through the desktops between"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
                 SettingItem(id: Feature.desktopsView.rawValue, title: "Four fingers up: desktops",

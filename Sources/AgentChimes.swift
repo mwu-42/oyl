@@ -570,3 +570,83 @@ final class DeskChimes: ObservableObject {
         all.removeAll { $0.keys.contains(where: keys.contains) }
     }
 }
+
+/// The right Option key held: straight to the Claude that last finished, by Oyl's own instant
+/// switch (see `InstantSpaces`), with no slide through the desktops between and nothing rearranged
+/// (macOS's own way there, activating its app, slides across every desktop between and, with
+/// Spaces set to rearrange by recent use, moves them about); then its window brought to the front
+/// where it is, so activating its app has nowhere to go. A desktop it can't tell (or one on another
+/// screen) is left to `fallback`, the usual way.
+@MainActor
+enum LatestClaude {
+    private static var arriving: (observer: Any, timeout: DispatchWorkItem)?
+
+    static func go(to session: AgentSession, fallback: @escaping @MainActor () -> Void) {
+        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier else { return fallback() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let number = SessionDesk.space(of: session, app: pid)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let space = number.flatMap(SessionDesk.desktop) ?? SeenDesks.shared.desk(of: session),
+                          let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main,
+                          let display = FullscreenSpace.display(for: screen) else { return fallback() }
+                    let all = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }
+                    let keys = SpaceGroups.keys(of: space)
+                    guard let from = all.current,
+                          let target = all.spaces.firstIndex(where: { SpaceGroups.keys(of: $0).contains(where: keys.contains) })
+                    else { return fallback() }
+                    guard target != from else { return raise(session, pid: pid) }
+                    InstantSpaces.go(from: from, to: target, on: screen)
+                    whenThere { raise(session, pid: pid) }
+                }
+            }
+        }
+    }
+
+    /// Once the Space has changed (or a moment's gone by, if it doesn't say).
+    private static func whenThere(_ then: @escaping @MainActor () -> Void) {
+        if let arriving {
+            NSWorkspace.shared.notificationCenter.removeObserver(arriving.observer)
+            arriving.timeout.cancel()
+        }
+        func done() {
+            guard let arriving else { return }
+            NSWorkspace.shared.notificationCenter.removeObserver(arriving.observer)
+            arriving.timeout.cancel()
+            Self.arriving = nil
+            // Settled there first.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { then() }
+        }
+        let observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil,
+                                                                         queue: .main) { _ in MainActor.assumeIsolated { done() } }
+        let timeout = DispatchWorkItem { MainActor.assumeIsolated { done() } }
+        arriving = (observer, timeout)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: timeout)
+    }
+
+    /// Its window, of those its app has on the desktop you're on, as accessibility lists them: the
+    /// one whose title names its folder, else the one in front.
+    nonisolated static func window(among titles: [String?], folder: String) -> Int? {
+        guard !titles.isEmpty else { return nil }
+        if !folder.isEmpty, let named = titles.firstIndex(where: { $0.map { AgentChimes.title($0, names: folder) } ?? false }) { return named }
+        return 0
+    }
+
+    /// Its window to the front here, then its app.
+    private static func raise(_ session: AgentSession, pid: pid_t) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)
+        var value: CFTypeRef?
+        if AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success, let windows = value as? [AXUIElement] {
+            let titles = windows.map { window -> String? in
+                var title: CFTypeRef?
+                return AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &title) == .success ? title as? String : nil
+            }
+            if let index = window(among: titles, folder: session.project) {
+                AXUIElementSetAttributeValue(windows[index], kAXMainAttribute as CFString, kCFBooleanTrue)
+                AXUIElementPerformAction(windows[index], kAXRaiseAction as CFString)
+            }
+        }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+    }
+}

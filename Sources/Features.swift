@@ -45,7 +45,7 @@ enum Feature: String, CaseIterable, Sendable {
     /// The right Shift key held on its own: the camera on for the gestures while it's held, and a
     /// moment after.
     case shiftCamera
-    /// The right Option key held on its own: the Claude that last finished, brought up.
+    /// Option (either) held on its own: the Claude that last finished, brought up.
     case optionLatest
     /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
     case themeKey

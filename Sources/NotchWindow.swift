@@ -1022,13 +1022,14 @@ final class NotchController {
         }, ended: { [weak self] in
             self?.gestures.holdAwake(false)
         })
-        // The right Option key held a moment on its own: the Claude that last finished (or began
+        // Option (either one) held a moment on its own: the Claude that last finished (or began
         // waiting for you), as its sound would have told, brought up.
-        optionHold = HoldWatcher(.option, side: ModifierTaps.rightOption, after: 0.5, began: { [weak self] in
+        optionHold = HoldWatcher(.option, after: 0.5, began: { [weak self] in
             guard let self, !self.state.isOff, Feature.optionLatest.isOn, let latest = self.chimes.latest else { return }
             let session = self.state.agents.sessions.first { $0.id == latest.session.id } ?? latest.session
             Haptics.perform(.alignment)
-            self.state.agents.reveal(session)
+            // Straight to its desktop, with no slide through the rest, nothing rearranged.
+            LatestClaude.go(to: session) { [weak self] in self?.state.agents.reveal(session) }
         }, ended: {})
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
@@ -1106,6 +1107,7 @@ final class NotchController {
                 guard let self else { return false }
                 return !self.state.isOff && !self.state.isResting
             }
+            viewer.working = { [weak self] in self?.state.agents.working ?? [] }
             viewer.start()
             desktops = viewer
         }
