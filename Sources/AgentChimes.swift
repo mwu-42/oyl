@@ -84,19 +84,25 @@ final class AgentChimes {
         let unseen = heard.filter { !Self.isInFront($0.1) }
         guard let (kind, session) = unseen.first(where: { $0.0 == .waiting }) ?? unseen.first else { return }
         lastChime = now
-        // Its desktop's sound, if it has one and the desktop can be told; else its app's.
+        // Its desktop's sound, if it has one and the desktop can be told; else its app's. Either
+        // way, the desktop it came from's marked in the desktops' list (see `DeskChimes`).
         let source = Self.source(of: session), midnight = theme == .midnight
-        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier,
-              ChimeSettings.shared.hasDeskSounds else {
+        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier else {
             ChimeSettings.shared.voice(for: source).play(kind, midnight: midnight)
             return
         }
+        let deskSounds = ChimeSettings.shared.hasDeskSounds
+        if !deskSounds { ChimeSettings.shared.voice(for: source).play(kind, midnight: midnight) }
         DispatchQueue.global(qos: .userInitiated).async {
             let number = SessionDesk.space(of: session, app: pid)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    let desk = number.flatMap(SessionDesk.desktop).flatMap { ChimeSettings.shared.desk($0) }
-                    (desk ?? ChimeSettings.shared.voice(for: source)).play(kind, midnight: midnight)
+                    let space = number.flatMap(SessionDesk.desktop)
+                    if deskSounds {
+                        let desk = space.flatMap { ChimeSettings.shared.desk($0) }
+                        (desk ?? ChimeSettings.shared.voice(for: source)).play(kind, midnight: midnight)
+                    }
+                    if let space { DeskChimes.shared.rang(space, kind) }
                 }
             }
         }
@@ -416,5 +422,54 @@ enum SessionDesk {
                   getWindow(window, &number) == .success, number != 0 else { return nil }
             return (title, number)
         }
+    }
+}
+
+/// Where a sound just came from: the desktop each was for, and which (done, or waiting for you),
+/// for the desktops' list to mark. Each's let go of once you go to that desktop, or after a quarter
+/// of an hour.
+@MainActor
+final class DeskChimes: ObservableObject {
+    static let shared = DeskChimes()
+    static let lasts: TimeInterval = 15 * 60
+
+    struct Rang: Equatable {
+        /// What its desktop's kept under (see `SpaceGroups.keys`).
+        let keys: [String]
+        let kind: AgentChimes.Kind
+        let at: Date
+    }
+
+    @Published private(set) var all: [Rang] = []
+    private var observer: Any?
+
+    init() {
+        observer = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil,
+                                                                     queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main,
+                      let space = Spaces.current(on: screen) else { return }
+                self.visited(space)
+            }
+        }
+    }
+
+    /// A sound's just played for a Claude on `space`.
+    func rang(_ space: CurrentSpace, _ kind: AgentChimes.Kind, at now: Date = Date()) {
+        let keys = SpaceGroups.keys(of: space)
+        all.removeAll { $0.keys.contains(where: keys.contains) || now.timeIntervalSince($0.at) > Self.lasts }
+        all.append(Rang(keys: keys, kind: kind, at: now))
+    }
+
+    /// The latest sound for `space`, if one's played there in the last quarter hour.
+    func latest(for space: CurrentSpace, at now: Date = Date()) -> Rang? {
+        let keys = SpaceGroups.keys(of: space)
+        return all.last { $0.keys.contains(where: keys.contains) && now.timeIntervalSince($0.at) <= Self.lasts }
+    }
+
+    /// Gone to: seen to.
+    func visited(_ space: CurrentSpace) {
+        let keys = SpaceGroups.keys(of: space)
+        all.removeAll { $0.keys.contains(where: keys.contains) }
     }
 }

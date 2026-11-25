@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Combine
 import SwiftUI
 import os
 
@@ -711,6 +712,14 @@ final class DesktopsModel: ObservableObject {
     @Published var picking: String?
     /// Whether a desktop's sound can be picked here (sounds are on).
     @Published var picksSounds = false
+    /// The desktops a sound's just come from (see `DeskChimes`): which, and when.
+    @Published var rang: [String: DeskChimes.Rang] = [:]
+
+    /// A group's, folded: the latest of its desktops'.
+    func rang(inGroup id: String) -> DeskChimes.Rang? {
+        desks.filter { $0.group == id }.compactMap { rang[$0.id] }.max { $0.at < $1.at }
+    }
+
     /// Each desktop's own sound's name, for its row.
     @Published var soundNames: [String: String] = [:]
     var soundChoices: () -> [ChimeVoice] = { [] }
@@ -1421,6 +1430,7 @@ private struct DeskRow: View {
             marker(midnight: midnight)
             name(midnight: midnight)
             if desk.namesApps, !renaming { appNames(midnight: midnight) }
+            if let rang = model.rang[desk.id], !renaming { DeskRangMark(rang: rang) }
             if let sound = model.soundNames[desk.id], !renaming {
                 Text("♪ " + sound)
                     .font(midnight ? Midnight.italic(12) : .system(size: 10.5, weight: .medium))
@@ -1440,7 +1450,7 @@ private struct DeskRow: View {
         }
         .padding(.horizontal, midnight ? 6 : 10)
         .frame(height: height)
-        .background(DeskHighlight(lit: lit, target: target))
+        .background(DeskHighlight(lit: lit, target: target, rang: model.rang[desk.id]?.kind))
         .scaleEffect(dragged ? (midnight ? 1.035 : 1.02) : 1, anchor: .leading)
         .shadow(color: dragged ? (midnight ? Midnight.moonlight.opacity(0.25) : .black.opacity(0.4)) : .clear, radius: dragged ? 10 : 0)
         .contentShape(Rectangle())
@@ -1589,6 +1599,8 @@ private struct DeskHeading: View {
                 .frame(width: 18, height: 2)
                 .help("Its desktops aren't next to each other in Mission Control")
             }
+            // Folded: a sound that's just come from one of its desktops.
+            if group.folded, !renaming, let rang = model.rang(inGroup: group.id) { DeskRangMark(rang: rang) }
             Spacer(minLength: 8)
             if !renaming, model.dragging == nil, model.anchor == nil, model.hovered == id || model.selected == id {
                 DeskAction(word: "ungroup", symbol: "xmark", help: "Ungroup") {
@@ -1598,7 +1610,7 @@ private struct DeskHeading: View {
         }
         .padding(.horizontal, midnight ? 6 : 10)
         .frame(height: height)
-        .background(DeskHighlight(lit: lit, target: target))
+        .background(DeskHighlight(lit: lit, target: target, rang: group.folded ? model.rang(inGroup: group.id)?.kind : nil))
         .contentShape(Rectangle())
         .onHover { inside in
             if inside {
@@ -1755,19 +1767,62 @@ private struct DeskAction: View {
 private struct DeskHighlight: View {
     let lit: Bool
     var target = false
+    /// A sound's just come from it: amber for one waiting for you, a little brighter for one done.
+    var rang: AgentChimes.Kind? = nil
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
         if theme == .midnight {
+            let wash = rang == .waiting && !lit && !target ? MissionMark.amber(theme) : Midnight.moonlight
+            let strength = target ? 0.24 : lit ? 0.13 : rang == .waiting ? 0.16 : rang == .done ? 0.1 : 0
             LinearGradient(stops: [.init(color: .clear, location: 0),
-                                   .init(color: Midnight.moonlight.opacity(target ? 0.24 : lit ? 0.13 : 0), location: 0.08),
+                                   .init(color: wash.opacity(strength), location: 0.08),
                                    .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
                 .mask(LinearGradient(colors: [.clear, .white, .clear], startPoint: .top, endPoint: .bottom))
                 .padding(.vertical, -4)
+        } else if rang == .waiting, !lit, !target {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(MissionMark.amber(theme).opacity(0.16))
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(target ? 0.17 : lit ? 0.09 : 0))
+                .fill(.white.opacity(target ? 0.17 : lit ? 0.09 : rang == .done ? 0.07 : 0))
         }
+    }
+}
+
+/// Beside a desktop's name, while a sound's just come from it: in Oyl's look a bell (waiting for
+/// you, in amber) or a check (done); in Midnight's, a glint twinkling, pale amber for waiting.
+struct DeskRangMark: View {
+    let rang: DeskChimes.Rang
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        let waiting = rang.kind == .waiting
+        Group {
+            if theme == .midnight {
+                TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
+                    let twinkle = 0.5 + 0.5 * sin(timeline.date.timeIntervalSinceReferenceDate * (waiting ? 3.2 : 1.8))
+                    FourPointStar()
+                        .fill(waiting ? MissionMark.amber(theme) : Midnight.starlight)
+                        .frame(width: 7 + 3 * twinkle, height: 7 + 3 * twinkle)
+                        .opacity(0.6 + 0.4 * twinkle)
+                        .rotationEffect(.degrees(twinkle * 15))
+                        .shadow(color: (waiting ? MissionMark.amber(theme) : Midnight.moonlight).opacity(0.6), radius: 3)
+                }
+                .frame(width: 12, height: 12)
+            } else {
+                Image(systemName: waiting ? "bell.fill" : "checkmark.circle.fill")
+                    .font(.system(size: 9.5, weight: .semibold))
+                    .foregroundStyle(waiting ? MissionMark.amber(theme) : .white.opacity(0.7))
+            }
+        }
+        .help(Self.says(rang))
+    }
+
+    static func says(_ rang: DeskChimes.Rang, now: Date = Date()) -> String {
+        let minutes = Int(now.timeIntervalSince(rang.at) / 60)
+        let when = minutes < 1 ? "just now" : minutes == 1 ? "a minute ago" : "\(minutes) minutes ago"
+        return rang.kind == .waiting ? "A Claude here is waiting for you (\(when))" : "A Claude here finished (\(when))"
     }
 }
 
@@ -1920,6 +1975,7 @@ final class DesktopsViewer {
     private var observers: [Any] = []
     /// Whether it can come up now (not while Oyl's off, or nothing can be seen).
     var isAllowed: () -> Bool = { true }
+    private var rangWatch: AnyCancellable?
 
     var theme = NotchTheme.standard {
         didSet { if theme != model.theme { model.theme = theme } }
@@ -1959,6 +2015,10 @@ final class DesktopsViewer {
             self.showSounds()
         }
         model.hearSound = { [weak self] voice in voice.play(.done, midnight: self?.model.theme == .midnight) }
+        // A sound while it's up: its desktop marked at once.
+        rangWatch = DeskChimes.shared.$all
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in MainActor.assumeIsolated { if self?.isUp == true { self?.showRang() } } }
     }
 
     /// Watching for the Mac waking, the screens changing, and Spaces changing while it's up.
@@ -2198,6 +2258,14 @@ final class DesktopsViewer {
         var names: [String: String] = [:]
         for space in spaces { if let voice = chimes.desk(space, among: all) { names[space.key] = voice.name } }
         model.soundNames = model.picksSounds ? names : [:]
+        showRang()
+    }
+
+    /// Where a sound's just come from, marked on its row.
+    private func showRang() {
+        var rang: [String: DeskChimes.Rang] = [:]
+        for space in spaces { if let latest = DeskChimes.shared.latest(for: space) { rang[space.key] = latest } }
+        if rang != model.rang { model.rang = rang }
     }
 
     /// The groups as they're kept, shown again (the desktops as they were read).
