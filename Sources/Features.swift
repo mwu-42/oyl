@@ -33,7 +33,7 @@ enum Feature: String, CaseIterable, Sendable {
 
     // Hand gestures, each.
     case palmGesture, pointGesture, pinchGesture, peaceGesture, hornsGesture, pinkyGesture, oylsGesture,
-         rockGesture
+         rockGesture, flickGesture
 
     // Keys.
     case screenshotTaps, offTaps, songKeys, missionControl
@@ -42,6 +42,9 @@ enum Feature: String, CaseIterable, Sendable {
     case cameraKeys
     /// Command-period: the emoji picker, from any app, as on Windows.
     case emojiKey
+    /// The right Shift key held on its own: the camera on for the gestures while it's held, and a
+    /// moment after.
+    case shiftCamera
     /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
     case themeKey
     /// And a sound as it does.
@@ -102,6 +105,7 @@ enum Feature: String, CaseIterable, Sendable {
         case .pinky: self = .pinkyGesture
         case .announce, .tiltLeft, .tiltRight: self = .oylsGesture
         case .rock: self = .rockGesture
+        case .flick: self = .flickGesture
         case .ok, .fist, .thumbsUp: return nil
         }
     }

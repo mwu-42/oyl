@@ -682,6 +682,7 @@ final class NotchController {
     private var controlTaps: TapWatcher?
     private var commandTaps: TapWatcher?
     private var shiftTaps: TapWatcher?
+    private var shiftHold: HoldWatcher?
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
@@ -846,6 +847,10 @@ final class NotchController {
                 if self.state.oylsVisible { self.walkers.fling() } else { self.state.oylsVisible = true }
             case .tiltRight:
                 if self.walkers.isLinedUp { self.walkers.scatter() } else { self.state.oylsVisible = false }
+            // A flick of the wrist: the desktops' list, as four fingers up (or away, if it's up).
+            case .flick:
+                guard !self.state.isOff else { return }
+                self.desktops?.toggle()
             default: self.state.perform(gesture)
             }
         }
@@ -981,6 +986,18 @@ final class NotchController {
             guard let self, !self.state.isOff, self.desktops?.isUp != true else { return }
             self.missionGroups.expect()
         }
+        // The right Shift key held a moment on its own: the camera on, quietly, for the gestures,
+        // wherever the pointer is, while it's held and for 3 s after.
+        shiftHold = HoldWatcher(.shift, side: ModifierTaps.rightShift, after: 0.5, every: 1.5, began: { [weak self] in
+            guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
+            self.gestures.wake(for: 3)
+        }, going: { [weak self] in
+            guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
+            self.gestures.wake(for: 3)
+        }, ended: { [weak self] in
+            guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
+            self.gestures.wake(for: 3)
+        })
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
         // twice again.

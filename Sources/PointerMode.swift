@@ -471,6 +471,9 @@ struct HandPose: Sendable {
     var fistLike = false
     /// Every joint the model found, for drawing.
     var joints: [HandTrack.Joint] = []
+    /// Which way the hand points (wrist to knuckles), in radians counterclockwise from the right,
+    /// as `HandShape.Reading.angle`: for a flick of the wrist (see `WristFlick`).
+    var angle: Double?
 
     /// The button the thumb's on, as `tuning` has it: the left on the index tip, the index reaching
     /// out to it (not curled right into the palm: seen from above, as the camera mostly sees a

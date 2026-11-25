@@ -216,6 +216,7 @@ struct SettingsPage: View {
                 feature(.hornsGesture, "🤟 Keep awake", "Keeps the Mac awake, or stops"),
                 feature(.pinkyGesture, "Pinky: lyrics", "Shows the lyrics, and the music \(oyl) sings"),
                 feature(.oylsGesture, "\(oyl)s' gestures", "Thumb on the ring finger: they say what they're doing; tip it to line them up or send them off"),
+                feature(.flickGesture, "Flick: desktops", "A quick flick of the wrist, the hand swung over at it: your desktops in a list, as four fingers up bring them; again to put it away"),
             ]
             if midnight {
                 items.append(feature(.rockGesture, "🤘 Hand pointer", "The rock sign: your hands become the mouse"))
@@ -233,6 +234,7 @@ struct SettingsPage: View {
                 feature(.desktopsClock, "Time in the desktops", "The time and the day, over the list of your desktops"),
                 feature(.desktopsKey, "⇧⇧ Desktops", "The right Shift key twice, quickly: your desktops in a list, as four fingers up bring them (whatever macOS does with four fingers); twice again puts it away"),
                 feature(.missionControlGroups, "Groups in Mission Control", "Over macOS's own Mission Control: each group of your desktops marked under its row, and a group whose desktops aren't next to each other marked split, to drag back together there"),
+                feature(.shiftCamera, "⇧ held: Camera", "The right Shift key held a moment on its own: the camera on for gestures while it's held, and 3 s after, wherever you are"),
                 feature(.cameraKeys, "⌃⌥ Camera", "Control and Option: the camera on for gestures for 3 s, wherever you are; twice, on till twice again"),
                 feature(.missionControl, "Out of the way", "Of Mission Control and the desktops"),
                 SettingItem(id: Feature.desktopsView.rawValue, title: "Four fingers up: desktops",

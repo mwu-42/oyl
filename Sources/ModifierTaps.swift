@@ -259,3 +259,111 @@ enum AreaScreenshot {
         return (CGKeyCode(parameters[1]), flags)
     }
 }
+
+/// One modifier key held down on its own (the right Shift, for the camera): nothing else with it,
+/// no key or click meanwhile. Held `after` (longer than a tap, or a capital typed), it counts,
+/// till it's let go or something's pressed with it.
+struct ModifierHold {
+    let key: NSEvent.ModifierFlags
+    let side: (this: UInt, other: UInt)?
+    /// Down on its own since then.
+    private(set) var downSince: TimeInterval?
+    /// It's counted as held.
+    private(set) var holding = false
+
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil) {
+        self.key = key
+        self.side = side
+    }
+
+    /// The modifier keys are now `flags`, at `time`: whether a hold that counted is over.
+    mutating func changed(_ flags: NSEvent.ModifierFlags, at time: TimeInterval) -> Bool {
+        let keys = flags.intersection([.shift, .control, .option, .command, .function])
+        var alone = keys == key
+        if let side { alone = alone && flags.rawValue & side.this != 0 && flags.rawValue & side.other == 0 }
+        if alone {
+            if downSince == nil { downSince = time }
+            return false
+        }
+        return interrupted()
+    }
+
+    /// At `time`: whether it's just been held `hold` (told once).
+    mutating func check(at time: TimeInterval, for hold: TimeInterval) -> Bool {
+        guard !holding, let downSince, time - downSince >= hold else { return false }
+        holding = true
+        return true
+    }
+
+    /// Let go, or a key or click with it: whether a hold that counted is over.
+    mutating func interrupted() -> Bool {
+        defer {
+            downSince = nil
+            holding = false
+        }
+        return holding
+    }
+}
+
+/// Listens for a `ModifierHold` everywhere, as `TapWatcher` does for taps: `began` once it's been
+/// held long enough, `going` every `every` while it still is, `ended` as it's let go.
+@MainActor
+final class HoldWatcher {
+    private var hold: ModifierHold
+    private let after: TimeInterval
+    private let every: TimeInterval
+    private let began: @MainActor () -> Void
+    private let going: @MainActor () -> Void
+    private let ended: @MainActor () -> Void
+    private var monitors: [Any] = []
+    private var timer: Timer?
+
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, after: TimeInterval, every: TimeInterval,
+         began: @escaping @MainActor () -> Void, going: @escaping @MainActor () -> Void, ended: @escaping @MainActor () -> Void) {
+        hold = ModifierHold(key, side: side)
+        self.after = after
+        self.every = every
+        self.began = began
+        self.going = going
+        self.ended = ended
+        let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        let heard = { [weak self] (event: NSEvent) in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let over = event.type == .flagsChanged ? self.hold.changed(event.modifierFlags, at: event.timestamp) : self.hold.interrupted()
+                if over { self.ended() }
+                if self.hold.downSince != nil, !self.hold.holding { self.waitForHold() } else if !self.hold.holding { self.stopTimer() }
+            }
+        }
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: heard) { monitors.append(monitor) }
+        if let monitor = NSEvent.addLocalMonitorForEvents(matching: events, handler: { event in
+            heard(event)
+            return event
+        }) { monitors.append(monitor) }
+    }
+
+    private func waitForHold() {
+        guard timer == nil, let since = hold.downSince else { return }
+        let wait = max(after - (ProcessInfo.processInfo.systemUptime - since), 0) + 0.01
+        timer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.timer = nil
+                guard self.hold.check(at: ProcessInfo.processInfo.systemUptime, for: self.after) else { return }
+                self.began()
+                // Still held: told again and again, till it's let go.
+                self.timer = Timer.scheduledTimer(withTimeInterval: self.every, repeats: true) { [weak self] _ in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        if self.hold.holding { self.going() } else { self.stopTimer() }
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopTimer() {
+        timer?.invalidate()
+        timer = nil
+    }
+}
