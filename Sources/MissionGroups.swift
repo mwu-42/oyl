@@ -139,6 +139,11 @@ final class MissionGroups {
     /// Reads in a row Mission Control's own windows weren't up, though its row could still be
     /// read (it lingers a moment as it closes).
     private var downs = 0
+    /// The Dock's said Mission Control's open, and not yet that it's gone: its row's trusted as it
+    /// is (only a row found after a swipe, with no word from the Dock, needs its windows seen too).
+    private var told = false
+    /// What was last noted (for the log, which notes each change, not each read).
+    private var lastNoted = ""
 
     var theme = NotchTheme.standard {
         didSet { for entry in panels.values { entry.model.theme = theme } }
@@ -147,6 +152,8 @@ final class MissionGroups {
     /// The Dock says Mission Control's open, or that it's gone (as you go to a desktop, or come back
     /// to the one you were on): open, it's looked for; gone, the marks go at once.
     func showing(_ on: Bool) {
+        told = on
+        note(on ? "the Dock says Mission Control's open" : "the Dock says it's gone: marks away")
         if on { expect() } else {
             stop()
             // Desktops put together in it: a group now all one is done away with.
@@ -166,6 +173,7 @@ final class MissionGroups {
     func expect() {
         guard Feature.missionControlGroups.isOn, !SpaceGroups().all.isEmpty else { return }
         expecting = Date().addingTimeInterval(3)
+        if timer == nil { note("looking for its row") }
         start()
     }
 
@@ -184,6 +192,7 @@ final class MissionGroups {
     }
 
     private func stop() {
+        if timer != nil { note("done looking") }
         timer?.invalidate()
         timer = nil
         expecting = nil
@@ -207,12 +216,14 @@ final class MissionGroups {
         reading = true
         DispatchQueue.global(qos: .userInitiated).async {
             let rows = MissionControlRow.read(dock: dock)
-            let up = !rows.isEmpty && MissionControl.dockWindowsUp()
+            let windows = MissionControl.dockWindowsUp()
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.reading = false
                     guard self.timer != nil else { return }
                     let now = Date()
+                    let up = !rows.isEmpty && (self.told || windows)
+                    self.note(rows.isEmpty ? "no row" : up ? "row of \(rows.map(\.frames.count))" : "a row, but no windows and no word from the Dock")
                     self.downs = up ? 0 : self.downs + 1
                     guard up else {
                         // Not there (or only its row's left, as it closes) two reads running (one's
@@ -247,7 +258,10 @@ final class MissionGroups {
             let spaces = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }.spaces
             // Mid-drag the row and the Spaces can disagree for a moment: the marks stay as they were.
             guard spaces.count == row.frames.count else {
-                Self.log.info("Mission Control's row has \(row.frames.count) desktops, the Spaces \(spaces.count): marks left as they were")
+                // Mid-drag, or as it settles: out of sight till they agree again, rather than
+                // left where they no longer belong.
+                note("the row has \(row.frames.count) desktops, the Spaces \(spaces.count): marks hidden till they agree")
+                if let entry = panels[number], entry.model.shown { withAnimation(Self.ease(theme)) { entry.model.shown = false } }
                 continue
             }
             let top = primaryHeight - screen.frame.maxY
@@ -304,6 +318,13 @@ final class MissionGroups {
     }
 
     private static let log = Logger(subsystem: "local.nott", category: "mission-groups")
+
+    /// Noted in the log as it changes (kept, unlike every read), to find out what went wrong.
+    private func note(_ what: String) {
+        guard what != lastNoted else { return }
+        lastNoted = what
+        Self.log.notice("\(what, privacy: .public)")
+    }
 }
 
 /// The marks: in Oyl's look, a white bar under each group's run of desktops and its name on a
