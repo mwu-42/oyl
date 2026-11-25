@@ -120,7 +120,7 @@ final class TapWatcher {
     private let held: (@MainActor () -> Void)?
     private var holding: Timer?
     /// How long the second press is held for it: longer than any tap, so it's never one.
-    static let hold: TimeInterval = 0.45
+    static let hold: TimeInterval = 0.4
 
     init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, longest: TimeInterval = ModifierTaps.press,
          gap: TimeInterval = ModifierTaps.usualGap, each: (@MainActor (Int) -> Void)? = nil,
