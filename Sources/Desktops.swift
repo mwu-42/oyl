@@ -2527,21 +2527,29 @@ final class DesktopsViewer {
         readAgents()
     }
 
-    /// Which desktops agents are at work on: by their app's windows, else (a Claude) where it was
-    /// last seen.
+    /// The agents again, as they've changed while the list's up.
+    func agentsChanged() {
+        guard isUp, hiding == nil, !spaces.isEmpty else { return }
+        readAgents()
+    }
+
+    /// Which desktops agents are at work on, now (see `AgentLife`): by their app's windows, else
+    /// (a Claude) where it was last seen.
     private func readAgents() {
         readingAgents?.cancel()
-        let sessions = working().compactMap { session -> (AgentSession, pid_t)? in
-            guard session.pid > 0, let app = AgentWindow.hostApp(of: session.pid) else { return nil }
+        let candidates = working().compactMap { session -> (AgentSession, pid_t)? in
+            guard AgentLife.isAtIt(session.activity), session.pid > 0, let app = AgentWindow.hostApp(of: session.pid) else { return nil }
             return (session, app.processIdentifier)
         }
-        guard !sessions.isEmpty else {
+        guard !candidates.isEmpty else {
             if !model.atWork.isEmpty { model.atWork = [:] }
             return
         }
         readingAgents = Task { @MainActor [weak self] in
-            let numbers = await Task.detached(priority: .userInitiated) {
-                sessions.map { SessionDesk.space(of: $0.0, app: $0.1) }
+            let (sessions, numbers) = await Task.detached(priority: .userInitiated) { () -> ([(AgentSession, pid_t)], [Int?]) in
+                let still = Set(await AgentLife.atIt(candidates.map(\.0)).map(\.id))
+                let sessions = candidates.filter { still.contains($0.0.id) }
+                return (sessions, sessions.map { SessionDesk.space(of: $0.0, app: $0.1) })
             }.value
             guard let self, !Task.isCancelled else { return }
             var counts: [String: Int] = [:]

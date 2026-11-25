@@ -759,6 +759,13 @@ final class NotchController {
                 MainActor.assumeIsolated { if counts.1 < counts.0 { ClaudeLimit.shared.nudge() } }
             }
             .store(in: &cancellables)
+        // The desktops' list's marks of agents at work, kept up as they start and stop.
+        agents.$sessions
+            .map { $0.filter { AgentLife.isAtIt($0.activity) }.map(\.id) }
+            .removeDuplicates()
+            .throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
+            .sink { [weak self] _ in MainActor.assumeIsolated { self?.desktops?.agentsChanged() } }
+            .store(in: &cancellables)
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
