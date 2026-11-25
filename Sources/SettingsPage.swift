@@ -114,6 +114,7 @@ struct SettingsPage: View {
                 feature(.githubGrid, "GitHub grid", "Your GitHub contributions this past year, on the Activity page, read with GitHub's gh tool"),
                 feature(.claudeLimit, "Claude's 5 hours", "On the usage page: how much of Claude's 5-hour limit window is used and when it resets, as Claude Code's /usage says, read every few minutes"),
                 feature(.claudeLimitBar, "5 hours on the bar", "On the menu bar, just right of the notch: how much of Claude's 5-hour limit window is left (5h 81% left), amber under 20%"),
+                feature(.commitTimeline, "Commits", "On the stats page: your commits today, hour by hour, from the git repositories Claude Code's worked in (yours only, unpushed ones too)"),
             ]
             if !midnight {
                 items.append(SettingItem(id: "mirror", title: "Mirror", hint: "The camera, for a look at yourself before a call",

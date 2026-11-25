@@ -213,10 +213,12 @@ struct ActivityPage: View {
         .onAppear {
             stats.start()
             usage.start()
+            CommitTimeline.shared.start()
         }
         .onDisappear {
             stats.stop()
             usage.stop()
+            CommitTimeline.shared.stop()
         }
     }
 
@@ -371,6 +373,7 @@ struct ClaudeUsageRows: View {
             tokens
             if features.isOn(.claudeLimit) { ClaudeWindowRow(reading: limit.reading) }
             if let totals, totals.today > 0 || totals.lastFiveHours > 0 { spent(totals) }
+            if features.isOn(.commitTimeline) { CommitRow() }
         }
         .onAppear { limit.nudge() }
     }
@@ -516,6 +519,55 @@ struct ClaudeWindowRow: View {
         }
     }
 
+}
+
+/// Your commits today, hour by hour (see `CommitTimeline`), as Claude's tokens are above it: the
+/// bars, how many today and in the last five hours, and the repository with the most.
+struct CommitRow: View {
+    @ObservedObject private var commits = CommitTimeline.shared
+    /// Shown in place of what's read (for a picture of it).
+    var given: CommitTimeline.Totals? = nil
+    @Environment(\.notchTheme) private var theme
+    private var tint: Color { theme.tint(ActivityPage.tint) }
+
+    var body: some View {
+        let totals = given ?? commits.totals
+        HStack(spacing: 8) {
+            Text("Commits")
+                .notchFont(size: 11, weight: .medium)
+                .foregroundStyle(tint.opacity(0.75))
+                .frame(width: 54, alignment: .leading)
+            HourlyBars(values: totals?.hourly ?? [], hour: totals?.hour ?? -1)
+                .frame(width: 92, height: 16)
+            Text(Self.says(totals))
+                .notchFont(size: 11, weight: .medium, digits: true)
+                .foregroundStyle(.white.opacity(totals?.repositories == 0 ? 0.45 : 0.85))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if let busiest = totals?.busiest {
+                HStack(spacing: 3) {
+                    Image(systemName: "folder")
+                        .notchSymbol(size: 8, weight: .semibold)
+                    Text(busiest)
+                        .notchFont(size: 10, weight: .medium)
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.white.opacity(0.4))
+            }
+        }
+        .frame(height: 16)
+        .contentShape(Rectangle())
+        .help("Your commits, from the git repositories Claude Code's worked in (\(totals?.repositories ?? 0) of them)")
+        .settingsMenu(.notch) { FeatureToggle(.commitTimeline, "Commits here") }
+    }
+
+    /// "12 today · 3 last 5 h"; before any's read, or with none to read.
+    static func says(_ totals: CommitTimeline.Totals?) -> String {
+        guard let totals else { return "Reading git…" }
+        guard totals.repositories > 0 else { return "No repositories yet" }
+        guard totals.today > 0 || totals.lastFiveHours > 0 else { return "None today" }
+        return "\(totals.today) today · \(totals.lastFiveHours) last 5 h"
+    }
 }
 
 private struct HourlyBars: View {

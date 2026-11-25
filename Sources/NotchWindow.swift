@@ -8,7 +8,7 @@ enum Layout {
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
     /// (With a row under Claude's tokens for what they'd cost, and one for its 5-hour window.)
-    static var activityHeight: CGFloat { 172 + (Feature.claudeLimit.isOn ? 24 : 0) }
+    static var activityHeight: CGFloat { 172 + (Feature.claudeLimit.isOn ? 24 : 0) + (Feature.commitTimeline.isOn ? 24 : 0) }
     /// The system's part of it, over Claude's rows.
     static let activitySystemHeight: CGFloat = 172 - 22 - 24
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.

@@ -390,6 +390,7 @@ struct ExpandedNotch: View {
                                 FeatureToggle(.claudeLimit, "Claude's 5 hours here")
                                 FeatureToggle(.claudeLimitBar, "5 hours on the bar")
                                 FeatureToggle(.githubGrid, "GitHub's grid")
+                                FeatureToggle(.commitTimeline, "Commits")
                             }
                             .transition(NotchView.swap)
                     case .mirror:

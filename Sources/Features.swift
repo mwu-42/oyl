@@ -65,6 +65,8 @@ enum Feature: String, CaseIterable, Sendable {
     case claudeLimit
     /// What's left of it, on the menu bar beside the notch (see `BarLimit`).
     case claudeLimitBar
+    /// Your commits today, hour by hour, on the stats page (see `CommitTimeline`).
+    case commitTimeline
     /// Your desktops' groups marked over macOS's Mission Control (see `MissionGroups`).
     case missionControlGroups
     /// A sound when a Claude's done, or waiting for you (see `AgentChimes`).

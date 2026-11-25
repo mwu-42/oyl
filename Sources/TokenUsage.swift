@@ -15,6 +15,9 @@ final class TokenUsage: ObservableObject {
         var hourly = [Int](repeating: 0, count: 24)  // today, by hour of the day
         var hour = 0                                  // the hour it is now
         var busiestProject: String?                   // the most tokens today
+        /// The folders Claude Code's worked in, today and in the last five hours (for the commits'
+        /// timeline to find their repositories, see `CommitTimeline`).
+        var folders: [String] = []
         /// What they'd have cost at API prices, in dollars (cache reads included): today, in the
         /// last five hours, and today by hour of the day.
         var spentToday = 0.0
@@ -76,6 +79,8 @@ private final class TranscriptReader: @unchecked Sendable {
         let project: String
         /// In dollars, at API prices; nil for a model with no price known.
         let cost: Double?
+        /// Where it was working, in full (if the transcript says).
+        var folder: String? = nil
     }
 
     /// How far into a file has been read, and which file that was, to notice it being replaced.
@@ -176,6 +181,7 @@ private final class TranscriptReader: @unchecked Sendable {
         }
         // Ties go to the first name, so the pick doesn't flicker between refreshes.
         totals.busiestProject = projects.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+        totals.folders = Array(Set(entries.compactMap(\.folder))).sorted()
         return totals
     }
 
@@ -291,7 +297,8 @@ private final class TranscriptReader: @unchecked Sendable {
         }
         let folder = line.cwd.map { ($0 as NSString).lastPathComponent } ?? ""
         entries.append(Entry(time: time, tokens: tokens, output: output, cacheReads: cacheReads,
-                             project: folder.isEmpty || folder == "/" ? project : folder, cost: cost))
+                             project: folder.isEmpty || folder == "/" ? project : folder, cost: cost,
+                             folder: line.cwd.flatMap { $0.hasPrefix("/") && $0 != "/" ? $0 : nil }))
     }
 }
 
