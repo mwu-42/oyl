@@ -715,6 +715,9 @@ final class DesktopsModel: ObservableObject {
     /// The desktops a sound's just come from (see `DeskChimes`): which, and when.
     @Published var rang: [String: DeskChimes.Rang] = [:]
 
+    /// When the newest of them came.
+    var newestRang: Date? { rang.values.map(\.at).max() }
+
     /// A group's, folded: the latest of its desktops'.
     func rang(inGroup id: String) -> DeskChimes.Rang? {
         desks.filter { $0.group == id }.compactMap { rang[$0.id] }.max { $0.at < $1.at }
@@ -1450,7 +1453,8 @@ private struct DeskRow: View {
         }
         .padding(.horizontal, midnight ? 6 : 10)
         .frame(height: height)
-        .background(DeskHighlight(lit: lit, target: target, rang: model.rang[desk.id]?.kind))
+        .background(DeskHighlight(lit: lit, target: target, rang: model.rang[desk.id]?.kind,
+                                  newest: model.rang[desk.id].map { $0.at == model.newestRang } ?? false))
         .scaleEffect(dragged ? (midnight ? 1.035 : 1.02) : 1, anchor: .leading)
         .shadow(color: dragged ? (midnight ? Midnight.moonlight.opacity(0.25) : .black.opacity(0.4)) : .clear, radius: dragged ? 10 : 0)
         .contentShape(Rectangle())
@@ -1610,7 +1614,8 @@ private struct DeskHeading: View {
         }
         .padding(.horizontal, midnight ? 6 : 10)
         .frame(height: height)
-        .background(DeskHighlight(lit: lit, target: target, rang: group.folded ? model.rang(inGroup: group.id)?.kind : nil))
+        .background(DeskHighlight(lit: lit, target: target, rang: group.folded ? model.rang(inGroup: group.id)?.kind : nil,
+                                  newest: group.folded && model.rang(inGroup: group.id).map { $0.at == model.newestRang } ?? false))
         .contentShape(Rectangle())
         .onHover { inside in
             if inside {
@@ -1762,30 +1767,80 @@ private struct DeskAction: View {
     }
 }
 
-/// A line lit: pointed at or picked, or (brighter) being dragged onto. In Midnight's, a wash of
-/// moonlight with no edge, fading in from the left, off to the right, and above and below.
+/// A line lit: pointed at or picked, or (brighter) being dragged onto; and a sound's just come from
+/// it, in its own color under that (amber for a Claude waiting for you, mint for one done), with
+/// a bar at its edge in Oyl's look, the newest breathing. In Midnight's, washes of light with no
+/// edge, fading in from the left, off to the right, and above and below: moonlight for the line
+/// lit, the sound's own color (amber, or starlight) for where it came from.
 private struct DeskHighlight: View {
     let lit: Bool
     var target = false
-    /// A sound's just come from it: amber for one waiting for you, a little brighter for one done.
+    /// A sound's just come from it: which.
     var rang: AgentChimes.Kind? = nil
+    /// The newest sound's in the list: it breathes, to catch the eye.
+    var newest = false
     @Environment(\.notchTheme) private var theme
 
+    /// Where a sound's come from, in its own color.
+    static func tint(_ kind: AgentChimes.Kind, theme: NotchTheme) -> Color {
+        if kind == .waiting { return MissionMark.amber(theme) }
+        return theme == .midnight ? Midnight.starlight : Color(red: 0.5, green: 0.9, blue: 0.68)
+    }
+
     var body: some View {
-        if theme == .midnight {
-            let wash = rang == .waiting && !lit && !target ? MissionMark.amber(theme) : Midnight.moonlight
-            let strength = target ? 0.24 : lit ? 0.13 : rang == .waiting ? 0.16 : rang == .done ? 0.1 : 0
-            LinearGradient(stops: [.init(color: .clear, location: 0),
-                                   .init(color: wash.opacity(strength), location: 0.08),
-                                   .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
-                .mask(LinearGradient(colors: [.clear, .white, .clear], startPoint: .top, endPoint: .bottom))
-                .padding(.vertical, -4)
-        } else if rang == .waiting, !lit, !target {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(MissionMark.amber(theme).opacity(0.16))
+        let midnight = theme == .midnight
+        ZStack(alignment: .leading) {
+            if let rang {
+                let tint = Self.tint(rang, theme: theme)
+                DeskBreathing(on: newest) { breath in
+                    if midnight {
+                        Self.wash(tint, strength: (rang == .waiting ? 0.36 : 0.2) * breath)
+                    } else {
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(tint.opacity((rang == .waiting ? 0.2 : 0.14) * breath))
+                            Capsule()
+                                .fill(tint.opacity(min(0.95 * breath, 1)))
+                                .frame(width: 3)
+                                .padding(.vertical, 7)
+                                .padding(.leading, 2)
+                        }
+                    }
+                }
+            }
+            if midnight {
+                Self.wash(Midnight.moonlight, strength: target ? 0.24 : lit ? 0.13 : 0)
+            } else {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.white.opacity(target ? 0.17 : lit ? 0.09 : 0))
+            }
+        }
+    }
+
+    private static func wash(_ color: Color, strength: Double) -> some View {
+        LinearGradient(stops: [.init(color: .clear, location: 0),
+                               .init(color: color.opacity(strength), location: 0.08),
+                               .init(color: .clear, location: 1)], startPoint: .leading, endPoint: .trailing)
+            .mask(LinearGradient(colors: [.clear, .white, .clear], startPoint: .top, endPoint: .bottom))
+            .padding(.vertical, -4)
+    }
+}
+
+/// Breathing, slowly brighter and back (or steady, while it's not to).
+private struct DeskBreathing<Content: View>: View {
+    let on: Bool
+    @ViewBuilder let content: (Double) -> Content
+
+    /// How bright it is at `time`: 0.75 to 1.2, every 1.6 s.
+    static func breath(at time: TimeInterval) -> Double { 0.975 + 0.225 * sin(time * 2 * .pi / 1.6) }
+
+    var body: some View {
+        if on {
+            TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
+                content(Self.breath(at: timeline.date.timeIntervalSinceReferenceDate))
+            }
         } else {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.white.opacity(target ? 0.17 : lit ? 0.09 : rang == .done ? 0.07 : 0))
+            content(1)
         }
     }
 }
@@ -1813,7 +1868,7 @@ struct DeskRangMark: View {
             } else {
                 Image(systemName: waiting ? "bell.fill" : "checkmark.circle.fill")
                     .font(.system(size: 9.5, weight: .semibold))
-                    .foregroundStyle(waiting ? MissionMark.amber(theme) : .white.opacity(0.7))
+                    .foregroundStyle(DeskHighlight.tint(rang.kind, theme: theme))
             }
         }
         .help(Self.says(rang))

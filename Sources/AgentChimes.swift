@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import os
 
 /// A sound when a Claude's done: one as it finishes its turn (it was at work, and now it's done),
 /// another as it starts waiting for you (a permission, a question, a plan to look over). Each place
@@ -28,7 +29,7 @@ final class AgentChimes {
     }
 
     /// Editors with a window for each folder, its name in the window's title.
-    static let editors = ["VS Code", "Cursor", "Windsurf"]
+    nonisolated static let editors = ["VS Code", "Cursor", "Windsurf"]
 
     /// Whether you're looking at `session` already: the app it runs in is in front, and in an
     /// editor, the window in front is its folder's (VS Code's titles end with the folder's name).
@@ -57,7 +58,7 @@ final class AgentChimes {
     }
 
     /// The title of the window in front in `pid`'s app, through accessibility.
-    private static func focusedTitle(of pid: pid_t) -> String? {
+    static func focusedTitle(of pid: pid_t) -> String? {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.2)
         var window: CFTypeRef?
@@ -77,6 +78,8 @@ final class AgentChimes {
         last = Dictionary(sessions.map { ($0.id, $0.activity) }, uniquingKeysWith: { _, latest in latest })
         let claudes = sessions.filter(\.isClaude)
         for session in claudes { ChimeSettings.shared.saw(Self.source(of: session)) }
+        SeenDesks.shared.sessions = claudes
+        SeenDesks.shared.look(at: now)
         guard Feature.agentSounds.isOn, !isOff, now.timeIntervalSince(lastChime) >= Self.apart else { return }
         let heard = claudes.compactMap { session in Self.chime(from: before[session.id], to: session.activity).map { ($0, session) } }
         // Waiting for you says more than done.
@@ -86,26 +89,115 @@ final class AgentChimes {
         lastChime = now
         // Its desktop's sound, if it has one and the desktop can be told; else its app's. Either
         // way, the desktop it came from's marked in the desktops' list (see `DeskChimes`).
+        // Its desktop as its app's windows say, else where it was last seen (see `SeenDesks`).
         let source = Self.source(of: session), midnight = theme == .midnight
-        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier else {
-            ChimeSettings.shared.voice(for: source).play(kind, midnight: midnight)
-            return
-        }
+        let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier
         let deskSounds = ChimeSettings.shared.hasDeskSounds
         if !deskSounds { ChimeSettings.shared.voice(for: source).play(kind, midnight: midnight) }
         DispatchQueue.global(qos: .userInitiated).async {
-            let number = SessionDesk.space(of: session, app: pid)
+            let number = pid.flatMap { SessionDesk.space(of: session, app: $0) }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    let space = number.flatMap(SessionDesk.desktop)
+                    let found = number.flatMap(SessionDesk.desktop)
+                    let space = found ?? SeenDesks.shared.desk(of: session)
                     if deskSounds {
                         let desk = space.flatMap { ChimeSettings.shared.desk($0) }
                         (desk ?? ChimeSettings.shared.voice(for: source)).play(kind, midnight: midnight)
                     }
+                    let how = found != nil ? "by its app's windows" : space != nil ? "where it was last seen" : "not found"
+                    Self.log.notice("A sound for a Claude in \(source, privacy: .public): its desktop \(how, privacy: .public)")
                     if let space { DeskChimes.shared.rang(space, kind) }
                 }
             }
         }
+    }
+
+    private static let log = Logger(subsystem: "local.nott", category: "chimes")
+}
+
+/// Where each Claude was last seen: the desktop you were on while you were looking at it (its app
+/// in front, and in an editor, its folder's window), by the session and by its app and folder.
+/// For a sound whose desktop its app's windows can't tell (an editor's windows on several, whose
+/// titles can't be read without Screen Recording, and whose windows on other Spaces accessibility
+/// doesn't see), so the desktops' list can still mark where it came from. Looked at every couple
+/// of seconds as the Claudes change, and as you go to another app or Space; kept while Oyl runs.
+@MainActor
+final class SeenDesks {
+    static let shared = SeenDesks()
+    static let every: TimeInterval = 2
+    static let most = 200
+
+    /// The Claudes as they last were.
+    var sessions: [AgentSession] = []
+    /// Each one's desktop, as it's kept (see `SpaceGroups.keys`), and when it was seen there.
+    private(set) var seen: [String: (keys: [String], at: Date)] = [:]
+    private var lastLooked = Date.distantPast
+    private var observers: [Any] = []
+
+    init() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        observers = [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification].map { name in
+            workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                // Once what's in front has settled.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    MainActor.assumeIsolated { self?.look(at: Date(), now: true) }
+                }
+            }
+        }
+    }
+
+    /// What each's kept under: the session, and its app and folder.
+    nonisolated static func names(of session: AgentSession) -> [String] {
+        ["session:" + session.id] + (session.project.isEmpty ? [] : ["place:\(session.host ?? "")|\(session.project)"])
+    }
+
+    /// The Claudes you're looking at now, if any: their desktop's the one you're on.
+    func look(at date: Date, now: Bool = false) {
+        guard Feature.agentSounds.isOn, now || date.timeIntervalSince(lastLooked) >= Self.every else { return }
+        lastLooked = date
+        guard let front = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return }
+        let here = sessions.filter { $0.pid > 0 && AgentWindow.hostApp(of: $0.pid)?.processIdentifier == front }
+        guard !here.isEmpty else { return }
+        // The one whose folder the window in front names (its title read the once); in an app with
+        // no such title, its one Claude, if it has only one.
+        let title = AgentChimes.focusedTitle(of: front)
+        let looking = Self.looking(at: here, title: title)
+        guard !looking.isEmpty, let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main,
+              let space = Spaces.current(on: screen) else { return }
+        for session in looking { remember(session, on: space, at: date) }
+    }
+
+    /// Of the Claudes in the app in front, the ones being looked at, as the title of its window in
+    /// front says: those whose folder it names; failing that, outside an editor (whose windows are
+    /// each a folder's), its only Claude.
+    nonisolated static func looking(at here: [AgentSession], title: String?) -> [AgentSession] {
+        let named = here.filter { session in
+            guard let title, !session.project.isEmpty else { return false }
+            return AgentChimes.title(title, names: session.project)
+        }
+        if !named.isEmpty { return named }
+        guard here.count == 1, let only = here.first, !AgentChimes.editors.contains(only.host ?? "") else { return [] }
+        return [only]
+    }
+
+    func remember(_ session: AgentSession, on space: CurrentSpace, at date: Date = Date()) {
+        let keys = SpaceGroups.keys(of: space)
+        for name in Self.names(of: session) { seen[name] = (keys, date) }
+        if seen.count > Self.most {
+            for (name, _) in seen.sorted(by: { $0.value.at < $1.value.at }).prefix(seen.count - Self.most) { seen[name] = nil }
+        }
+    }
+
+    /// Where `session` was last seen, if that desktop's still there: by the session, else by its
+    /// app and folder.
+    func desk(of session: AgentSession) -> CurrentSpace? {
+        guard let keys = Self.names(of: session).lazy.compactMap({ self.seen[$0]?.keys }).first else { return nil }
+        for screen in NSScreen.screens {
+            guard let display = FullscreenSpace.display(for: screen) else { continue }
+            let spaces = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }.spaces
+            if let space = spaces.first(where: { SpaceGroups.keys(of: $0).contains(where: keys.contains) }) { return space }
+        }
+        return nil
     }
 }
 
