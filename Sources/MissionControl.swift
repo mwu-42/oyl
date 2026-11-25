@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import os
 
 /// Whether you're viewing your desktops: Mission Control, App Exposé or Show Desktop, as the Dock
 /// says when they come and go (its accessibility notifications, the ones window managers go by,
@@ -24,6 +25,12 @@ final class MissionControl {
     private var sawWindows = false
     /// Checks in a row its windows weren't seen (one's a flicker, as a swipe settles).
     private var misses = 0
+    /// When the Dock last said they're up: another app in front or another Space just then is
+    /// their own doing as they come up, not their end (they're over then only if they're not up).
+    private var shownAt: Date?
+    nonisolated static let settling: TimeInterval = 0.6
+
+    private static let log = Logger(subsystem: "local.nott", category: "mission-control")
 
     init(changed: @escaping @MainActor (Bool) -> Void) {
         self.changed = changed
@@ -36,9 +43,10 @@ final class MissionControl {
             }
         }
         let workspace = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didActivateApplicationNotification] {
+        for (name, reason) in [(NSWorkspace.activeSpaceDidChangeNotification, "another Space"),
+                               (NSWorkspace.didActivateApplicationNotification, "another app in front")] {
             workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.end() }
+                MainActor.assumeIsolated { self?.over(by: reason) }
             }
         }
     }
@@ -46,7 +54,7 @@ final class MissionControl {
     private func watchDock() {
         if let observer { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes) }
         observer = nil
-        end()
+        end("watching the Dock afresh")
         guard AXIsProcessTrusted(),
               let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
         var made: AXObserver?
@@ -68,15 +76,51 @@ final class MissionControl {
 
     private func heard(_ name: String) {
         if Self.shown.contains(name) {
+            if !isShowing { Self.log.notice("The Dock says \(name, privacy: .public)") }
             begin()
         } else if name == Self.gone {
-            end()
+            end("the Dock says it's gone")
         }
+    }
+
+    /// Whether something that happened `since` the Dock said they're up is their own doing, as
+    /// they come up.
+    nonisolated static func isSettling(since shown: Date?, now: Date = Date()) -> Bool {
+        shown.map { now.timeIntervalSince($0) < settling } ?? false
+    }
+
+    /// Another app in front, or another Space: over, unless it's as they come up, when they're
+    /// only over if, once they've settled, they aren't up.
+    private func over(by reason: String) {
+        guard isShowing else { return }
+        guard Self.isSettling(since: shownAt), let shownAt else {
+            end(reason)
+            return
+        }
+        let wait = max(Self.settling - Date().timeIntervalSince(shownAt), 0.05)
+        DispatchQueue.main.asyncAfter(deadline: .now() + wait) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.isShowing, self.shownAt == shownAt else { return }
+                if self.isUp() {
+                    Self.log.notice("\(reason, privacy: .public) as it came up: still up")
+                } else {
+                    self.end("\(reason), and it's not up")
+                }
+            }
+        }
+    }
+
+    /// Whether it's up now, as its windows or its row say.
+    private func isUp() -> Bool {
+        if Self.dockWindowsUp() { return true }
+        guard let dock = dock?.processIdentifier else { return false }
+        return MissionControlRow.isOpen(dock: dock)
     }
 
     private func begin() {
         sawWindows = false
         misses = 0
+        if !isShowing { shownAt = Date() }
         isShowing = true
         checking?.invalidate()
         checking = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -87,15 +131,20 @@ final class MissionControl {
                     self.misses = 0
                 } else if self.sawWindows {
                     self.misses += 1
-                    if self.misses >= 2 { self.end() }
+                    if self.misses >= 2 { self.end("its windows are gone") }
                 }
             }
         }
     }
 
-    private func end() {
+    private func end(_ reason: String) {
         checking?.invalidate()
         checking = nil
+        if isShowing {
+            let after = shownAt.map { String(format: "%.2f s", Date().timeIntervalSince($0)) } ?? "?"
+            Self.log.notice("Gone after \(after, privacy: .public): \(reason, privacy: .public)")
+        }
+        shownAt = nil
         isShowing = false
     }
 

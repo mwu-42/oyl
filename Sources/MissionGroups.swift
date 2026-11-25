@@ -30,6 +30,9 @@ enum MissionControlRow {
         }
     }
 
+    /// Whether Mission Control (or App Exposé) is open, as the Dock's accessibility has it.
+    nonisolated static func isOpen(dock: pid_t) -> Bool { missionControl(dock) != nil }
+
     private nonisolated static func missionControl(_ dock: pid_t) -> AXUIElement? {
         let element = AXUIElementCreateApplication(dock)
         AXUIElementSetMessagingTimeout(element, 0.25)

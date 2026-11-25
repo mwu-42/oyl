@@ -2194,7 +2194,20 @@ final class DesktopsViewer {
         panel.orderFrontRegardless()
         panel.makeKey()
         isUp = true
+        // Three fingers up (or down) don't open Mission Control (or App Exposé) over it.
+        DockSwipes.shared.block(true)
+        Self.log.notice("The desktops' list up")
         load()
+    }
+
+    /// Up still, as Mission Control (or the start of it, as a swipe's taken for its) closes: in front
+    /// again, as it can be left out of sight on the Space it's come back to though it's still up.
+    func refront() {
+        guard isUp, hiding == nil else { return }
+        Self.log.notice("Mission Control's gone with the desktops' list up: brought to the front again")
+        panel.orderOut(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
     }
 
     private func hide() {
@@ -2204,7 +2217,9 @@ final class DesktopsViewer {
         readingApps = nil
         following = nil
         panel.orderOut(nil)
+        if isUp { Self.log.notice("The desktops' list away") }
         isUp = false
+        DockSwipes.shared.block(false)
         model.progress = 0
         model.renaming = nil
         model.dragging = nil

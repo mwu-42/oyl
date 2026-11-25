@@ -965,11 +965,14 @@ final class NotchController {
         missionControl = MissionControl { [weak self] showing in
             self?.viewDesktops(showing && Feature.missionControl.isOn)
             if self?.state.isOff == false { self?.missionGroups.showing(showing) }
+            // The desktops' list still up as it goes: in front again, in case it's out of sight.
+            if !showing { self?.desktops?.refront() }
         }
         // Three fingers up (Mission Control's swipe): its row's looked for at once, in case the
         // Dock's word of it is late, or never comes.
         Trackpads.shared.threeUp = { [weak self] in
-            guard let self, !self.state.isOff else { return }
+            // (Not while the desktops' list is up: three fingers up are held back then.)
+            guard let self, !self.state.isOff, self.desktops?.isUp != true else { return }
             self.missionGroups.expect()
         }
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
