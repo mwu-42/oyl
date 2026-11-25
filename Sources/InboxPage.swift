@@ -200,7 +200,6 @@ private struct InboxRow: View {
             }
             Text(task.title)
                 .notchFont(size: 12)
-                .modifier(WatchStatus(watch: task.watch, faded: checked.value))
                 .foregroundStyle(.white.opacity(checked.value ? 0.4 : 0.9))
                 .strikethrough(checked.value, color: .white.opacity(0.5))
                 .lineLimit(1)
@@ -227,38 +226,5 @@ private struct InboxRow: View {
         let days = IdeaQuick.date(due).flatMap { calendar.dateComponents([.day], from: calendar.startOfDay(for: now), to: $0).day } ?? 0
         if late, days < 0 { return (days == -1 ? "1 day late" : "\(-days) days late", true) }
         return (IdeaQuick.describe(due: due, time: task.time, now: now), late)
-    }
-}
-
-/// After a task's title, what toyl's watching for it, short ("pr merged", "3 commits", "edited 2h
-/// ago"), and a click on it opens what's watched.
-private struct WatchStatus: ViewModifier {
-    let watch: TodStore.Task.Watch?
-    let faded: Bool
-    @Environment(\.notchTheme) private var theme
-
-    func body(content: Content) -> some View {
-        HStack(spacing: 6) {
-            content
-            if let watch, let status = watch.status() {
-                let midnight = theme == .midnight
-                Button {
-                    if let url = watch.url { NSWorkspace.shared.open(url) }
-                } label: {
-                    HStack(spacing: 2) {
-                        Text(status)
-                            .font(midnight ? Midnight.italic(11.5) : .system(size: 10.5, weight: .medium))
-                        Image(systemName: "arrow.up.right")
-                            .font(.system(size: 7.5, weight: .bold))
-                    }
-                    .foregroundStyle(midnight ? Midnight.silver.opacity(faded ? 0.3 : 0.6) : .white.opacity(faded ? 0.25 : 0.45))
-                    .lineLimit(1)
-                    .fixedSize()
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableStyle())
-                .help("What toyl's watching for it: \(watch.link)")
-            }
-        }
     }
 }
