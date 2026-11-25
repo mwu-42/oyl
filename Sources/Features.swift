@@ -44,6 +44,8 @@ enum Feature: String, CaseIterable, Sendable {
     case emojiKey
     /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
     case themeKey
+    /// And a sound as it does.
+    case themeSound
     /// The time, in the desktops' list.
     case desktopsClock
 

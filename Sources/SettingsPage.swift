@@ -226,6 +226,7 @@ struct SettingsPage: View {
                 feature(.screenshotTaps, "⌘⌘ Screenshot", "Command twice: a screenshot of part of the screen"),
                 feature(.offTaps, "⌃⌃⌃ Switch off", "Control three times: Oyl off for a while, or back on"),
                 feature(.themeKey, "⌃ ⌃ held: Other look", "Control once, then pressed again and held a moment: Midnight Oyl, or back to Oyl's look, from any app"),
+                feature(.themeSound, "⌃ ⌃ held: its sound", "As the look swaps: nightfall into Midnight Oyl, daybreak back (and a tap of the trackpad, with Haptics on)"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
                 feature(.emojiKey, "⌘. Emoji", "The emoji picker, from any app, as on Windows"),
                 feature(.pictureInPicture, "⌃⌥P Picture in picture", "The window in front, kept up small over every desktop and fullscreen app (or right-click an app in Oyl's Dock); again to put it away"),

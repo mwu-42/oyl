@@ -941,7 +941,9 @@ final class NotchController {
         // Midnight Oyl, or back to Oyl's look.
         controlTaps = TapWatcher(.control, held: { [weak self] in
             guard let self, !self.state.isOff, Feature.themeKey.isOn else { return }
-            self.state.theme = self.state.theme == .midnight ? .standard : .midnight
+            let toMidnight = self.state.theme != .midnight
+            self.state.theme = toMidnight ? .midnight : .standard
+            ThemeChime.swapped(toMidnight: toMidnight)
         }, actions: [
             3: { [weak self] in
                 // Turned off, the taps can still switch Oyl back on.

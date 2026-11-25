@@ -1986,16 +1986,31 @@ struct DeskRangMark: View {
         let waiting = rang.kind == .waiting
         Group {
             if theme == .midnight {
+                // The same marks as Oyl's look (a check, or a bell), in starlight, a star twinkling at
+                // the tip.
+                let tint = DeskHighlight.tint(rang.kind, theme: theme)
                 TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
                     let twinkle = 0.5 + 0.5 * sin(timeline.date.timeIntervalSinceReferenceDate * (waiting ? 3.2 : 1.8))
-                    FourPointStar()
-                        .fill(waiting ? MissionMark.amber(theme) : Midnight.starlight)
-                        .frame(width: 7 + 3 * twinkle, height: 7 + 3 * twinkle)
-                        .opacity(0.6 + 0.4 * twinkle)
-                        .rotationEffect(.degrees(twinkle * 15))
-                        .shadow(color: (waiting ? MissionMark.amber(theme) : Midnight.moonlight).opacity(0.6), radius: 3)
+                    ZStack {
+                        if waiting {
+                            Image(systemName: "bell.fill")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundStyle(tint)
+                        } else {
+                            DeskCheck()
+                                .stroke(tint, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+                                .frame(width: 10, height: 8)
+                        }
+                        FourPointStar()
+                            .fill(tint)
+                            .frame(width: 3 + 3 * twinkle, height: 3 + 3 * twinkle)
+                            .opacity(0.5 + 0.5 * twinkle)
+                            .rotationEffect(.degrees(twinkle * 15))
+                            .offset(x: 6.5, y: -5.5)
+                    }
+                    .shadow(color: tint.opacity(0.35 + 0.35 * twinkle), radius: 3)
                 }
-                .frame(width: 12, height: 12)
+                .frame(width: 18, height: 14)
             } else {
                 Image(systemName: waiting ? "bell.fill" : "checkmark.circle.fill")
                     .font(.system(size: 9.5, weight: .semibold))
@@ -2009,6 +2024,17 @@ struct DeskRangMark: View {
         let minutes = Int(now.timeIntervalSince(rang.at) / 60)
         let when = minutes < 1 ? "just now" : minutes == 1 ? "a minute ago" : "\(minutes) minutes ago"
         return rang.kind == .waiting ? "A Claude here is waiting for you (\(when))" : "A Claude here finished (\(when))"
+    }
+}
+
+/// A check, as a pen draws it: down to the left, then a long stroke up to the right.
+struct DeskCheck: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.55))
+        path.addLine(to: CGPoint(x: rect.minX + rect.width * 0.36, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        return path
     }
 }
 
