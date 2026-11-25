@@ -2280,6 +2280,19 @@ final class DesktopsViewer {
         }
     }
 
+    /// Up, as four fingers up bring it (if it isn't already): a flick of the wrist up.
+    func open() {
+        putAwayIfUnseen()
+        guard !isUp || hiding != nil else { return }
+        toggle()
+    }
+
+    /// Away, if it's up: a flick of the wrist down.
+    func putAway() {
+        guard isUp, hiding == nil else { return }
+        close()
+    }
+
     func stop() {
         Trackpads.shared.stop()
         for observer in observers {

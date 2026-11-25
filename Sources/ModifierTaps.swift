@@ -33,6 +33,8 @@ struct ModifierTaps {
     static let rightCommand = (this: UInt(0x10), other: UInt(0x08))
     /// The right Shift key's, and the left's.
     static let rightShift = (this: UInt(0x04), other: UInt(0x02))
+    /// The right Option key's, and the left's.
+    static let rightOption = (this: UInt(0x40), other: UInt(0x20))
     /// Shift's: two taps quick enough not to be the start of typing a capital, thought better of.
     static let shiftGap: TimeInterval = 0.3
 
@@ -306,25 +308,21 @@ struct ModifierHold {
 }
 
 /// Listens for a `ModifierHold` everywhere, as `TapWatcher` does for taps: `began` once it's been
-/// held long enough, `going` every `every` while it still is, `ended` as it's let go.
+/// held long enough, `ended` as it's let go.
 @MainActor
 final class HoldWatcher {
     private var hold: ModifierHold
     private let after: TimeInterval
-    private let every: TimeInterval
     private let began: @MainActor () -> Void
-    private let going: @MainActor () -> Void
     private let ended: @MainActor () -> Void
     private var monitors: [Any] = []
     private var timer: Timer?
 
-    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, after: TimeInterval, every: TimeInterval,
-         began: @escaping @MainActor () -> Void, going: @escaping @MainActor () -> Void, ended: @escaping @MainActor () -> Void) {
+    init(_ key: NSEvent.ModifierFlags, side: (this: UInt, other: UInt)? = nil, after: TimeInterval,
+         began: @escaping @MainActor () -> Void, ended: @escaping @MainActor () -> Void) {
         hold = ModifierHold(key, side: side)
         self.after = after
-        self.every = every
         self.began = began
-        self.going = going
         self.ended = ended
         let events: NSEvent.EventTypeMask = [.flagsChanged, .keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
         let heard = { [weak self] (event: NSEvent) in
@@ -332,7 +330,7 @@ final class HoldWatcher {
                 guard let self else { return }
                 let over = event.type == .flagsChanged ? self.hold.changed(event.modifierFlags, at: event.timestamp) : self.hold.interrupted()
                 if over { self.ended() }
-                if self.hold.downSince != nil, !self.hold.holding { self.waitForHold() } else if !self.hold.holding { self.stopTimer() }
+                if self.hold.downSince != nil, !self.hold.holding { self.waitForHold() } else { self.stopTimer() }
             }
         }
         if let monitor = NSEvent.addGlobalMonitorForEvents(matching: events, handler: heard) { monitors.append(monitor) }
@@ -349,15 +347,7 @@ final class HoldWatcher {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.timer = nil
-                guard self.hold.check(at: ProcessInfo.processInfo.systemUptime, for: self.after) else { return }
-                self.began()
-                // Still held: told again and again, till it's let go.
-                self.timer = Timer.scheduledTimer(withTimeInterval: self.every, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        if self.hold.holding { self.going() } else { self.stopTimer() }
-                    }
-                }
+                if self.hold.check(at: ProcessInfo.processInfo.systemUptime, for: self.after) { self.began() }
             }
         }
     }

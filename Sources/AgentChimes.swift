@@ -18,6 +18,9 @@ final class AgentChimes {
 
     private var last: [String: AgentActivity] = [:]
     private var lastChime = Date.distantPast
+    /// The Claude that last finished (or began waiting for you) out of sight, as a sound would say
+    /// (sounds on or not): what the right Option key brings up.
+    private(set) var latest: (session: AgentSession, kind: Kind, at: Date)?
     static let apart: TimeInterval = 1.5
 
     /// What `from` becoming `to` sounds like, if anything: done after being at work; waiting, newly.
@@ -80,12 +83,14 @@ final class AgentChimes {
         for session in claudes { ChimeSettings.shared.saw(Self.source(of: session)) }
         SeenDesks.shared.sessions = claudes
         SeenDesks.shared.look(at: now)
-        guard Feature.agentSounds.isOn, !isOff, now.timeIntervalSince(lastChime) >= Self.apart else { return }
         let heard = claudes.compactMap { session in Self.chime(from: before[session.id], to: session.activity).map { ($0, session) } }
+        guard !heard.isEmpty else { return }
         // Waiting for you says more than done.
         // None for one you're looking at already (its app in front, and in an editor, its window).
         let unseen = heard.filter { !Self.isInFront($0.1) }
         guard let (kind, session) = unseen.first(where: { $0.0 == .waiting }) ?? unseen.first else { return }
+        latest = (session, kind, now)
+        guard Feature.agentSounds.isOn, !isOff, now.timeIntervalSince(lastChime) >= Self.apart else { return }
         lastChime = now
         // Its desktop's sound, if it has one and the desktop can be told; else its app's. Either
         // way, the desktop it came from's marked in the desktops' list (see `DeskChimes`).

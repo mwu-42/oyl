@@ -125,25 +125,38 @@ struct NotchMetrics: Equatable {
 /// What the closed notch shows on each side, and how wide each side needs to be: while Wispr Flow
 /// takes down what you say, a microphone left and your voice right. (The song, timers, agents and
 /// the rest are Oyls out on the menu bar; see `WalkerOverlay`.)
+/// What the right Shift's camera sees, for the closed notch: the shape, once it's steady, and the
+/// gesture it's just acted on.
+struct GestureWatch: Equatable {
+    var seen: HandGesture?
+    var acted: HandGesture?
+}
+
 struct CompactLayout {
     let dictating: Bool
     /// The timer held on the notch, while nothing's being dictated.
     let focus: ReminderTimer?
+    /// The right Shift held, the camera on: what it sees (over a held timer, while nothing's
+    /// being dictated).
+    let watch: GestureWatch?
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil) {
+    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil, watch: GestureWatch? = nil) {
         self.dictating = dictating
-        self.focus = dictating ? nil : focus
+        self.watch = dictating ? nil : watch
+        self.focus = dictating || watch != nil ? nil : focus
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    var isEmpty: Bool { !dictating && focus == nil }
+    var isEmpty: Bool { !dictating && focus == nil && watch == nil }
 
-    /// How far it reaches either side of the notch: for a timer, room for its name and its time.
-    var wing: CGFloat { focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
+    /// How far it reaches either side of the notch: for a timer, room for its name and its time;
+    /// for what the camera sees, its shape and what it does.
+    var wing: CGFloat { watch != nil ? Self.watchWing : focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
     static let timerWing: CGFloat = 70
+    static let watchWing: CGFloat = 86
 }
 
 @MainActor
@@ -158,6 +171,8 @@ final class NotchState: ObservableObject {
     @Published var isOff = false        // switched off by three taps of control, till three more
     @Published var isViewingDesktops = false  // Mission Control's up: the top of the screen is its
     @Published var isTakingShot = false  // an area's being picked out for an idea's screenshot: out of the way
+    /// The right Shift's held, the camera on for gestures: what it sees, on the closed notch.
+    @Published var watching: GestureWatch?
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
     @Published var pickedTimer: UUID?
     @Published var page = NotchPage.music
@@ -414,7 +429,7 @@ final class NotchState: ObservableObject {
 
     var compact: CompactLayout {
         CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
-                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil)
+                      focus: Feature.timersPage.isOn ? timers.focusedTimer : nil, watch: watching)
     }
 
     /// What Oyls are out on the menu bar for: each agent at work, the song (sung along to),
@@ -683,6 +698,7 @@ final class NotchController {
     private var commandTaps: TapWatcher?
     private var shiftTaps: TapWatcher?
     private var shiftHold: HoldWatcher?
+    private var optionHold: HoldWatcher?
     private var keyTap: KeyTap?
     private var cameraTaps: TapWatcher?
     private var missionControl: MissionControl?
@@ -847,13 +863,25 @@ final class NotchController {
                 if self.state.oylsVisible { self.walkers.fling() } else { self.state.oylsVisible = true }
             case .tiltRight:
                 if self.walkers.isLinedUp { self.walkers.scatter() } else { self.state.oylsVisible = false }
-            // A flick of the wrist: the desktops' list, as four fingers up (or away, if it's up).
-            case .flick:
+            // A flick of the wrist: up, the desktops' list, as four fingers up; down, put away.
+            case .flickUp:
                 guard !self.state.isOff else { return }
-                self.desktops?.toggle()
+                self.desktops?.open()
+            case .flickDown:
+                self.desktops?.putAway()
             default: self.state.perform(gesture)
             }
         }
+        // The right Shift's camera: what it sees, and what it's just done, on the closed notch.
+        Publishers.CombineLatest3(gestures.$heldAwake, gestures.$seen, gestures.$sighting)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] held, seen, sighting in
+                MainActor.assumeIsolated {
+                    let watch = held ? GestureWatch(seen: seen, acted: sighting?.gesture) : nil
+                    if self?.state.watching != watch { self?.state.watching = watch }
+                }
+            }
+            .store(in: &cancellables)
         // A selfie: an Oyl holds it up (you, not your screen beside you in the file), and pops it
         // up big under the menu bar for a moment.
         gestures.onSelfie = { [weak self] url, image in
@@ -988,16 +1016,20 @@ final class NotchController {
         }
         // The right Shift key held a moment on its own: the camera on, quietly, for the gestures,
         // wherever the pointer is, while it's held and for 3 s after.
-        shiftHold = HoldWatcher(.shift, side: ModifierTaps.rightShift, after: 0.5, every: 1.5, began: { [weak self] in
+        shiftHold = HoldWatcher(.shift, side: ModifierTaps.rightShift, after: 0.5, began: { [weak self] in
             guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
-            self.gestures.wake(for: 3)
-        }, going: { [weak self] in
-            guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
-            self.gestures.wake(for: 3)
+            self.gestures.holdAwake(true)
         }, ended: { [weak self] in
-            guard let self, !self.state.isOff, Feature.shiftCamera.isOn else { return }
-            self.gestures.wake(for: 3)
+            self?.gestures.holdAwake(false)
         })
+        // The right Option key held a moment on its own: the Claude that last finished (or began
+        // waiting for you), as its sound would have told, brought up.
+        optionHold = HoldWatcher(.option, side: ModifierTaps.rightOption, after: 0.5, began: { [weak self] in
+            guard let self, !self.state.isOff, Feature.optionLatest.isOn, let latest = self.chimes.latest else { return }
+            let session = self.state.agents.sessions.first { $0.id == latest.session.id } ?? latest.session
+            Haptics.perform(.alignment)
+            self.state.agents.reveal(session)
+        }, ended: {})
         // Control and Option on their own: the camera on, quietly, for the gestures, wherever the
         // pointer is, for 3 s (as soon as they're let go); twice, kept on till they're tapped
         // twice again.

@@ -45,6 +45,8 @@ enum Feature: String, CaseIterable, Sendable {
     /// The right Shift key held on its own: the camera on for the gestures while it's held, and a
     /// moment after.
     case shiftCamera
+    /// The right Option key held on its own: the Claude that last finished, brought up.
+    case optionLatest
     /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
     case themeKey
     /// And a sound as it does.
@@ -105,7 +107,7 @@ enum Feature: String, CaseIterable, Sendable {
         case .pinky: self = .pinkyGesture
         case .announce, .tiltLeft, .tiltRight: self = .oylsGesture
         case .rock: self = .rockGesture
-        case .flick: self = .flickGesture
+        case .flickUp, .flickDown: self = .flickGesture
         case .ok, .fist, .thumbsUp: return nil
         }
     }

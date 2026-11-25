@@ -22,7 +22,8 @@ enum HandGesture {
     case tiltRight // tipped over to the right: Oyls dash off to the right (or stop lining up)
     case rock      // the rock sign, the thumb and little finger out: in Midnight Oyl, makes the hand the pointer, or a hand again (see `PointerMode`)
     case fist      // does nothing, but is told apart from the rest (and lets go of the pointer's press)
-    case flick     // a flick of the wrist, the hand swung quickly over at it, any shape: the desktops' list (see `WristFlick`)
+    case flickUp   // a flick of the wrist, the fingers swung quickly up, any shape: the desktops' list (see `WristFlick`)
+    case flickDown // the fingers swung quickly down: the desktops' list put away
 
     var symbol: String {
         switch self {
@@ -41,7 +42,8 @@ enum HandGesture {
         case .tiltRight: return "eye.circle.fill"
         case .rock: return "cursorarrow.rays"
         case .fist: return "hand.raised.slash.fill"
-        case .flick: return "rectangle.stack.fill"
+        case .flickUp: return "square.stack.3d.up.fill"
+        case .flickDown: return "square.stack.3d.down.right.fill"
         }
     }
 
@@ -62,7 +64,29 @@ enum HandGesture {
         case .tiltRight: return "tilt right"
         case .rock: return "rock"
         case .fist: return "fist"
-        case .flick: return "flick"
+        case .flickUp: return "flick up"
+        case .flickDown: return "flick down"
+        }
+    }
+
+    /// What it does, in a word or two (for the closed notch, as the right Shift's camera sees it).
+    var action: String {
+        switch self {
+        case .openPalm: return "play/pause"
+        case .pointLeft: return "previous"
+        case .pointRight: return "next"
+        case .horns: return "keep awake"
+        case .pinky: return "lyrics"
+        case .pinch: return "volume"
+        case .peace: return "selfie"
+        case .ok: return "stop"
+        case .thumbsUp, .fist: return ""
+        case .announce: return "oyls say"
+        case .tiltLeft: return "line up"
+        case .tiltRight: return "send off"
+        case .rock: return "pointer"
+        case .flickUp: return "desktops"
+        case .flickDown: return "put away"
         }
     }
 
@@ -96,7 +120,7 @@ extension NotchState {
         case .pinky:
             // The lyrics (and, if they're on the bar, the music Oyl singing them there).
             toggleLyrics()
-        case .pinch, .peace, .ok, .thumbsUp, .announce, .tiltLeft, .tiltRight, .rock, .fist, .flick:
+        case .pinch, .peace, .ok, .thumbsUp, .announce, .tiltLeft, .tiltRight, .rock, .fist, .flickUp, .flickDown:
             // Handled elsewhere: GestureWatcher has a pinch call turn(by:) or scrub(by:), peace
             // take a selfie, OK stop watching, and the rock sign make the hand the pointer (a thumbs
             // up does nothing); the Oyls on the menu bar (NotchController) take the rest, and the
@@ -207,6 +231,13 @@ final class GestureWatcher: ObservableObject {
     /// gestures count as they do over the open notch, for a few seconds (`wake(for:)`) or, kept
     /// awake, till it's put back to sleep.
     @Published private(set) var keptAwake = false
+    /// Held awake from the keyboard (the right Shift held down): woken while it's held, and only a
+    /// moment after it's let go. And what it sees meanwhile, a shape once it's steady (for the
+    /// closed notch to say).
+    @Published private(set) var heldAwake = false
+    @Published private(set) var seen: HandGesture?
+    /// Let go of: done as soon as it's due, a shape still held up or no (only a pinch mid-turn waits).
+    private var endsQuickly = false
     private var wokenUntil: TimeInterval = 0
     private var waking: DispatchWorkItem?
     /// The camera's picture, for the mirror (or Midnight Oyl's bloom) to show, once it's been set
@@ -307,13 +338,33 @@ final class GestureWatcher: ObservableObject {
     private var attending: Bool { hovering || woken }
 
     /// Woken from the keyboard, and not yet gone back to sleep.
-    private var woken: Bool { keptAwake || ProcessInfo.processInfo.systemUptime < wokenUntil }
+    private var woken: Bool { keptAwake || heldAwake || ProcessInfo.processInfo.systemUptime < wokenUntil }
+
+    /// How long it lingers once the right Shift's let go: a gesture just made can finish.
+    static let afterHold: TimeInterval = 0.35
+
+    /// The camera on for the gestures while a key's held (true), or not, the key let go (false):
+    /// then only a moment longer.
+    func holdAwake(_ on: Bool) {
+        if on {
+            guard isEnabled, !isSuspended, !heldAwake else { return }
+            heldAwake = true
+        } else {
+            guard heldAwake else { return }
+            heldAwake = false
+            if seen != nil { seen = nil }
+            wokenUntil = max(wokenUntil, ProcessInfo.processInfo.systemUptime + Self.afterHold)
+            endsQuickly = true
+        }
+        wakingChanged()
+    }
 
     /// The camera on for the gestures, from wherever, for `seconds` (or longer, if it's already
     /// woken for longer, or kept awake). Not with gestures off, or while Oyl's resting.
     func wake(for seconds: TimeInterval) {
         guard isEnabled, !isSuspended else { return }
         wokenUntil = max(wokenUntil, ProcessInfo.processInfo.systemUptime + seconds)
+        endsQuickly = false
         wakingChanged()
     }
 
@@ -330,6 +381,8 @@ final class GestureWatcher: ObservableObject {
     private func forgetWaking() {
         guard woken || waking != nil else { return }
         keptAwake = false
+        heldAwake = false
+        if seen != nil { seen = nil }
         wokenUntil = 0
         wakingChanged()
     }
@@ -340,12 +393,14 @@ final class GestureWatcher: ObservableObject {
         waking?.cancel()
         waking = nil
         let left = wokenUntil - ProcessInfo.processInfo.systemUptime
-        if !keptAwake, left > 0 {
+        if !keptAwake, !heldAwake, left > 0 {
             let work = DispatchWorkItem { [weak self] in
                 MainActor.assumeIsolated {
                     guard let self else { return }
                     self.waking = nil
-                    if self.held != nil { self.wokenUntil = ProcessInfo.processInfo.systemUptime + 0.5 }
+                    if self.held == .pinch || (self.held != nil && !self.endsQuickly) {
+                        self.wokenUntil = ProcessInfo.processInfo.systemUptime + (self.endsQuickly ? 0.2 : 0.5)
+                    }
                     self.wakingChanged()
                 }
             }
@@ -490,14 +545,20 @@ final class GestureWatcher: ObservableObject {
         // A flick of the wrist, whatever shape the hand's in: the desktops' list. The shape it's
         // left in doesn't act.
         if let pose, Feature.flickGesture.isOn,
-           flick.take(angle: pose.angle, anchor: pose.anchor, size: pose.size, aspect: pose.aspect, gesture: pose.gesture, at: time) {
+           let up = flick.take(angle: pose.angle, anchor: pose.anchor, size: pose.size, aspect: pose.aspect, gesture: pose.gesture, at: time) {
             pendingAnnounce?.cancel()
             pendingAnnounce = nil
             quietUntil = now + WristFlick.rest
             hold(gesture)
-            onGesture(.flick)
-            acknowledge(.flick)
+            let flicked: HandGesture = up ? .flickUp : .flickDown
+            onGesture(flicked)
+            acknowledge(flicked)
             return
+        }
+        // What the right Shift's camera sees, for the closed notch: a shape once it's steady.
+        if heldAwake {
+            let steady = now - candidateSince >= 0.12 ? candidate : seen
+            if steady != seen { seen = steady }
         }
         if gesture != candidate {
             candidate = gesture
@@ -1257,7 +1318,7 @@ enum HandShape {
 }
 
 /// A flick of the wrist: the hand swung quickly over at it (at least `swing`, about 45°, within
-/// `within`), whatever shape it's in, the hand itself not going far (a wave moves the whole hand;
+/// `within`), up (the fingers swung to point more upward) or down, whatever shape it's in, the hand itself not going far (a wave moves the whole hand;
 /// a flick turns it where it is). The swing has to be there two frames running, so one misread
 /// frame isn't one. Not while it's a pinch (turned like a knob), the thumb on the ring finger
 /// (tipped over, the Oyls' tilt) or the rock sign: those turn the hand on purpose. Once, then not
@@ -1290,33 +1351,36 @@ struct WristFlick {
 
     /// A frame's hand: which way it points (wrist to knuckles, radians, nil if not seen), where it
     /// is (as `HandPose.anchor`), how big, the picture's width over its height, its shape; read at
-    /// `time`. Whether that's a flick: swung far enough from where it had settled, quickly, and
-    /// still there (more or less) the next frame.
+    /// `time`. Whether that's a flick, and which way (true for up): swung far enough from where it
+    /// had settled, quickly, and still there (more or less) the next frame. Nil if it isn't one.
     mutating func take(angle: Double?, anchor: CGPoint, size: CGFloat, aspect: CGFloat, gesture: HandGesture?,
-                       at time: TimeInterval) -> Bool {
+                       at time: TimeInterval) -> Bool? {
         if let gesture, [.pinch, .announce, .tiltLeft, .tiltRight, .rock].contains(gesture) {
             reset()
-            return false
+            return nil
         }
-        guard let angle, size > 0 else { return false }
+        guard let angle, size > 0 else { return nil }
         func turned(_ a: Double, _ b: Double) -> Double { abs(remainder(a - b, 2 * .pi)) }
         let settled = samples.last.map { turned(angle, $0.angle) <= 0.35 } ?? true
         samples.removeAll { time - $0.time > Self.within }
         defer { samples.append(Sample(time: time, angle: angle, anchor: anchor, settled: settled)) }
-        guard time >= restUntil else { return false }
-        let swung = samples.contains { earlier in
+        guard time >= restUntil else { return nil }
+        let from = samples.first { earlier in
             let moved = hypot((anchor.x - earlier.anchor.x) * aspect, anchor.y - earlier.anchor.y) / size
             return earlier.settled && turned(angle, earlier.angle) >= Self.swing && moved <= Self.wander
         }
+        // Which way: the fingers pointing more up than they were, or less.
+        let rise = from.map { sin(angle) - sin($0.angle) } ?? 0
+        let swung = from != nil && abs(rise) >= 0.1
         let confirmed = swung && swungTo.map { turned(angle, $0) <= 0.45 } == true
         guard confirmed else {
             swungTo = swung ? angle : nil
-            return false
+            return nil
         }
         restUntil = time + Self.rest
         samples = []
         swungTo = nil
-        return true
+        return rise > 0
     }
 }
 
