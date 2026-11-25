@@ -780,12 +780,40 @@ final class TodStore: ObservableObject {
                 // A toyl project belongs to its list: moved out of it, the task's out of it too.
                 if isToyl { task["project"] = nil }
             }
+            // A day set by hand on one that follows its calendar event: no longer the event's (as
+            // toyl does), so the event doesn't take the day back.
+            if isToyl, patch.set["due"] != nil || patch.removed.contains("due"),
+               (task["event"] as? [String: Any])?["follows"] as? Bool == true {
+                task["event"] = nil
+            }
             if isToyl { task["updatedAt"] = ms }
             self[task: id] = task
             if let done = patch.done {
                 setDone(id, done, at: ms)
+                if done, isToyl { tickOff(id) }
                 if done { repeatNext(after: id, as: patch.next, today: today, at: ms) }
             }
+        }
+
+        /// Checked off, as toyl checks one off: its subtasks ticked too, and out of an "in progress"
+        /// section, to its list's first other one.
+        private mutating func tickOff(_ id: String) {
+            guard var task = self[task: id] else { return }
+            if let subtasks = task["subtasks"] as? [Any] {
+                task["subtasks"] = subtasks.map { item -> Any in
+                    guard var subtask = item as? [String: Any] else { return item }
+                    subtask["done"] = true
+                    return subtask
+                }
+            }
+            let list = task["listId"] as? String ?? "", lane = task["columnId"] as? String ?? ""
+            if let sections = lanes[list], let name = sections.first(where: { $0.id == lane })?.name,
+               name.trimmingCharacters(in: .whitespaces).lowercased() == "in progress",
+               let other = sections.first(where: { $0.id != lane }) {
+                task["columnId"] = other.id
+                task["order"] = topOrder(in: other.id, except: id)
+            }
+            self[task: id] = task
         }
 
         mutating func remove(_ id: String) {

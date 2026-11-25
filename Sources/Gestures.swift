@@ -69,7 +69,38 @@ enum HandGesture {
         }
     }
 
-    /// What it does, in a word or two (for the closed notch, as the right Shift's camera sees it).
+    /// Every one (for the tests to check their symbols).
+    static let allShown: [HandGesture] = [.openPalm, .pointLeft, .pointRight, .horns, .pinky, .pinch, .peace, .ok, .thumbsUp,
+                                          .announce, .tiltLeft, .tiltRight, .rock, .fist, .flickUp, .flickDown]
+
+    /// The hand's shape, as a symbol (for the closed notch, as the right Shift's camera sees it):
+    /// SF Symbols has a few hands; the rest are a spread hand, a flick a waving one.
+    var shapeSymbol: String {
+        switch self {
+        case .openPalm: return "hand.raised.fill"
+        case .pointLeft: return "hand.point.left.fill"
+        case .pointRight: return "hand.point.right.fill"
+        case .pinch: return "hand.pinch.fill"
+        case .thumbsUp: return "hand.thumbsup.fill"
+        case .flickUp, .flickDown: return "hand.wave.fill"
+        default: return "hand.raised.fingers.spread.fill"
+        }
+    }
+
+    /// What it does, as a symbol (beside its shape on the closed notch); nil for one that does
+    /// nothing.
+    var actionSymbol: String? {
+        switch self {
+        case .openPalm: return "playpause.fill"
+        case .pointLeft: return "backward.fill"
+        case .pointRight: return "forward.fill"
+        case .pinch: return "speaker.wave.2.fill"
+        case .thumbsUp, .fist: return nil
+        default: return symbol
+        }
+    }
+
+    /// What it does, in a word or two.
     var action: String {
         switch self {
         case .openPalm: return "play/pause"
@@ -331,8 +362,8 @@ final class GestureWatcher: ObservableObject {
     }
 
     /// Gestures count: they're on, and the pointer's over the open notch (or the camera's been
-    /// woken from the keyboard).
-    private var reading: Bool { isEnabled && attending }
+    /// woken from the keyboard); or, gestures on or off, the right Shift's held for them.
+    private var reading: Bool { (isEnabled && attending) || heldAwake }
 
     /// The gestures count as they do with the pointer over the open notch.
     private var attending: Bool { hovering || woken }
@@ -347,7 +378,8 @@ final class GestureWatcher: ObservableObject {
     /// then only a moment longer.
     func holdAwake(_ on: Bool) {
         if on {
-            guard isEnabled, !isSuspended, !heldAwake else { return }
+            // Even with gestures turned off on the notch: holding it is asking for them.
+            guard !isSuspended, !heldAwake else { return }
             heldAwake = true
         } else {
             guard heldAwake else { return }

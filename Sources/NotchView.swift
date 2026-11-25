@@ -228,8 +228,9 @@ struct HeldTimer: View {
     }
 }
 
-/// The right Shift held, the camera on: on the closed notch, the shape it sees on the left (a hand
-/// breathing while it sees none) and what that does on the right, lit as it's done.
+/// The right Shift held, the camera on: on the closed notch, symbols only, the hand's shape it sees
+/// on the left (a hand breathing while it sees none) and what that does on the right (an eye,
+/// watching, till then), lit as it's done.
 struct WatchedHand: View {
     let watch: GestureWatch
     let size: CGSize
@@ -240,41 +241,42 @@ struct WatchedHand: View {
         let midnight = theme == .midnight
         let shown = watch.acted ?? watch.seen
         let done = watch.acted != nil
+        let lit: Color = done ? (midnight ? Midnight.starlight : .white) : .white.opacity(0.62)
         HStack(spacing: 0) {
-            HStack(spacing: 5) {
+            Group {
                 if let shown {
-                    Image(systemName: shown.symbol)
-                        .notchSymbol(size: 10.5, weight: .semibold)
+                    Image(systemName: shown.shapeSymbol)
                         .foregroundStyle(.white.opacity(done ? 1 : 0.85))
-                        .id(shown)
-                        .transition(.scale(scale: 0.6).combined(with: .opacity))
-                    Text(shown.name)
-                        .font(midnight ? Midnight.italic(11) : .system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.7))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
                 } else {
                     Image(systemName: "hand.raised")
-                        .notchSymbol(size: 10.5, weight: .semibold)
                         .foregroundStyle(.white.opacity(0.5))
                         .symbolEffect(.pulse)
                 }
             }
+            .notchSymbol(size: 12, weight: .semibold)
+            .id(shown?.shapeSymbol ?? "none")
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
             .frame(width: CompactLayout.watchWing - 10, alignment: .leading)
             Spacer(minLength: notchWidth)
-            Text(shown.map(\.action) ?? "watching")
-                .font(midnight ? Midnight.font(.heading, size: 11) : .system(size: 11, weight: .semibold, design: .rounded))
-                .foregroundStyle(done ? (midnight ? Midnight.starlight : .white) : .white.opacity(shown == nil ? 0.4 : 0.6))
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-                .frame(width: CompactLayout.watchWing - 10, alignment: .trailing)
-                .id(shown.map(\.action) ?? "watching")
-                .transition(.opacity)
+            Group {
+                if let action = shown?.actionSymbol {
+                    Image(systemName: action)
+                        .foregroundStyle(lit)
+                        .shadow(color: done && midnight ? Midnight.starlight.opacity(0.6) : .clear, radius: 3)
+                } else {
+                    Image(systemName: "eye")
+                        .foregroundStyle(.white.opacity(0.4))
+                }
+            }
+            .notchSymbol(size: 11.5, weight: .semibold)
+            .id(shown?.actionSymbol ?? "eye")
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            .frame(width: CompactLayout.watchWing - 10, alignment: .trailing)
         }
         .padding(.horizontal, 5)
         .frame(width: size.width, height: size.height)
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: watch)
-        .help("The camera's watching for gestures while the right Shift key's held")
+        .help(shown.map { "\($0.name): \($0.action)" } ?? "The camera's watching for gestures while the right Shift key's held")
     }
 }
 

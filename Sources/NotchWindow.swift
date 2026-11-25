@@ -153,10 +153,10 @@ struct CompactLayout {
     var isEmpty: Bool { !dictating && focus == nil && watch == nil }
 
     /// How far it reaches either side of the notch: for a timer, room for its name and its time;
-    /// for what the camera sees, its shape and what it does.
+    /// for what the camera sees, a symbol of its shape and one of what it does.
     var wing: CGFloat { watch != nil ? Self.watchWing : focus != nil ? Self.timerWing : inset + (isEmpty ? 0 : art) + 10 }
     static let timerWing: CGFloat = 70
-    static let watchWing: CGFloat = 86
+    static let watchWing: CGFloat = 40
 }
 
 @MainActor

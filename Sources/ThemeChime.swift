@@ -2,11 +2,11 @@ import AppKit
 
 /// What you hear and feel as Control (tapped, then held) swaps Oyl's look: Oyl's own low, round
 /// tones (see `ChimeTone`), and a tap of the trackpad (felt only with a finger on it, as all its
-/// taps are; with Haptics on). Into Midnight Oyl, nightfall: down a fifth, slow to come in, a faint
-/// shimmer of stars over it, and two soft taps. Back to Oyl's look, daybreak: up through a fifth,
-/// warm and quick, and one firm tap. ⌃ ⌃ held: its sound turns the sound off.
+/// taps are; with Haptics on). Into Midnight Oyl, moonrise: slowly up an octave, each note slow to
+/// come in, a faint shimmer of stars over the top, and two soft taps. Back to Oyl's look, daybreak:
+/// quickly up through a fifth, warm, and one firm tap. Both go up; Midnight's slower and higher. ⌃ ⌃ held: its sound turns the sound off.
 enum ThemeChime {
-    /// Nightfall: B3 down to E3, then B2 under it, with E5 and B5 faint over them, as stars.
+    /// Moonrise: E3, B3 and E4, slowly up, with B4 and E5 faint over them at the top, as stars.
     /// Daybreak: B2, E3 and B3, quickly up.
     nonisolated static func notes(toMidnight: Bool) -> [ChimeTone.Note] {
         typealias Note = ChimeTone.Note
@@ -19,11 +19,11 @@ enum ThemeChime {
         }
         let stars = [ChimeTone.Overtone(ratio: 2, level: 0.14, fade: 0.6), ChimeTone.Overtone(ratio: 6, level: 0.05, fade: 0.5)]
         return [
-            Note(pitch: 246.94, at: 0, level: 0.26, attack: 0.05, fade: 0.22, overtones: stars),
-            Note(pitch: 164.81, at: 0.16, level: 0.3, attack: 0.07, fade: 0.3, overtones: stars),
-            Note(pitch: 123.47, at: 0.32, level: 0.3, attack: 0.1, fade: 0.42, overtones: warm),
-            Note(pitch: 659.25, at: 0.36, level: 0.045, attack: 0.02, fade: 0.25, overtones: []),
-            Note(pitch: 987.77, at: 0.5, level: 0.035, attack: 0.02, fade: 0.3, overtones: []),
+            Note(pitch: 164.81, at: 0, level: 0.27, attack: 0.06, fade: 0.24, overtones: warm),
+            Note(pitch: 246.94, at: 0.17, level: 0.29, attack: 0.07, fade: 0.28, overtones: stars),
+            Note(pitch: 329.63, at: 0.34, level: 0.3, attack: 0.09, fade: 0.42, overtones: stars),
+            Note(pitch: 493.88, at: 0.42, level: 0.045, attack: 0.02, fade: 0.25, overtones: []),
+            Note(pitch: 659.25, at: 0.54, level: 0.035, attack: 0.02, fade: 0.3, overtones: []),
         ]
     }
 
