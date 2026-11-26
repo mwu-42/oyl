@@ -258,6 +258,8 @@ final class NotchState: ObservableObject {
     /// notch: Projects…), and how to open it (at a line, if it's given). Set by the controller.
     let projects = ProjectStore()
     var openProjects: (String?) -> Void = { _ in }
+    /// A notification on the open notch clicked: the page it's about, open. Set by the controller.
+    var openFromAlert: (NotchPage) -> Void = { _ in }
     /// What's being typed into the inbox page, kept while the notch is closed.
     let inboxDraft = LocalState("")
     /// The phone remote: the notch worked from a phone's browser (see `PhoneRemote`).
@@ -771,6 +773,7 @@ final class NotchController {
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
         state.takeIdeaShot = { [weak self] in self?.takeShot(for: .ideas) }
         state.openProjects = { [weak self] id in self?.openProjects(at: id) }
+        state.openFromAlert = { [weak self] page in self?.openFromAlert(page) }
         // toyl's list in use: the outline's window goes (and can't be opened) till it isn't.
         state.onSourceChange = { [weak self] in
             guard let self, self.state.usesToyl else { return }
@@ -1504,15 +1507,30 @@ final class NotchController {
     /// it), for a few seconds, or for as long as the pointer then spends over it.
     private func reveal(_ job: Walker.Job) {
         switch job {
-        case .music where state.shows(.music):
-            state.page = .music
-            state.pickedTimer = nil
-        case .timer(let timer) where state.shows(.timers):
-            state.page = .timers
-            state.pickedTimer = timer.id
-        default:
-            return
+        case .music: reveal(.music)
+        case .timer(let timer): reveal(.timers, picking: timer.id)
+        default: return
         }
+    }
+
+    /// A notification clicked (a timer's gone off): its page, open as if the pointer had opened
+    /// the notch (it's over it, to click), without its landing on some other page meanwhile, as
+    /// it would coming to a notch the notification had opened; else for a few seconds.
+    private func openFromAlert(_ page: NotchPage) {
+        if pointerInside, !state.isHovering {
+            hoverWork?.cancel()
+            state.isHovering = true
+            gestures.hovering = true
+        }
+        reveal(page)
+    }
+
+    /// `page` open (with `timer` picked out on it), for a few seconds, or for as long as the
+    /// pointer then spends over it.
+    private func reveal(_ page: NotchPage, picking timer: UUID? = nil) {
+        guard state.shows(page) else { return }
+        state.page = page
+        state.pickedTimer = timer
         state.isRevealing = true
         revealWork?.cancel()
         let work = DispatchWorkItem { [weak self] in

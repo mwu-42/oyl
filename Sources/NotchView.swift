@@ -372,15 +372,22 @@ struct ExpandedNotch: View {
             .frame(width: width, height: state.inFullscreen ? Layout.fullscreenStripHeight : notch.height)
 
             ZStack(alignment: .top) {
+                // Each clicked (anywhere but its buttons): seen to, and what it's about opened.
                 if let ringing = timers.ringing {
-                    AlertPage(timer: ringing, timers: timers)
-                        .transition(NotchView.swap)
+                    AlertPage(timer: ringing, timers: timers, opened: {
+                        timers.dismissRinging()
+                        state.openFromAlert(.timers)
+                    })
+                    .transition(NotchView.swap)
                 } else if bedtime.reminding {
                     BedtimeAlert(bedtime: bedtime)
                         .transition(NotchView.swap)
                 } else if state.showsProjects, let task = state.projects.ringing {
-                    ProjectAlert(task: task, projects: state.projects)
-                        .transition(NotchView.swap)
+                    ProjectAlert(task: task, projects: state.projects, opened: {
+                        state.projects.dismissRinging()
+                        state.openProjects(task.id)
+                    })
+                    .transition(NotchView.swap)
                 } else {
                     switch state.page {
                     case .music:

@@ -259,10 +259,16 @@ struct TimerRow: View {
 }
 
 /// Shown in place of the pages when a timer finishes, until it's stopped or snoozed: in the blue
-/// its ring has deepened to by then (paled to ice in Midnight Oyl).
+/// its ring has deepened to by then (paled to ice in Midnight Oyl). Clicked anywhere but its
+/// buttons, it's stopped and the timers' page opened (`opened`).
 struct AlertPage: View {
     let timer: ReminderTimer
     @ObservedObject var timers: TimerStore
+    var opened: () -> Void = {}
+    /// Drawn as if pointed at (for a picture of it).
+    var pointed = false
+    /// Pointed at: it says it can be clicked.
+    @StateObject private var hovered = LocalState(false)
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
@@ -275,9 +281,11 @@ struct AlertPage: View {
                 .frame(width: 34, height: 34)
                 .background(Circle().fill(alarm.opacity(0.16)))
             VStack(alignment: .leading, spacing: 1) {
-                Text("Time's up")
-                    .notchFont(size: 13, weight: .semibold)
-                    .foregroundStyle(.white)
+                OpensTab(hovered: hovered.value || pointed) {
+                    Text("Time's up")
+                        .notchFont(size: 13, weight: .semibold)
+                        .foregroundStyle(.white)
+                }
                 Text(timer.label.isEmpty ? "\(Self.describe(timer.duration)) timer" : timer.label)
                     .notchFont(size: 10.5)
                     .foregroundStyle(.white.opacity(0.6))
@@ -290,6 +298,7 @@ struct AlertPage: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 8)
+        .opensTab(hovered: hovered, opened)
     }
 
     private func pill(_ title: String, foreground: Color, background: Color, bright: Bool = true,
@@ -314,6 +323,35 @@ struct AlertPage: View {
         let days = hours / 24, hoursOver = hours % 24
         if hoursOver == 0 && rest == 0 { return "\(days)-day" }
         return "\(days) d" + (hoursOver > 0 ? " \(hoursOver) h" : "") + (rest > 0 ? " \(rest) min" : "")
+    }
+}
+
+/// A notification's title, with a small chevron after it as it's pointed at: clicking it opens
+/// what it's about (its tab, or its window).
+struct OpensTab<Title: View>: View {
+    let hovered: Bool
+    @ViewBuilder let title: () -> Title
+
+    var body: some View {
+        HStack(spacing: 4) {
+            title()
+            Image(systemName: "chevron.right")
+                .notchSymbol(size: 9, weight: .bold)
+                .foregroundStyle(.white.opacity(0.55))
+                .opacity(hovered ? 1 : 0)
+                .offset(x: hovered ? 0 : -3)
+                .animation(.easeOut(duration: 0.18), value: hovered)
+        }
+    }
+}
+
+extension View {
+    /// The whole of a notification takes a click (its buttons keep theirs): `opened`, and it
+    /// says it's pointed at.
+    func opensTab(hovered: LocalState<Bool>, _ opened: @escaping () -> Void) -> some View {
+        contentShape(Rectangle())
+            .onHover { hovered.value = $0 }
+            .onTapGesture(perform: opened)
     }
 }
 
