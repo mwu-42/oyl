@@ -1794,6 +1794,7 @@ final class PointerOverlay {
         unborn = [true, true]
         asking = needsAccess
         window.orderFrontRegardless()
+        EverySpace.rejoin(window)
         dial.begin()
     }
 

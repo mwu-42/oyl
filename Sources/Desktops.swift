@@ -2238,6 +2238,8 @@ final class DesktopsViewer {
     /// A swipe being followed, and which way.
     private var following: Bool?
     private var hiding: DispatchWorkItem?
+    /// While it's up, it's looked for twice a second: out of sight, it isn't left up (see `watch`).
+    private var watching: Timer?
     private var readingApps: Task<Void, Never>?
     private var observers: [Any] = []
     /// Whether it can come up now (not while Oyl's off, or nothing can be seen).
@@ -2335,6 +2337,7 @@ final class DesktopsViewer {
             Self.log.notice("The desktops' list came up as the desktop changed (\(String(format: "%.2f", upFor), privacy: .public) s up): brought along to this one")
             panel.orderOut(nil)
             panel.orderFrontRegardless()
+            EverySpace.rejoin(panel, on: screen)
             panel.makeKey()
         }
         load()
@@ -2407,6 +2410,8 @@ final class DesktopsViewer {
             if up, !isUp || hiding != nil, isAllowed(), !MissionControlSwipe.isTheSystems() {
                 following = true
                 if !isUp { show() } else { cancelHiding() }
+                // (It couldn't be: nothing to follow them with.)
+                if !isUp { following = nil }
             } else if !up, isUp, hiding == nil {
                 following = false
             } else {
@@ -2436,7 +2441,7 @@ final class DesktopsViewer {
     /// as away, so four fingers up (which it leaves alone while it's up) and right Shift twice
     /// bring it up again rather than doing nothing.
     private func putAwayIfUnseen() {
-        guard isUp, hiding == nil, following == nil, !(panel.isVisible && panel.isOnActiveSpace) else { return }
+        guard isUp, hiding == nil, following == nil, !isSeen else { return }
         Self.log.notice("The desktops' list was up but not to be seen: put away")
         hide()
     }
@@ -2513,12 +2518,24 @@ final class DesktopsViewer {
         panel.setFrame(screen.frame, display: false)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
+        // On every Space, as it can have been left on just some, out of sight on the rest.
+        EverySpace.rejoin(panel, on: screen)
+        guard panel.isOnActiveSpace else {
+            // Not to be seen here even so: not up at all, so three fingers up aren't held back.
+            Self.log.notice("The desktops' list couldn't be put on this desktop: not up")
+            panel.orderOut(nil)
+            return
+        }
         panel.makeKey()
         isUp = true
         shownAt = Date()
         // Three fingers up (or down) don't open Mission Control (or App Exposé) over it.
         DockSwipes.shared.block(true)
         Self.log.notice("The desktops' list up")
+        watching?.invalidate()
+        watching = Timer.scheduledTimer(withTimeInterval: Self.watchEvery, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.watch() }
+        }
         load()
     }
 
@@ -2529,12 +2546,33 @@ final class DesktopsViewer {
         Self.log.notice("Mission Control's gone with the desktops' list up: brought to the front again")
         panel.orderOut(nil)
         panel.orderFrontRegardless()
+        EverySpace.rejoin(panel, on: screen)
         panel.makeKey()
     }
+
+    nonisolated static let watchEvery: TimeInterval = 0.5
+
+    /// Up, but out of sight (not on the Space showing, however it came to be): put back on every
+    /// Space and in front; out of sight still, away, as it's holding three fingers up back.
+    private func watch() {
+        guard isUp, hiding == nil, following == nil, !isSeen else { return }
+        EverySpace.rejoin(panel, on: screen)
+        panel.orderFrontRegardless()
+        if isSeen {
+            Self.log.notice("The desktops' list was up out of sight: brought back to this desktop")
+        } else {
+            Self.log.notice("The desktops' list was up out of sight and couldn't be brought back: put away")
+            hide()
+        }
+    }
+
+    private var isSeen: Bool { panel.isVisible && panel.isOnActiveSpace }
 
     private func hide() {
         hiding?.cancel()
         hiding = nil
+        watching?.invalidate()
+        watching = nil
         readingApps?.cancel()
         readingApps = nil
         readingAgents?.cancel()

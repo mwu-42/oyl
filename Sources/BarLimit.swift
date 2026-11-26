@@ -67,7 +67,10 @@ final class BarLimit {
             going?.cancel()
             going = nil
             place()
-            if !panel.isVisible { panel.orderFrontRegardless() }
+            if !panel.isVisible {
+                panel.orderFrontRegardless()
+                EverySpace.rejoin(panel)
+            }
             if !model.shown { withAnimation(BarLimitView.ease(model.theme)) { model.shown = true } }
         } else if model.shown || panel.isVisible {
             if model.shown { withAnimation(BarLimitView.ease(model.theme)) { model.shown = false } }

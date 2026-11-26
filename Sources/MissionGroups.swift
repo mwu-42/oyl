@@ -291,7 +291,13 @@ final class MissionGroups {
                 withTransaction(still) { entry.model.marks = marks }
             }
         }
-        if !entry.panel.isVisible { entry.panel.orderFrontRegardless() }
+        if !entry.panel.isVisible {
+            entry.panel.orderFrontRegardless()
+            // On every Space, as it can have been left on just some, out of sight on the rest.
+            EverySpace.rejoin(entry.panel, on: screen)
+        } else if !entry.panel.isOnActiveSpace {
+            EverySpace.rejoin(entry.panel, on: screen)
+        }
         if !entry.model.shown { withAnimation(Self.ease(theme).delay(0.05)) { entry.model.shown = true } }
     }
 

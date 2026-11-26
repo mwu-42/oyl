@@ -162,6 +162,7 @@ final class ScreenshotHold {
         model.hovered = false
         model.shown = false
         panel.orderFrontRegardless()
+        EverySpace.rejoin(panel)
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             withAnimation(Self.ease(self.theme)) { self.model.shown = true }

@@ -804,6 +804,11 @@ final class NotchController {
             }
         }
         updateFullscreen()
+        // On another Space: each of Oyl's windows that's to be on every one, on this one too (see
+        // `EverySpace`), whether it's up now or not.
+        workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { _ in
+            MainActor.assumeIsolated { EverySpace.rejoinAll() }
+        }
         for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification] {
             center.addObserver(forName: name, object: panel, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.keyStatusChanged() }

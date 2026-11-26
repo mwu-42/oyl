@@ -98,6 +98,7 @@ final class ClosedLyrics {
         self.paused = false
         model.live = true
         panel.orderFrontRegardless()
+        EverySpace.rejoin(panel)
     }
 
     /// Gone straight away (back behind the notch, quickly).

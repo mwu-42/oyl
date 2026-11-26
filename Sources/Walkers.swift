@@ -643,6 +643,7 @@ final class WalkerOverlay {
     /// ticks its timelines unless they're paused.)
     private func showPanel() {
         panel.orderFrontRegardless()
+        EverySpace.rejoin(panel)
         updatePause()
     }
 
