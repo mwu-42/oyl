@@ -3,7 +3,8 @@ import ApplicationServices
 import os
 
 /// While the desktops' list is up, the Dock's swipes up and down are held back: three fingers up
-/// (Mission Control) and down (App Exposé) don't open over it. Across, between Spaces, still goes
+/// (Mission Control) and down (App Exposé) don't open over it (three down put the list away
+/// instead, read off the trackpad: see `DesktopsViewer`). Across, between Spaces, still goes
 /// through, as do pinches. An event tap on the Dock's own events (the kind Oyl posts to go
 /// straight to a Space, see `InstantSpaces`), which needs Oyl allowed in Accessibility; on a
 /// thread of its own, so a swipe never waits on anything else Oyl's doing; and only on while the

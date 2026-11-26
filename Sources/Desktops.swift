@@ -28,10 +28,14 @@ enum DesktopSwipe: Equatable {
 
 /// Makes four-finger swipes up and down out of the trackpad's frames. Four fingers down, then
 /// moving mostly up or down (across is the system's, between Spaces), and they're followed as they
-/// go; it's over as soon as one lifts, and nothing more's made of them till they're all off. (Three
-/// are left alone: they're Mission Control's, and the hand pointer's.)
+/// go; it's over as soon as one lifts, and nothing more's made of them till they're all off; with
+/// more down than that at any time, nothing's made of them either till they're all off (so the
+/// three left as four lift unevenly are never a swipe of three). (Three are left to the system
+/// but for two things: seeing Mission Control's swipe begin, and three down putting the
+/// desktops' list away, as four down do.)
 struct SwipeRecognizer {
-    /// How many fingers (four for Oyl's own; three to see Mission Control's swipe begin).
+    /// How many fingers (four for Oyl's own; three to see Mission Control's swipe begin, and three
+    /// down to put the list away).
     static let fingers = 4
     let count: Int
 
@@ -56,7 +60,11 @@ struct SwipeRecognizer {
     mutating func frame(touching: Int, x: Double, y: Double, at time: Double) -> [DesktopSwipe] {
         switch phase {
         case .idle:
-            if touching == count { phase = .watching(x: x, y: y) }
+            if touching == count {
+                phase = .watching(x: x, y: y)
+            } else if touching > count {
+                phase = .done
+            }
             return []
         case .watching(let startX, let startY):
             guard touching == count else {
@@ -110,6 +118,8 @@ final class Trackpads: @unchecked Sendable {
     @MainActor var swiped: (DesktopSwipe) -> Void = { _ in }
     /// Told as three fingers begin up (Mission Control's swipe, which macOS answers itself).
     @MainActor var threeUp: () -> Void = {}
+    /// Told of each three-finger swipe up or down (three down put the desktops' list away).
+    @MainActor var swipedThree: (DesktopSwipe) -> Void = { _ in }
 
     private typealias Callback = @convention(c) (UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32, Double, Int32) -> Int32
     private typealias CreateList = @convention(c) () -> Unmanaged<CFArray>?
@@ -222,9 +232,12 @@ final class Trackpads: @unchecked Sendable {
         let (swipes, threes) = lock.withLock {
             (recognizer.frame(touching: touching, x: x, y: y, at: time), three.frame(touching: touching, x: x, y: y, at: time))
         }
-        if threes.contains(.began(up: true)) {
+        if !threes.isEmpty {
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { Trackpads.shared.threeUp() }
+                MainActor.assumeIsolated {
+                    if threes.contains(.began(up: true)) { Trackpads.shared.threeUp() }
+                    for swipe in threes { Trackpads.shared.swipedThree(swipe) }
+                }
             }
         }
         guard !swipes.isEmpty else { return }
@@ -2221,9 +2234,9 @@ final class DesktopsHostingView: NSHostingView<DesktopsView> {
 }
 
 /// Four fingers up brings it up, following them; let go most of the way (or quickly), it's up,
-/// else it goes back down. Right Shift twice brings it up too. Four fingers down, right Shift
-/// twice, Escape, or a click off the list puts it away; a click on a desktop, at once, as you go
-/// straight there.
+/// else it goes back down. Right Shift twice brings it up too. Four fingers down (or three, as
+/// App Exposé's held back while it's up), right Shift twice, Escape, or a click off the list puts
+/// it away; a click on a desktop, at once, as you go straight there.
 @MainActor
 final class DesktopsViewer {
     let model = DesktopsModel()
@@ -2237,6 +2250,8 @@ final class DesktopsViewer {
     private var shownAt = Date.distantPast
     /// A swipe being followed, and which way.
     private var following: Bool?
+    /// The swipe followed is three fingers down.
+    private var threeDown = false
     private var hiding: DispatchWorkItem?
     /// While it's up, it's looked for twice a second: out of sight, it isn't left up (see `watch`).
     private var watching: Timer?
@@ -2355,6 +2370,7 @@ final class DesktopsViewer {
     func readTrackpads(_ on: Bool) {
         if on {
             Trackpads.shared.swiped = { [weak self] swipe in self?.swiped(swipe) }
+            Trackpads.shared.swipedThree = { [weak self] swipe in self?.swipedThree(swipe) }
             Trackpads.shared.start()
         } else {
             Trackpads.shared.stop()
@@ -2435,6 +2451,23 @@ final class DesktopsViewer {
             following = nil
             settle(open: !up)
         }
+    }
+
+    /// Three fingers down with it up: away, following them, as four fingers down put it (App
+    /// Exposé, the Dock's own for three down, held back meanwhile: see `DockSwipes`). Three up, or
+    /// three down with it away, are left to the system.
+    private func swipedThree(_ swipe: DesktopSwipe) {
+        if case .began(let up) = swipe {
+            threeDown = !up && isUp && hiding == nil && following == nil
+            guard threeDown else { return }
+            Self.log.notice("Three fingers down with the desktops' list up: away with them")
+        }
+        guard threeDown else { return }
+        switch swipe {
+        case .ended, .cancelled: threeDown = false
+        case .began, .moved: break
+        }
+        swiped(swipe)
     }
 
     /// Up, as far as it knows, but not to be seen (put away by something else meanwhile): taken
@@ -2578,6 +2611,7 @@ final class DesktopsViewer {
         readingAgents?.cancel()
         readingAgents = nil
         following = nil
+        threeDown = false
         panel.orderOut(nil)
         if isUp { Self.log.notice("The desktops' list away") }
         isUp = false
