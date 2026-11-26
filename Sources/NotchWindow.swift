@@ -1037,8 +1037,12 @@ final class NotchController {
         // Option (either one) held a moment on its own: the Claude that last finished (or began
         // waiting for you), as its sound would have told, brought up.
         optionHold = HoldWatcher(.option, after: 0.5, began: { [weak self] in
-            guard let self, !self.state.isOff, Feature.optionLatest.isOn, let latest = self.chimes.latest else { return }
-            let session = self.state.agents.sessions.first { $0.id == latest.session.id } ?? latest.session
+            guard let self, !self.state.isOff, Feature.optionLatest.isOn else { return }
+            // The latest still running (one that's quit has nothing to bring up).
+            guard let session = self.chimes.latest(among: self.state.agents.sessions) else {
+                LatestClaude.log.notice("Option held: no Claude that's finished is running still")
+                return
+            }
             Haptics.perform(.alignment)
             // Straight to its desktop, with no slide through the rest, nothing rearranged.
             LatestClaude.go(to: session) { [weak self] in self?.state.agents.reveal(session) }

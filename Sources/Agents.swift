@@ -44,8 +44,8 @@ enum AgentActivity: Equatable, Sendable {
 
 struct AgentSession: Identifiable, Equatable {
     let id: String          // Claude Code's session ID
-    var project: String     // the folder it's working in
-    var cwd: String?        // …in full
+    var project: String     // the folder it began in (its window's, in an editor)
+    var cwd: String?        // …in full (see `SessionFolder`)
     var host: String?       // the app it runs in, like "VS Code"
     var activity: AgentActivity
     var detail: String?     // what exactly, like "Editing NotchView.swift"
@@ -67,6 +67,43 @@ struct AgentSession: Identifiable, Equatable {
 /// and written nothing in its transcript, for `quiet` is looked at there: one whose turn's over
 /// isn't. (Its transcript, rather than how busy it is: thinking at length, it can be still for
 /// minutes.) The others (in a browser, an app, run as a program) are looked at all the time anyway.
+/// The folder a Claude Code session began in, from wherever it's working now: it can move into a
+/// folder inside that one (a `cd` it keeps), and its window (an editor's, for its folder), its name
+/// and the desktop it's remembered on are still the first folder's. Its conversation's kept under
+/// that one's name, as Claude Code makes it (its path with everything but ASCII letters and digits
+/// made a "-"), so it's the folder, up from where it is now, whose name that is.
+enum SessionFolder {
+    nonisolated static func key(of path: String) -> String {
+        String(path.utf16.map { unit -> Character in
+            let letterOrDigit = (0x30...0x39).contains(unit) || (0x41...0x5A).contains(unit) || (0x61...0x7A).contains(unit)
+            return letterOrDigit ? Character(UnicodeScalar(UInt8(unit))) : "-"
+        })
+    }
+
+    /// The folder (`cwd`, or one it's in) a conversation kept at `transcript` began in, if it can be told.
+    nonisolated static func starting(_ cwd: String, transcript: String?) -> String? {
+        guard let transcript else { return nil }
+        let parts = transcript.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard let at = parts.lastIndex(where: { $0 == "projects" }), at + 2 < parts.count else { return nil }
+        let wanted = parts[at + 1]
+        var folder = cwd.count > 1 && cwd.hasSuffix("/") ? String(cwd.dropLast()) : cwd
+        while !folder.isEmpty {
+            if key(of: folder) == wanted { return folder }
+            guard folder != "/" else { break }
+            folder = (folder as NSString).deletingLastPathComponent
+        }
+        return nil
+    }
+
+    /// Where a session's to be taken to be, told it's working in `cwd`: the folder it began in;
+    /// else, not to be told, the one it was in already if `cwd`'s inside it, or `cwd`.
+    nonisolated static func folder(_ cwd: String, transcript: String?, had: String?) -> String {
+        if let started = starting(cwd, transcript: transcript) { return started }
+        if let had, cwd.hasPrefix(had.hasSuffix("/") ? had : had + "/") { return had }
+        return cwd
+    }
+}
+
 enum AgentLife {
     static let quiet: TimeInterval = 45
 
@@ -506,12 +543,14 @@ final class AgentMonitor: ObservableObject {
             var session = index.map { sessions[$0] }
                 ?? AgentSession(id: event.session, project: "Claude", cwd: nil, host: nil, activity: .idle, detail: nil,
                                 since: now, lastEvent: now, pid: 0)
+            if let transcript = event.transcript { session.transcript = transcript }
             if let cwd = event.cwd {
-                session.cwd = cwd
-                session.project = (cwd as NSString).lastPathComponent
+                // The folder it began in, however far into it it's gone since.
+                let folder = SessionFolder.folder(cwd, transcript: session.transcript, had: session.cwd)
+                session.cwd = folder
+                session.project = (folder as NSString).lastPathComponent
             }
             if let host = event.host { session.host = host }
-            if let transcript = event.transcript { session.transcript = transcript }
             if event.pid > 0 { session.pid = event.pid }
             session.lastEvent = now
             if let activity = event.activity {

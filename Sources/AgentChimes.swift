@@ -18,10 +18,30 @@ final class AgentChimes {
 
     private var last: [String: AgentActivity] = [:]
     private var lastChime = Date.distantPast
-    /// The Claude that last finished (or began waiting for you) out of sight, as a sound would say
-    /// (sounds on or not): what the right Option key brings up.
-    private(set) var latest: (session: AgentSession, kind: Kind, at: Date)?
+    /// The Claudes that last finished (or began waiting for you) out of sight, as a sound would say
+    /// (sounds on or not), the latest last, each once: the latest still running is what holding
+    /// Option brings up (see `latest(among:)`).
+    private var recent: [AgentSession] = []
     static let apart: TimeInterval = 1.5
+    static let remembered = 8
+
+    /// The latest Claude to have finished (or begun waiting) that's still running, as it is now
+    /// among `sessions`: one that's quit has nothing to bring up (opening its folder would only
+    /// open it afresh), so the one before it, if that's still running.
+    func latest(among sessions: [AgentSession]) -> AgentSession? {
+        Self.pick(recent, current: sessions) { pid in kill(pid, 0) == 0 || errno != ESRCH }
+    }
+
+    /// Of `recent` (the latest last), the latest still running, as it is in `current`: by its
+    /// process, if it's known, else by its being in `current` still.
+    nonisolated static func pick(_ recent: [AgentSession], current: [AgentSession], isRunning: (Int32) -> Bool) -> AgentSession? {
+        for old in recent.reversed() {
+            let now = current.first { $0.id == old.id }
+            let session = now ?? old
+            if session.pid > 0 ? isRunning(session.pid) : now != nil { return session }
+        }
+        return nil
+    }
 
     /// What `from` becoming `to` sounds like, if anything: done after being at work; waiting, newly.
     nonisolated static func chime(from old: AgentActivity?, to new: AgentActivity) -> Kind? {
@@ -89,7 +109,9 @@ final class AgentChimes {
         // None for one you're looking at already (its app in front, and in an editor, its window).
         let unseen = heard.filter { !Self.isInFront($0.1) }
         guard let (kind, session) = unseen.first(where: { $0.0 == .waiting }) ?? unseen.first else { return }
-        latest = (session, kind, now)
+        recent.removeAll { $0.id == session.id }
+        recent.append(session)
+        if recent.count > Self.remembered { recent.removeFirst(recent.count - Self.remembered) }
         guard Feature.agentSounds.isOn, !isOff, now.timeIntervalSince(lastChime) >= Self.apart else { return }
         lastChime = now
         // Its desktop's sound, if it has one and the desktop can be told; else its app's. Either
@@ -609,19 +631,32 @@ enum LatestClaude {
     private static var arriving: (observer: Any, timeout: DispatchWorkItem)?
 
     static func go(to session: AgentSession, fallback: @escaping @MainActor () -> Void) {
-        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier else { return fallback() }
+        let host = session.host ?? "?"
+        guard let pid = (session.pid > 0 ? AgentWindow.hostApp(of: session.pid) : nil)?.processIdentifier else {
+            log.notice("Option held: a Claude in \(host, privacy: .public), its app not found: the usual way")
+            return fallback()
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             let number = SessionDesk.space(of: session, app: pid)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let space = number.flatMap(SessionDesk.desktop) ?? SeenDesks.shared.desk(of: session),
+                    let found = number.flatMap(SessionDesk.desktop)
+                    guard let space = found ?? SeenDesks.shared.desk(of: session),
                           let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main,
-                          let display = FullscreenSpace.display(for: screen) else { return fallback() }
+                          let display = FullscreenSpace.display(for: screen) else {
+                        log.notice("Option held: a Claude in \(host, privacy: .public), its desktop not found: the usual way")
+                        return fallback()
+                    }
                     let all = Spaces.all(in: display, boot: Spaces.bootTime) { NSRunningApplication(processIdentifier: $0)?.localizedName }
                     let keys = SpaceGroups.keys(of: space)
                     guard let from = all.current,
                           let target = all.spaces.firstIndex(where: { SpaceGroups.keys(of: $0).contains(where: keys.contains) })
-                    else { return fallback() }
+                    else {
+                        log.notice("Option held: a Claude in \(host, privacy: .public), its desktop gone: the usual way")
+                        return fallback()
+                    }
+                    let how = found != nil ? "by its windows" : "where last seen"
+                    log.notice("Option held: a Claude in \(host, privacy: .public), \(how, privacy: .public), desktop \(target + 1)\(target == from ? " (here)" : "", privacy: .public)")
                     guard target != from else { return raise(session, pid: pid) }
                     InstantSpaces.go(from: from, to: target, on: screen)
                     whenThere { raise(session, pid: pid) }
@@ -629,6 +664,8 @@ enum LatestClaude {
             }
         }
     }
+
+    static let log = Logger(subsystem: "local.nott", category: "chimes")
 
     /// Once the Space has changed (or a moment's gone by, if it doesn't say).
     private static func whenThere(_ then: @escaping @MainActor () -> Void) {
