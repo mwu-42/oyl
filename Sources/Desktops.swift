@@ -1073,8 +1073,8 @@ final class DesktopsModel: ObservableObject {
 /// on a desktop still called by its number, and their icons; a row pointed at is lit (right-click it
 /// to rename it); a group's heading a small bold name after a chevron, its desktops in under it. In
 /// Midnight Oyl's the
-/// screen goes to night (stars twinkling over ink), and the list's set off to the left under its
-/// title in a flourish, the names in Superclarendon strung down a line of stars that bows out and
+/// screen goes to night (stars twinkling over ink), and the list's set off to the left, with no
+/// title, the names in Superclarendon strung down a line of stars that bows out and
 /// back, the one you're on lit by a glint; they drift in one after another out of a blur, and a
 /// group's heading is a little constellation, its desktops further along the line.
 struct DesktopsView: View {
@@ -1149,7 +1149,7 @@ private struct PlainDesks: View {
     }
 }
 
-/// Midnight's: off to the left of the middle, under its title.
+/// Midnight's: off to the left of the middle, the time over it, and no title.
 private struct MidnightDesks: View {
     @ObservedObject var model: DesktopsModel
 
@@ -1164,18 +1164,6 @@ private struct MidnightDesks: View {
                     .animation(model.settle(delay: 0.05), value: model.progress)
                     .padding(.bottom, 6)
             }
-            HStack(spacing: 9) {
-                FourPointStar()
-                    .fill(Midnight.starlight)
-                    .frame(width: 9, height: 9)
-                Text("the desktops")
-                    .font(Midnight.flourish(19))
-                    .foregroundStyle(Midnight.silver.opacity(0.72))
-            }
-            .opacity(shown)
-            .offset(x: -(1 - shown) * 30)
-            .blur(radius: (1 - shown) * 4)
-            .animation(model.settle(), value: model.progress)
             DesktopsRows(model: model)
             DesksHint(model: model)
                 .opacity(shown)
