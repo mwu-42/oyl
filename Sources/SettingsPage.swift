@@ -172,6 +172,18 @@ struct SettingsPage: View {
             if Feature.agentSounds.isOn {
                 // Each place a Claude's been seen running, and everywhere else: click to hear it, ‹ › for another.
                 let chimes = ChimeSettings.shared
+                // How loud: ‹ › by a tenth, clicked to hear it (as the first place's sound).
+                let heard = { chimes.voice(for: chimes.sources.first ?? ChimeSettings.elsewhere).play(.done, midnight: midnight) }
+                items.append(SettingItem(id: "chime volume", title: "🔊 Volume: \(chimes.volumeSaid)",
+                                         hint: "How loud the sounds are, of the Mac's own volume: ‹ › a tenth quieter or louder, from 10% to 150% (past 100%, Oyl's own tones louder still; macOS's and the sounds folder's are at their loudest by then); click to hear it",
+                                         action: heard, isButton: true,
+                                         adjust: (down: {
+                                             chimes.stepVolume(by: -1)
+                                             heard()
+                                         }, up: {
+                                             chimes.stepVolume(by: 1)
+                                             heard()
+                                         })))
                 for source in chimes.sources + [ChimeSettings.elsewhere] {
                     items.append(SettingItem(id: "chime " + source, title: "🔔 \(source): \(chimes.says(source))",
                                              hint: "Click to hear it; ‹ › for another: Oyl's tones, any sound file in its sounds folder, macOS's, or none",

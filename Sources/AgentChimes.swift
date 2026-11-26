@@ -296,11 +296,13 @@ struct ChimeVoice: Equatable, Identifiable {
     @MainActor private static var made: [String: NSSound] = [:]
 
     @MainActor
-    func sound(_ kind: AgentChimes.Kind, midnight: Bool) -> NSSound? {
+    func sound(_ kind: AgentChimes.Kind, midnight: Bool, volume: Double? = nil) -> NSSound? {
         if id.hasPrefix("tone:") {
-            let key = "\(id)-\(kind)-\(midnight)"
+            // Past all of the Mac's volume, made louder itself.
+            let louder = max(volume ?? ChimeSettings.shared.volume, 1)
+            let key = "\(id)-\(kind)-\(midnight)-\(louder)"
             if let made = Self.made[key] { return made }
-            let made = NSSound(data: ChimeTone.wav(ChimeTone.notes(kind, style: String(id.dropFirst(5)), midnight: midnight)))
+            let made = NSSound(data: ChimeTone.wav(ChimeTone.notes(kind, style: String(id.dropFirst(5)), midnight: midnight), louder: louder))
             Self.made[key] = made
             return made
         }
@@ -311,10 +313,13 @@ struct ChimeVoice: Equatable, Identifiable {
         return nil
     }
 
+    /// At the volume it's set to (see `ChimeSettings.volume`).
     @MainActor
     func play(_ kind: AgentChimes.Kind, midnight: Bool) {
-        guard let sound = sound(kind, midnight: midnight) else { return }
+        let volume = ChimeSettings.shared.volume
+        guard let sound = sound(kind, midnight: midnight, volume: volume) else { return }
         if sound.isPlaying { sound.stop() }
+        sound.volume = Float(min(volume, 1))
         sound.play()
     }
 }
@@ -334,8 +339,15 @@ final class ChimeSettings: ObservableObject {
     static let most = 12
 
     static let desksKey = "chimes.desks"
+    static let volumeKey = "chimes.volume"
+    /// How loud they can be made, of how they are to begin with (as they always were): a tenth, to
+    /// half again (past all of it, Oyl's own tones louder still, as far as they go unclipped; macOS's
+    /// and the sounds folder's are at their loudest by then).
+    nonisolated static let volumes = 0.1...1.5
 
     @Published private(set) var sources: [String]
+    /// How loud the sounds are, of the Mac's own volume, in tenths: 1 as they always were.
+    @Published private(set) var volume: Double
     @Published private(set) var voices: [String: String]
     /// Desktops' own sounds, by what they're kept under (see `SpaceGroups.keys`).
     @Published private(set) var desks: [String: String]
@@ -346,7 +358,22 @@ final class ChimeSettings: ObservableObject {
         sources = defaults.stringArray(forKey: Self.sourcesKey) ?? []
         voices = defaults.dictionary(forKey: Self.voicesKey) as? [String: String] ?? [:]
         desks = defaults.dictionary(forKey: Self.desksKey) as? [String: String] ?? [:]
+        volume = defaults.object(forKey: Self.volumeKey) == nil ? 1 : Self.stepped(defaults.double(forKey: Self.volumeKey), by: 0)
     }
+
+    /// `volume` a tenth louder or quieter, `steps` times, kept in range.
+    nonisolated static func stepped(_ volume: Double, by steps: Int) -> Double {
+        let tenths = (volume * 10).rounded() + Double(steps)
+        return min(max(tenths / 10, volumes.lowerBound), volumes.upperBound)
+    }
+
+    func stepVolume(by steps: Int) {
+        volume = Self.stepped(volume, by: steps)
+        defaults.set(volume, forKey: Self.volumeKey)
+    }
+
+    /// What the volume's row says it is.
+    var volumeSaid: String { "\(Int((volume * 100).rounded()))%" }
 
     var hasDeskSounds: Bool { !desks.isEmpty }
 
@@ -504,9 +531,19 @@ enum ChimeTone {
         return out.map { min(max($0, -1), 1) }
     }
 
-    /// As a WAV file's bytes.
-    nonisolated static func wav(_ notes: [Note]) -> Data {
-        let pcm = samples(notes).map { Int16(($0 * Double(Int16.max)).rounded()) }
+    /// As loud as a tone's made: just under full, so it never clips.
+    nonisolated static let loudest = 0.98
+
+    /// `samples` `louder` times as loud (1 or more), as far as they go short of `loudest`.
+    nonisolated static func louder(_ samples: [Double], by louder: Double) -> [Double] {
+        guard louder > 1, let peak = samples.map(abs).max(), peak > 0 else { return samples }
+        let gain = min(louder, max(loudest / peak, 1))
+        return samples.map { $0 * gain }
+    }
+
+    /// As a WAV file's bytes, `louder` times as loud as it's made (see `louder(_:by:)`).
+    nonisolated static func wav(_ notes: [Note], louder gain: Double = 1) -> Data {
+        let pcm = louder(samples(notes), by: gain).map { Int16(($0 * Double(Int16.max)).rounded()) }
         var data = Data()
         func put<T: FixedWidthInteger>(_ value: T) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
         data.append(contentsOf: Array("RIFF".utf8)); put(UInt32(36 + pcm.count * 2))
