@@ -24,9 +24,10 @@ final class SystemStats: ObservableObject {
         var ownMemory = 0.0
     }
 
-    @Published private(set) var snapshot = Snapshot()
+    /// (Set only by sampling, and by the tests' pictures.)
+    @Published var snapshot = Snapshot()
     /// Recent CPU readings, oldest first, for the graph.
-    @Published private(set) var history: [Double] = []
+    @Published var history: [Double] = []
 
     private static let interval = 2.0
     private let sampler = Sampler()
@@ -222,10 +223,10 @@ struct ActivityPage: View {
         }
     }
 
-    private var system: some View {
+    var system: some View {
         let now = stats.snapshot
         return HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 5) {
                 metric("CPU") {
                     Sparkline(values: stats.history)
                         .frame(width: 92, height: 16)
@@ -246,7 +247,9 @@ struct ActivityPage: View {
                     }
                 }
             }
-            VStack(alignment: .leading, spacing: 4) {
+            // Its figures whole: the busiest apps' names give way instead.
+            .fixedSize(horizontal: true, vertical: false)
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Busiest")
                     .notchFont(size: 10, weight: .semibold)
                     .foregroundStyle(tint.opacity(0.7))
@@ -371,7 +374,13 @@ struct ClaudeUsageRows: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             tokens
-            if features.isOn(.claudeLimit) { ClaudeWindowRow(reading: limit.reading) }
+            if features.isOn(.claudeLimit) {
+                // One for each of your accounts, each in its own color, named if there's more than one.
+                let several = limit.accounts.count > 1
+                ForEach(Array(limit.accounts.enumerated()), id: \.element.id) { index, account in
+                    ClaudeWindowRow(reading: limit.readings[account.id], account: several ? account : nil, mark: index)
+                }
+            }
             if let totals, totals.today > 0 || totals.lastFiveHours > 0 { spent(totals) }
             if features.isOn(.commitTimeline) { CommitRow() }
         }
@@ -466,49 +475,72 @@ struct ClaudeUsageRows: View {
 }
 
 /// How much of Claude's 5-hour limit window is used, in the page's pink (see `ClaudeLimit`): a bar
-/// filling in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets.
+/// filling in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets. With more
+/// than one account, a row for each: "5 hours" over them, each named, and each in a color of its
+/// own (see `hue`): Claude Code's own in the pink, the next in sky blue.
 struct ClaudeWindowRow: View {
     let reading: ClaudeLimit.Reading?
+    /// Whose it is, if it's one of several; and which of them (for its color, and "5 hours" on
+    /// the first).
+    var account: ClaudeAccount? = nil
+    var mark = 0
     var now = Date()
     @Environment(\.notchTheme) private var theme
 
+    /// An account's color, by its place among them: the page's pink, sky blue, mint, lavender.
+    static func hue(_ mark: Int) -> Color {
+        let hues = [ActivityPage.tint, Color(red: 0.4, green: 0.74, blue: 1), Color(red: 0.5, green: 0.9, blue: 0.68),
+                    Color(red: 0.74, green: 0.62, blue: 1)]
+        return hues[((mark % hues.count) + hues.count) % hues.count]
+    }
+
     var body: some View {
-        // The page's pink, as everything on it is.
-        let orange = theme.tint(ActivityPage.tint)
+        // The page's pink, as everything on it is; the window in its account's color (the pink too, for
+        // the first).
+        let label = theme.tint(ActivityPage.tint)
+        let color = theme.tint(Self.hue(mark))
         let reading = self.reading.flatMap { $0.isCurrent(at: now) ? $0 : nil }
         let fraction = reading.map { min(max(Double($0.percent) / 100, 0), 1) } ?? 0
         return HStack(spacing: 8) {
-            Text("5 hours")
+            Text(mark == 0 ? "5 hours" : "")
                 .notchFont(size: 11, weight: .medium)
-                .foregroundStyle(orange.opacity(0.85))
+                .foregroundStyle(label.opacity(0.85))
                 .frame(width: 54, alignment: .leading)
             Group {
                 if theme == .midnight {
                     WaxingMoon(fraction: fraction)
-                        .fill(orange.opacity(0.9))
-                        .background(Circle().strokeBorder(orange.opacity(0.3), lineWidth: 0.75))
-                        .shadow(color: orange.opacity(0.2 + 0.4 * fraction), radius: 2 + 3 * fraction)
+                        .fill(color.opacity(0.9))
+                        .background(Circle().strokeBorder(color.opacity(0.3), lineWidth: 0.75))
+                        .shadow(color: color.opacity(0.2 + 0.4 * fraction), radius: 2 + 3 * fraction)
                         .frame(width: 13, height: 13)
                         .frame(width: 92, alignment: .leading)
                 } else {
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(orange.opacity(0.18))
-                            Capsule().fill(orange).frame(width: geometry.size.width * fraction)
+                            Capsule().fill(color.opacity(0.18))
+                            Capsule().fill(color).frame(width: geometry.size.width * fraction)
                         }
                     }
                     .frame(width: 92, height: 5)
                 }
             }
-            Text(reading.map(ClaudeLimit.short) ?? "not read yet")
-                .notchFont(size: 11, weight: .medium, digits: true)
-                .foregroundStyle(orange.opacity(reading == nil ? 0.5 : 0.95))
-                .lineLimit(1)
-                .contentTransition(.numericText(value: Double(reading?.percent ?? 0)))
+            HStack(spacing: 6) {
+                if let account {
+                    Text(account.name)
+                        .notchFont(size: 11, weight: .semibold)
+                        .foregroundStyle(color)
+                }
+                Text(reading.map(ClaudeLimit.short) ?? "not read yet")
+                    .notchFont(size: 11, weight: .medium, digits: true)
+                    .foregroundStyle(color.opacity(reading == nil ? 0.5 : 0.95))
+                    .contentTransition(.numericText(value: Double(reading?.percent ?? 0)))
+            }
+            .lineLimit(1)
         }
         .frame(height: 16)
         .animation(theme == .midnight ? .timingCurve(0.45, 0, 0.25, 1, duration: 1.2) : .easeOut(duration: 0.3), value: reading?.percent)
-        .help(reading.map(ClaudeLimit.describe) ?? "Claude's 5-hour limit window, as Claude Code's /usage says")
+        .help(reading.map { ClaudeLimit.describe($0, account: account) }
+              ?? "\(account.map { "Your \($0.name) account's" } ?? "Claude's") 5-hour limit window, as Claude Code's /usage says")
         // Right-click: where else it shows, and starting it early.
         .contentShape(Rectangle())
         .settingsMenu(.notch) {

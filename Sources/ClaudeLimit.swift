@@ -5,9 +5,10 @@ import os
 /// How much of Claude's 5-hour limit window is used, for the usage page: Claude Code's own
 /// `/usage`, which it answers itself in a second or two (no prompt, no model: it asks Anthropic for
 /// the plan's usage, as it signs in), read every few minutes ("Current session: 87% used · resets
-/// Nov 23 at 11:09pm"). Read again soon after an agent's done, when the Mac wakes, and as the
-/// window resets; not while Oyl's resting. Should what comes back ever stop being a usage report,
-/// it's asked only once an hour (in case `/usage` ever became a prompt, which would spend some).
+/// Nov 23 at 11:09pm"), for each of your accounts (see `ClaudeAccount`), one after another. Read
+/// again soon after an agent's done, when the Mac wakes, and as a window resets; not while Oyl's
+/// resting. Should what an account's comes back ever stop being a usage report, it's asked only
+/// once an hour (in case `/usage` ever became a prompt, which would spend some).
 @MainActor
 final class ClaudeLimit: ObservableObject {
     static let shared = ClaudeLimit()
@@ -24,7 +25,15 @@ final class ClaudeLimit: ObservableObject {
         func isCurrent(at now: Date) -> Bool { resets.map { $0 > now } ?? (now.timeIntervalSince(at) < 5 * 3600) }
     }
 
+    /// Your accounts, Claude Code's own first; and each one's window, by its `id`.
+    @Published private(set) var accounts: [ClaudeAccount] = [.default]
+    @Published private(set) var readings: [String: Reading] = [:]
+    /// Claude Code's own account's (the one started early each morning, see `MorningStart`).
     @Published private(set) var reading: Reading?
+
+    /// How many rows the usage page has for them: one an account (for its height, see `Layout`).
+    nonisolated static var rows: Int { counted.withLock { $0 } }
+    private nonisolated static let counted = OSAllocatedUnfairLock(initialState: 1)
 
     /// Read while it's shown anywhere: on the usage page, or on the bar.
     static var isWanted: Bool { Feature.claudeLimit.isOn || Feature.claudeLimitBar.isOn }
@@ -32,7 +41,7 @@ final class ClaudeLimit: ObservableObject {
     /// How often it's read, and how soon again after something's happened.
     static let every: TimeInterval = 3 * 60
     static let soonest: TimeInterval = 30
-    static let backedOff: TimeInterval = 3600
+    nonisolated static let backedOff: TimeInterval = 3600
 
     var isResting = false {
         didSet { if isResting != oldValue { isResting ? stop() : schedule(in: 1) } }
@@ -41,12 +50,16 @@ final class ClaudeLimit: ObservableObject {
     private var timer: Timer?
     private var asking = false
     private var lastAsked: Date?
-    private var misread = 0
+    /// An account's, by its `id`: how many times running it hasn't said, and when it was last
+    /// asked.
+    private var misread: [String: Int] = [:]
+    private var askedEach: [String: Date] = [:]
     private var observers: [Any] = []
     private var following: AnyCancellable?
     private static let log = Logger(subsystem: "local.nott", category: "claude-limit")
 
     func start() {
+        found(ClaudeAccount.all())
         observers = [
             NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.schedule(in: 5) }
@@ -59,6 +72,7 @@ final class ClaudeLimit: ObservableObject {
                     guard let self else { return }
                     if Self.isWanted { self.schedule(in: 1) } else {
                         self.stop()
+                        self.readings = [:]
                         self.reading = nil
                     }
                 }
@@ -66,15 +80,20 @@ final class ClaudeLimit: ObservableObject {
         schedule(in: 1)
     }
 
-    /// Read now, whatever the settings (for the windows started one after another, see
-    /// `MorningStart`): `done` told what it says, nil if it didn't say.
+    /// The current window of each account that has one, in order (Claude Code's own first).
+    func current(at now: Date = Date()) -> [(account: ClaudeAccount, reading: Reading)] {
+        accounts.compactMap { account in readings[account.id].flatMap { $0.isCurrent(at: now) ? (account, $0) : nil } }
+    }
+
+    /// Read now, whatever the settings, for Claude Code's own account (for the windows started
+    /// one after another, see `MorningStart`): `done` told what it says, nil if it didn't say.
     func readNow(_ done: @escaping @MainActor (Reading?) -> Void) {
         DispatchQueue.global(qos: .utility).async {
-            let result = ClaudeCode.run("/usage", patience: 30)
+            let result = ClaudeCode.run("/usage", account: .default, patience: 30)
             let read: Reading? = if case .success(let output) = result, output.status == 0 { Self.parse(output.said) } else { nil }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    if let read, read != self.reading { self.reading = read }
+                    if let read { self.set(read, for: .default) }
                     done(read)
                 }
             }
@@ -104,39 +123,80 @@ final class ClaudeLimit: ObservableObject {
         self.timer = timer
     }
 
+    private struct Asked {
+        let account: ClaudeAccount
+        let read: Reading?
+        let answered: Bool
+    }
+
+    /// Whether the account with this `id` is left till the hour's up (it's twice not said).
+    nonisolated static func isBackedOff(misread: Int, asked: Date?, now: Date) -> Bool {
+        misread >= 2 && (asked.map { now.timeIntervalSince($0) < backedOff } ?? false)
+    }
+
     private func ask() {
         guard !asking, Self.isWanted, !isResting else { return }
         asking = true
-        lastAsked = Date()
+        let now = Date()
+        lastAsked = now
+        let misread = self.misread, askedEach = self.askedEach
         DispatchQueue.global(qos: .utility).async {
-            let result = ClaudeCode.run("/usage", patience: 30)
-            let read: Reading? = if case .success(let output) = result, output.status == 0 { Self.parse(output.said) } else { nil }
-            let answered = if case .success(let output) = result { output.status == 0 } else { false }
+            let accounts = ClaudeAccount.all()
+            let results = accounts.compactMap { account -> Asked? in
+                guard !Self.isBackedOff(misread: misread[account.id] ?? 0, asked: askedEach[account.id], now: now) else { return nil }
+                let result = ClaudeCode.run("/usage", account: account, patience: 30)
+                let read: Reading? = if case .success(let output) = result, output.status == 0 { Self.parse(output.said) } else { nil }
+                let answered = if case .success(let output) = result { output.status == 0 } else { false }
+                return Asked(account: account, read: read, answered: answered)
+            }
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self.asked(read, answered: answered) }
+                MainActor.assumeIsolated { self.asked(accounts, results, at: now) }
             }
         }
     }
 
-    private func asked(_ read: Reading?, answered: Bool) {
+    private func asked(_ accounts: [ClaudeAccount], _ results: [Asked], at asked: Date) {
         asking = false
+        found(accounts)
         let now = Date()
-        if let read {
-            misread = 0
-            Self.log.info("Claude's 5-hour window: \(read.percent)% used")
-            if read != reading { reading = read }
-        } else if answered {
-            // Answered, but not with a usage report (no window going, or something else entirely).
-            misread += 1
-            if reading?.isCurrent(at: now) != true { reading = nil }
-            if misread == 2 { Self.log.notice("Claude Code's /usage didn't say how much of the window is used: asking hourly") }
-        } else if reading?.isCurrent(at: now) != true {
-            reading = nil
+        for result in results {
+            let account = result.account
+            askedEach[account.id] = asked
+            if let read = result.read {
+                misread[account.id] = 0
+                Self.log.info("Claude's 5-hour window (\(account.name, privacy: .public)): \(read.percent)% used")
+                set(read, for: account)
+            } else if result.answered {
+                // Answered, but not with a usage report (no window going, or something else entirely).
+                misread[account.id, default: 0] += 1
+                if readings[account.id]?.isCurrent(at: now) != true { set(nil, for: account) }
+                if misread[account.id] == 2 {
+                    Self.log.notice("Claude Code's /usage didn't say how much of \(account.name, privacy: .public)'s window is used: asking hourly")
+                }
+            } else if readings[account.id]?.isCurrent(at: now) != true {
+                set(nil, for: account)
+            }
         }
-        var next = misread >= 2 ? Self.backedOff : Self.every
-        // Read again just after it resets.
-        if let resets = reading?.resets, resets > now { next = min(next, resets.timeIntervalSince(now) + 15) }
+        let resting = accounts.allSatisfy { Self.isBackedOff(misread: misread[$0.id] ?? 0, asked: askedEach[$0.id], now: now) }
+        var next = resting ? Self.backedOff : Self.every
+        // Read again just after one resets.
+        if let resets = readings.values.compactMap(\.resets).filter({ $0 > now }).min() {
+            next = min(next, resets.timeIntervalSince(now) + 15)
+        }
         schedule(in: next)
+    }
+
+    /// The accounts there are now: any that's gone, its window forgotten.
+    private func found(_ accounts: [ClaudeAccount]) {
+        if accounts != self.accounts { self.accounts = accounts }
+        Self.counted.withLock { $0 = max(accounts.count, 1) }
+        let ids = Set(accounts.map(\.id))
+        for id in readings.keys where !ids.contains(id) { readings[id] = nil }
+    }
+
+    private func set(_ read: Reading?, for account: ClaudeAccount) {
+        if readings[account.id] != read { readings[account.id] = read }
+        if account.isDefault, read != reading { reading = read }
     }
 
     // MARK: Reading what it says
@@ -199,9 +259,11 @@ final class ClaudeLimit: ObservableObject {
         return used + " · resets " + formatter.string(from: resets).replacingOccurrences(of: "\u{202F}", with: " ")
     }
 
-    /// "87% of Claude's 5-hour window used · resets 11:09 PM", for the notch's hint.
-    nonisolated static func describe(_ reading: Reading) -> String {
-        let used = "\(reading.percent)% of Claude's 5-hour window used"
+    /// "87% of Claude's 5-hour window used · resets 11:09 PM", for the notch's hint: of
+    /// `account`'s ("87% of your personal account's 5-hour window used"), if it's one of several.
+    nonisolated static func describe(_ reading: Reading, account: ClaudeAccount? = nil) -> String {
+        let whose = account.map { "your \($0.name) account's" } ?? "Claude's"
+        let used = "\(reading.percent)% of \(whose) 5-hour window used"
         guard let resets = reading.resets else { return used }
         let formatter = DateFormatter()
         formatter.timeStyle = .short

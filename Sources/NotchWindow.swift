@@ -7,10 +7,14 @@ enum Layout {
     static let artSize: CGFloat = 94
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
-    /// (With a row under Claude's tokens for what they'd cost, and one for its 5-hour window.)
-    static var activityHeight: CGFloat { 172 + (Feature.claudeLimit.isOn ? 24 : 0) + (Feature.commitTimeline.isOn ? 24 : 0) }
-    /// The system's part of it, over Claude's rows.
-    static let activitySystemHeight: CGFloat = 172 - 22 - 24
+    /// (With a row under Claude's tokens for what they'd cost, and one for each account's 5-hour
+    /// window.)
+    static var activityHeight: CGFloat {
+        activitySystemHeight + 46 + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0) + (Feature.commitTimeline.isOn ? 24 : 0)
+    }
+    /// The system's part of it, over Claude's rows: four close rows, so there's room for each
+    /// account and GitHub.
+    static let activitySystemHeight: CGFloat = 80
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.
     static let githubHeight: CGFloat = 54
     static var activityWithGitHub: CGFloat { activityHeight + 8 + githubHeight }
