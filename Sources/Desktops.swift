@@ -727,6 +727,9 @@ final class DesktopsModel: ObservableObject {
     @Published var picksSounds = false
     /// The time over the list (with it on).
     @Published var showsClock = true
+    /// Midnight's sky: which of its stars are joined into constellations this time (new each time
+    /// the list comes up, see `DesktopsSky`), and when it came up, for them to be drawn in from.
+    @Published var sky = DesktopsSky.Opening(seed: 7, at: .distantPast)
     /// The desktops a sound's just come from (see `DeskChimes`): which, and when.
     @Published var rang: [String: DeskChimes.Rang] = [:]
 
@@ -1098,7 +1101,7 @@ struct DesktopsView: View {
                 // Moonlight off to the upper right, as the band's sky has it.
                 RadialGradient(colors: [Midnight.moonlight.opacity(0.09), .clear], center: UnitPoint(x: 0.78, y: 0.05), startRadius: 0,
                                endRadius: model.size.width * 0.6)
-                DesktopsStars(size: model.size)
+                DesktopsStars(size: model.size, opening: model.sky)
             }
         } else {
             Color.black.opacity(0.28)
@@ -2155,28 +2158,225 @@ private struct DesktopGlint: View {
     }
 }
 
-/// Midnight's sky behind the desktops: stars twinkling, each at its own pace.
+/// Midnight's sky behind the desktops: its stars, where they always are, each twinkling at its own
+/// pace, and a few constellations of the bright ones close together, new each time the list comes
+/// up. Each's grown from a star picked at random, out to one of the two nearest it hasn't got yet
+/// (the nearest, mostly) that's close enough to one it has, four to seven stars long (three, if
+/// there aren't more near), its lines never crossing another's, and kept a little apart from the
+/// rest; none where the list's own column is, where they'd run through its names. As the list
+/// comes up they're drawn in, one after another and line by line, a spark at each line's tip, each
+/// star brightening as its line reaches it; then they breathe.
+enum DesktopsSky {
+    struct Star: Equatable {
+        let point: CGPoint
+        let base: Double
+        let rate: Double
+        let phase: Double
+    }
+
+    /// From a star a constellation had to the next it took in.
+    struct Line: Equatable {
+        let from: Int
+        let to: Int
+    }
+
+    struct Constellation: Equatable {
+        /// Its stars, by their places in the sky's, the one it grew from first, then each as it was
+        /// taken in.
+        var stars: [Int]
+        /// In the order they're drawn: each line to the star after it in `stars`.
+        var lines: [Line]
+    }
+
+    /// The sky as the list came up: which constellations (by `seed`), and when.
+    struct Opening: Equatable {
+        let seed: UInt64
+        let at: Date
+    }
+
+    nonisolated static let count = 160
+    /// How many constellations, at most.
+    nonisolated static let most = 6
+    /// How many stars each wants.
+    nonisolated static let sizes = 4...7
+    /// Bright enough to be in one.
+    nonisolated static let brightest = 0.5
+
+    /// Every star, where it always is (as it always was).
+    nonisolated static func stars(in size: CGSize) -> [Star] {
+        var seed: UInt64 = 7
+        func next() -> Double {
+            seed = seed &* 6364136223846793005 &+ 1442695040888963407
+            return Double(seed >> 11) / Double(1 << 53)
+        }
+        return (0..<count).map { _ in
+            let x = next() * size.width, y = next() * size.height
+            return Star(point: CGPoint(x: x, y: y), base: 0.3 + next() * 0.8, rate: 0.4 + next() * 1.6, phase: next() * 2 * .pi)
+        }
+    }
+
+    /// How near two stars have to be to be joined: a little over the usual way between the bright ones.
+    nonisolated static func reach(in size: CGSize, bright: Int) -> CGFloat {
+        1.4 * (size.width * size.height / CGFloat(max(bright, 1))).squareRoot()
+    }
+
+    /// Across, where the list's column is (Midnight's, off to the left of the middle), and a margin.
+    nonisolated static func clear(in size: CGSize) -> ClosedRange<CGFloat> {
+        let left = size.width * 0.19
+        return (left - 40)...(left + 470 + 50)
+    }
+
+    /// Whether two lines cross (meeting at an end isn't crossing).
+    nonisolated static func crosses(_ a: (CGPoint, CGPoint), _ b: (CGPoint, CGPoint)) -> Bool {
+        func side(_ p: CGPoint, _ q: CGPoint, _ r: CGPoint) -> CGFloat { (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x) }
+        let one = side(b.0, b.1, a.0), two = side(b.0, b.1, a.1), three = side(a.0, a.1, b.0), four = side(a.0, a.1, b.1)
+        return (one > 0 && two < 0 || one < 0 && two > 0) && (three > 0 && four < 0 || three < 0 && four > 0)
+    }
+
+    /// This time's constellations, by `seed`.
+    nonisolated static func constellations(of stars: [Star], in size: CGSize, seed: UInt64) -> [Constellation] {
+        var state = seed
+        func next() -> Double {
+            state &+= 0x9E3779B97F4A7C15
+            var z = state
+            z = (z ^ (z >> 30)) &* 0xBF58476D1CE4E5B9
+            z = (z ^ (z >> 27)) &* 0x94D049BB133111EB
+            return Double((z ^ (z >> 31)) >> 11) / Double(1 << 53)
+        }
+        func distance(_ a: Int, _ b: Int) -> CGFloat { hypot(stars[a].point.x - stars[b].point.x, stars[a].point.y - stars[b].point.y) }
+        let bright = stars.indices.filter { stars[$0].base >= brightest }
+        let reach = reach(in: size, bright: bright.count)
+        let clear = clear(in: size), inset = min(size.width, size.height) * 0.04
+        let open = bright.filter { index in
+            let point = stars[index].point
+            return !clear.contains(point.x) && point.x > inset && point.x < size.width - inset && point.y > inset && point.y < size.height - inset
+        }
+        var taken = Set<Int>(), tried = Set<Int>()
+        var drawn: [(CGPoint, CGPoint)] = []
+        var all: [Constellation] = []
+        // Not right by another's stars.
+        func apart(_ index: Int) -> Bool { taken.allSatisfy { distance($0, index) >= reach * 0.55 } }
+        while all.count < most {
+            let free = open.filter { !taken.contains($0) && !tried.contains($0) && apart($0) }
+            guard !free.isEmpty else { break }
+            let start = free[min(Int(next() * Double(free.count)), free.count - 1)]
+            tried.insert(start)
+            let wanted = sizes.lowerBound + min(Int(next() * Double(sizes.count)), sizes.count - 1)
+            var members = [start], lines: [Line] = [], segments: [(CGPoint, CGPoint)] = []
+            while members.count < wanted {
+                var options: [(star: Int, from: Int, distance: CGFloat)] = []
+                for candidate in free where !members.contains(candidate) {
+                    guard let near = members.map({ (from: $0, distance: distance($0, candidate)) }).min(by: { $0.distance < $1.distance }),
+                          near.distance <= reach else { continue }
+                    let segment = (stars[near.from].point, stars[candidate].point)
+                    guard !(drawn + segments).contains(where: { crosses($0, segment) }) else { continue }
+                    options.append((candidate, near.from, near.distance))
+                }
+                guard !options.isEmpty else { break }
+                options.sort { $0.distance < $1.distance }
+                let pick = options.count > 1 && next() < 0.35 ? options[1] : options[0]
+                members.append(pick.star)
+                lines.append(Line(from: pick.from, to: pick.star))
+                segments.append((stars[pick.from].point, stars[pick.star].point))
+            }
+            // Too few near it to be one.
+            guard members.count >= 3 else { continue }
+            taken.formUnion(members)
+            drawn += segments
+            all.append(Constellation(stars: members, lines: lines))
+        }
+        return all
+    }
+
+    /// After the list's come up: when the first's first line begins, the next constellation after
+    /// the one before, and each line after the one before in it; and how long each takes to draw.
+    nonisolated static let first: TimeInterval = 0.45
+    nonisolated static let between: TimeInterval = 0.32
+    nonisolated static let each: TimeInterval = 0.24
+    nonisolated static let drawing: TimeInterval = 0.42
+
+    /// When a constellation's line begins to be drawn, after the list's come up.
+    nonisolated static func begins(_ constellation: Int, line: Int) -> TimeInterval {
+        first + between * Double(constellation) + each * Double(line)
+    }
+
+    /// When each joined star's lit, after the list's come up: the first of each as its first line
+    /// sets out, each other as its line reaches it.
+    nonisolated static func lit(_ constellations: [Constellation]) -> [Int: TimeInterval] {
+        var lit: [Int: TimeInterval] = [:]
+        for (index, constellation) in constellations.enumerated() {
+            if let first = constellation.stars.first { lit[first] = begins(index, line: 0) }
+            for (line, joined) in constellation.lines.enumerated() { lit[joined.to] = begins(index, line: line) + drawing }
+        }
+        return lit
+    }
+
+    /// 0 to 1, eased in and out.
+    nonisolated static func eased(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+}
+
+/// Midnight's sky behind the desktops, as `DesktopsSky` lays it out.
 private struct DesktopsStars: View {
     let size: CGSize
+    let opening: DesktopsSky.Opening
+    /// How far short of a star a line stops.
+    private static let gap: CGFloat = 3.5
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in
+        let stars = DesktopsSky.stars(in: size)
+        let constellations = DesktopsSky.constellations(of: stars, in: size, seed: opening.seed)
+        let lit = DesktopsSky.lit(constellations)
+        let at = opening.at.timeIntervalSinceReferenceDate
+        TimelineView(.animation(minimumInterval: 1.0 / 30)) { timeline in
             let time = timeline.date.timeIntervalSinceReferenceDate
-            Canvas { context, size in
-                var seed: UInt64 = 7
-                func next() -> Double {
-                    seed = seed &* 6364136223846793005 &+ 1442695040888963407
-                    return Double(seed >> 11) / Double(1 << 53)
+            let since = time - at
+            Canvas { context, _ in
+                // The lines first, under their stars.
+                for (index, constellation) in constellations.enumerated() {
+                    let breath = 0.78 + 0.22 * sin(time * 0.55 + Double(index) * 1.7)
+                    for (number, line) in constellation.lines.enumerated() {
+                        let drawn = DesktopsSky.eased((since - DesktopsSky.begins(index, line: number)) / DesktopsSky.drawing)
+                        guard drawn > 0 else { continue }
+                        let from = stars[line.from].point, to = stars[line.to].point
+                        let length = hypot(to.x - from.x, to.y - from.y)
+                        guard length > 2 * Self.gap else { continue }
+                        let along = CGPoint(x: (to.x - from.x) / length, y: (to.y - from.y) / length)
+                        let start = CGPoint(x: from.x + along.x * Self.gap, y: from.y + along.y * Self.gap)
+                        let reach = (length - 2 * Self.gap) * drawn
+                        let tip = CGPoint(x: start.x + along.x * reach, y: start.y + along.y * reach)
+                        var path = Path()
+                        path.move(to: start)
+                        path.addLine(to: tip)
+                        var stroke = context
+                        stroke.opacity = 0.3 * breath
+                        stroke.stroke(path, with: .color(Midnight.starlight), lineWidth: 0.75)
+                        // A spark at its tip as it's drawn.
+                        if drawn < 1 {
+                            var spark = context
+                            spark.opacity = 0.75 * (1 - drawn)
+                            spark.fill(Path(ellipseIn: CGRect(x: tip.x - 1.2, y: tip.y - 1.2, width: 2.4, height: 2.4)), with: .color(Midnight.starlight))
+                        }
+                    }
                 }
-                for _ in 0..<160 {
-                    let x = next() * size.width, y = next() * size.height
-                    let base = 0.3 + next() * 0.8, rate = 0.4 + next() * 1.6, phase = next() * 2 * .pi
-                    let twinkle = 0.5 + 0.5 * sin(time * rate + phase)
-                    let radius = base * (0.7 + 0.5 * twinkle)
-                    var star = context
-                    star.opacity = 0.15 + 0.55 * twinkle * base
-                    star.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: 2 * radius, height: 2 * radius)),
-                              with: .color(Midnight.starlight))
+                for (index, star) in stars.enumerated() {
+                    let twinkle = 0.5 + 0.5 * sin(time * star.rate + star.phase)
+                    let glow = lit[index].map { DesktopsSky.eased((since - $0) / 0.5) } ?? 0
+                    let radius = star.base * (0.7 + 0.5 * twinkle) * (1 + 0.45 * glow)
+                    let x = star.point.x, y = star.point.y
+                    if glow > 0 {
+                        var halo = context
+                        halo.opacity = 0.09 * glow
+                        let around = radius * 3.2
+                        halo.fill(Path(ellipseIn: CGRect(x: x - around, y: y - around, width: 2 * around, height: 2 * around)),
+                                  with: .color(Midnight.starlight))
+                    }
+                    var dot = context
+                    dot.opacity = min(0.15 + 0.55 * twinkle * star.base + 0.3 * glow, 1)
+                    dot.fill(Path(ellipseIn: CGRect(x: x - radius, y: y - radius, width: 2 * radius, height: 2 * radius)),
+                             with: .color(Midnight.starlight))
                 }
             }
         }
@@ -2548,6 +2748,10 @@ final class DesktopsViewer {
         model.renaming = nil
         model.desks = []
         model.showsClock = Feature.desktopsClock.isOn
+        // Midnight's sky: new constellations each time it comes up, drawn in from now (at once,
+        // with motion reduced).
+        let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        model.sky = DesktopsSky.Opening(seed: .random(in: 1...UInt64.max), at: still ? .distantPast : Date())
         panel.setFrame(screen.frame, display: false)
         panel.alphaValue = 1
         panel.orderFrontRegardless()
