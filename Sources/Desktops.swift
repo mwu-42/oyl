@@ -2840,7 +2840,8 @@ final class DesktopsViewer {
         EverySpace.rejoin(panel, on: screen)
         guard panel.isOnActiveSpace else {
             // Not to be seen here even so: not up at all, so three fingers up aren't held back.
-            Self.log.notice("The desktops' list couldn't be put on this desktop: not up")
+            let on = SpaceApps.spaces(ofWindow: CGWindowID(max(panel.windowNumber, 0)))
+            Self.log.notice("The desktops' list couldn't be put on this desktop (it's on \(on.count) of \(EverySpace.spaces(on: screen).count) Spaces): not up")
             panel.orderOut(nil)
             return
         }

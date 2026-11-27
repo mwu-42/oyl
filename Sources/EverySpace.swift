@@ -12,9 +12,11 @@ import os
 @MainActor
 enum EverySpace {
     /// Of `all` (a display's Spaces), the ones a window that's on `have` is missing: none if it's on
-    /// none (not up yet: it joins every one as it first comes in).
-    nonisolated static func missing(from have: [Int], all: [Int]) -> [Int] {
-        guard !have.isEmpty else { return [] }
+    /// none and isn't `shown` (not up yet: it joins every one as it first comes in); every one if it's
+    /// up and on none (the window server's left it off all of them, as it's been seen to with the
+    /// desktops' list).
+    nonisolated static func missing(from have: [Int], all: [Int], shown: Bool = false) -> [Int] {
+        guard !have.isEmpty || shown else { return [] }
         let had = Set(have)
         return all.filter { !had.contains($0) }
     }
@@ -48,7 +50,7 @@ enum EverySpace {
               let connection, let add else { return [] }
         let number = CGWindowID(window.windowNumber)
         let have = SpaceApps.spaces(ofWindow: number)
-        let lost = missing(from: have, all: all)
+        let lost = missing(from: have, all: all, shown: window.isVisible)
         guard !lost.isEmpty else { return [] }
         let error = add(connection(), [NSNumber(value: number)] as CFArray, lost.map { NSNumber(value: $0) } as CFArray)
         log.notice("\(String(describing: type(of: window)), privacy: .public) \(Int(window.frame.width))×\(Int(window.frame.height)) was on \(have.count) of \(all.count) Spaces: put back on the other \(lost.count)\(error == 0 ? "" : " (the window server said \(error))", privacy: .public)")
