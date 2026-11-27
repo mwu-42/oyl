@@ -166,7 +166,7 @@ struct BarLimitView: View {
 
     /// An account's color, for its initial (and its moon, in Midnight's): the usage page's for it.
     static func hue(_ window: Window, theme: NotchTheme) -> Color {
-        theme.tint(ClaudeWindowRow.hue(window.mark), urgent: true)
+        ClaudeWindowRow.color(window.mark, theme: theme)
     }
 
     /// How wide it is: its words, and room round them (and another moon's, for each window more).

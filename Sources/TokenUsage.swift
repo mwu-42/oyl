@@ -1,9 +1,11 @@
 import Foundation
 
 /// How many tokens Claude Code has been using, and what they'd cost at Anthropic's API prices
-/// (see `ClaudePrice`), added up from the transcripts it keeps in ~/.claude/projects. Read every
-/// 30 seconds while the Activity page is open (and not at all otherwise), and only what was
-/// written since the last look.
+/// (see `ClaudePrice`), added up from the transcripts it keeps for each of your accounts (see
+/// `ClaudeAccount`: ~/.claude/projects, ~/.claude-personal/projects), over the last 30 days (as
+/// long as Claude Code keeps them, to begin with): today hour by hour and each day, account by
+/// account. Read every 30 seconds while the usage page is open (and not at all otherwise), and
+/// only what was written since the last look.
 @MainActor
 final class TokenUsage: ObservableObject {
     struct Totals: Equatable {
@@ -25,6 +27,22 @@ final class TokenUsage: ObservableObject {
         var hourlySpend = [Double](repeating: 0, count: 24)
         /// Some of today's came from a model with no price known, so isn't in what's spent.
         var unpriced = false
+        /// Each account's, by its `ClaudeAccount.id`.
+        var accounts: [String: Series] = [:]
+    }
+
+    /// How many days back are kept, today's the last of them.
+    nonisolated static let days = 30
+
+    /// One account's: today by hour, and each of the last 30 days (oldest first, today last); its
+    /// tokens (input, output and cache writes), its output alone, and what they'd cost.
+    struct Series: Equatable {
+        var hourly = [Int](repeating: 0, count: 24)
+        var hourlyOutput = [Int](repeating: 0, count: 24)
+        var hourlySpend = [Double](repeating: 0, count: 24)
+        var daily = [Int](repeating: 0, count: TokenUsage.days)
+        var dailyOutput = [Int](repeating: 0, count: TokenUsage.days)
+        var dailySpend = [Double](repeating: 0, count: TokenUsage.days)
     }
 
     static let shared = TokenUsage()
@@ -68,15 +86,16 @@ final class TokenUsage: ObservableObject {
     }
 }
 
-/// Follows the transcript files and keeps the usage that still counts towards today or the last
-/// five hours. Only used on its queue.
-private final class TranscriptReader: @unchecked Sendable {
+/// Follows the transcript files and keeps the usage that still counts towards the last 30 days or
+/// the last five hours. Only used on its queue.
+final class TranscriptReader: @unchecked Sendable {
     private struct Entry {
         let time: Date
         let tokens: Int  // input, output and cache writes
         let output: Int
         let cacheReads: Int
         let project: String
+        let account: String
         /// In dollars, at API prices; nil for a model with no price known.
         let cost: Double?
         /// Where it was working, in full (if the transcript says).
@@ -124,10 +143,22 @@ private final class TranscriptReader: @unchecked Sendable {
 
     private static let marker = Array("\"usage\"".utf8)
     private static let fiveHours: TimeInterval = 5 * 3600
-    private static let twoDays: TimeInterval = 2 * 86_400
 
-    private let root = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".claude/projects", isDirectory: true)
+    /// Each account's folder of transcripts, Claude Code's own first.
+    private let roots: () -> [(account: String, folder: URL)]
+
+    init(roots: @escaping () -> [(account: String, folder: URL)] = TranscriptReader.accounts) {
+        self.roots = roots
+    }
+
+    /// Every account's projects folder (see `ClaudeAccount`).
+    static func accounts() -> [(account: String, folder: URL)] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return ClaudeAccount.all(home: home).map { account in
+            (account.id, (account.folder ?? home.appendingPathComponent(".claude")).appendingPathComponent("projects", isDirectory: true))
+        }
+    }
+
     private var positions: [String: Position] = [:]
     /// Replies already counted, with their times so the old ones can be forgotten.
     private var counted: [String: Date] = [:]
@@ -144,16 +175,16 @@ private final class TranscriptReader: @unchecked Sendable {
     }()
     private let wholeSecondDates = ISO8601DateFormatter()
 
-    func refresh() -> TokenUsage.Totals {
-        let now = Date()
-        let calendar = Calendar.current
+    func refresh(now: Date = Date(), calendar: Calendar = .current) -> TokenUsage.Totals {
         let today = calendar.startOfDay(for: now)
-        // Anything older counts neither today nor in the last five hours.
-        let cutoff = min(today, now.addingTimeInterval(-Self.fiveHours))
+        let first = calendar.date(byAdding: .day, value: 1 - TokenUsage.days, to: today) ?? today
+        // Anything older counts neither in the days kept nor in the last five hours.
+        let cutoff = min(first, now.addingTimeInterval(-Self.fiveHours))
 
         var followed: [String: Position] = [:]
-        for (path, project) in transcripts() {
-            followed[path] = follow(path, project: project, cutoff: cutoff, now: now)
+        for transcript in transcripts() {
+            followed[transcript.path] = follow(transcript.path, project: transcript.project, account: transcript.account,
+                                               cutoff: cutoff)
         }
         positions = followed
         entries.removeAll { $0.time < cutoff }
@@ -168,6 +199,21 @@ private final class TranscriptReader: @unchecked Sendable {
                 totals.lastFiveHours += entry.tokens
                 totals.spentLastFiveHours += entry.cost ?? 0
             }
+            var series = totals.accounts[entry.account] ?? TokenUsage.Series()
+            if let back = calendar.dateComponents([.day], from: calendar.startOfDay(for: entry.time), to: today).day,
+               (0..<TokenUsage.days).contains(back) {
+                let day = TokenUsage.days - 1 - back
+                series.daily[day] += entry.tokens
+                series.dailyOutput[day] += entry.output
+                series.dailySpend[day] += entry.cost ?? 0
+            }
+            if entry.time >= today {
+                let hour = calendar.component(.hour, from: entry.time)
+                series.hourly[hour] += entry.tokens
+                series.hourlyOutput[hour] += entry.output
+                series.hourlySpend[hour] += entry.cost ?? 0
+            }
+            totals.accounts[entry.account] = series
             guard entry.time >= today else { continue }
             let hour = calendar.component(.hour, from: entry.time)
             totals.today += entry.tokens
@@ -185,22 +231,27 @@ private final class TranscriptReader: @unchecked Sendable {
         return totals
     }
 
-    /// Every transcript, subagents' included, with the name of the project folder it's in.
-    private func transcripts() -> [(path: String, project: String)] {
-        guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
-                                                          options: [.skipsHiddenFiles]) else { return [] }
-        var found: [(String, String)] = []
-        let depth = root.pathComponents.count
-        for case let url as URL in walker {
-            if url.pathExtension == "jsonl" {
-                let components = url.pathComponents
-                guard components.count > depth + 1 else { continue }
-                found.append((url.path, Self.project(folder: components[depth])))
-            } else if url.lastPathComponent == "tool-results" || url.lastPathComponent == "memory" {
-                walker.skipDescendants()
+    /// Every account's every transcript, subagents' included, with the name of the project folder
+    /// it's in and whose it is; the first made, first (see `count`).
+    private func transcripts() -> [(path: String, project: String, account: String)] {
+        var found: [(path: String, project: String, account: String, born: Int)] = []
+        for (account, root) in roots() {
+            guard let walker = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil,
+                                                              options: [.skipsHiddenFiles]) else { continue }
+            let depth = root.pathComponents.count
+            for case let url as URL in walker {
+                if url.pathExtension == "jsonl" {
+                    let components = url.pathComponents
+                    guard components.count > depth + 1 else { continue }
+                    var info = stat()
+                    let born = stat(url.path, &info) == 0 ? info.st_birthtimespec.tv_sec : 0
+                    found.append((url.path, Self.project(folder: components[depth]), account, born))
+                } else if url.lastPathComponent == "tool-results" || url.lastPathComponent == "memory" {
+                    walker.skipDescendants()
+                }
             }
         }
-        return found
+        return found.sorted { $0.born < $1.born }.map { ($0.path, $0.project, $0.account) }
     }
 
     /// Claude Code names a project's folder after its path, slashes as dashes: "-Users-x-Foo".
@@ -209,7 +260,7 @@ private final class TranscriptReader: @unchecked Sendable {
     }
 
     /// Reads whatever was added to the file since last time and returns where to pick up next.
-    private func follow(_ path: String, project: String, cutoff: Date, now: Date) -> Position? {
+    private func follow(_ path: String, project: String, account: String, cutoff: Date) -> Position? {
         var info = stat()
         guard stat(path, &info) == 0 else { return nil }
         let size = UInt64(info.st_size), inode = UInt64(info.st_ino)
@@ -217,20 +268,20 @@ private final class TranscriptReader: @unchecked Sendable {
         if let known = positions[path], known.inode == inode, known.offset <= size {
             position = known
         } else {
-            // New to us, or shrunk or swapped for another file: start it over. One left alone for
-            // two days has nothing that counts, so only what's added from now on gets read.
+            // New to us, or shrunk or swapped for another file: start it over. One left alone since
+            // before the days kept has nothing that counts, so only what's added from now on gets read.
             let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec))
-            position = Position(inode: inode, offset: modified < now.addingTimeInterval(-Self.twoDays) ? size : 0)
+            position = Position(inode: inode, offset: modified < cutoff ? size : 0)
         }
         if size > position.offset {
-            position.offset = read(path, from: position.offset, project: project, cutoff: cutoff)
+            position.offset = read(path, from: position.offset, project: project, account: account, cutoff: cutoff)
         }
         return position
     }
 
     /// Takes in the whole lines from `offset` on, a megabyte at a time, and returns the offset
     /// after the last one. A line still being written is left for next time.
-    private func read(_ path: String, from offset: UInt64, project: String, cutoff: Date) -> UInt64 {
+    private func read(_ path: String, from offset: UInt64, project: String, account: String, cutoff: Date) -> UInt64 {
         guard let handle = FileHandle(forReadingAtPath: path) else { return offset }
         defer { try? handle.close() }
         var next = offset
@@ -242,7 +293,7 @@ private final class TranscriptReader: @unchecked Sendable {
                 let more = try autoreleasepool {
                     guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else { return false }
                     pending.append(chunk)
-                    let used = pending.withUnsafeBytes { take($0, project: project, cutoff: cutoff) }
+                    let used = pending.withUnsafeBytes { take($0, project: project, account: account, cutoff: cutoff) }
                     next += UInt64(used)
                     pending = pending.subdata(in: pending.startIndex + used..<pending.endIndex)
                     return true
@@ -254,7 +305,7 @@ private final class TranscriptReader: @unchecked Sendable {
     }
 
     /// Counts the usage on each whole line in the buffer and returns how many bytes those were.
-    private func take(_ buffer: UnsafeRawBufferPointer, project: String, cutoff: Date) -> Int {
+    private func take(_ buffer: UnsafeRawBufferPointer, project: String, account: String, cutoff: Date) -> Int {
         guard let base = buffer.baseAddress else { return 0 }
         var start = 0
         while start < buffer.count, let newline = memchr(base + start, 0x0A, buffer.count - start) {
@@ -263,14 +314,14 @@ private final class TranscriptReader: @unchecked Sendable {
             if memmem(base + start, end - start, Self.marker, Self.marker.count) != nil {
                 let line = Data(bytesNoCopy: UnsafeMutableRawPointer(mutating: base + start), count: end - start,
                                 deallocator: .none)
-                count(line, project: project, cutoff: cutoff)
+                count(line, project: project, account: account, cutoff: cutoff)
             }
             start = end + 1
         }
         return start
     }
 
-    private func count(_ data: Data, project: String, cutoff: Date) {
+    private func count(_ data: Data, project: String, account: String, cutoff: Date) {
         guard let line = try? decoder.decode(Line.self, from: data), line.type == "assistant",
               let message = line.message, let usage = message.usage,
               let stamp = line.timestamp, let time = dates.date(from: stamp) ?? wholeSecondDates.date(from: stamp),
@@ -289,7 +340,11 @@ private final class TranscriptReader: @unchecked Sendable {
             $0.cost(input: input, output: output, fiveMinuteWrites: writes - hour, hourWrites: hour, reads: cacheReads,
                     fast: usage.speed == "fast") + searches
         }
-        // A reply is written out again as it streams in; count it once.
+        // A reply is written out again as it streams in; count it once. And once only across the
+        // accounts: one chat copied to the other (claude-swap does) is the same replies again,
+        // counted for the account whose file of it was made first (they're read in that order).
+        // shortcut: a chat swapped back and forth goes by its newest copy's age, if it ever matters
+        // keep which account first saw each reply.
         if let id = message.id {
             let key = id + " " + (line.requestId ?? "")
             guard counted[key] == nil else { return }
@@ -297,7 +352,7 @@ private final class TranscriptReader: @unchecked Sendable {
         }
         let folder = line.cwd.map { ($0 as NSString).lastPathComponent } ?? ""
         entries.append(Entry(time: time, tokens: tokens, output: output, cacheReads: cacheReads,
-                             project: folder.isEmpty || folder == "/" ? project : folder, cost: cost,
+                             project: folder.isEmpty || folder == "/" ? project : folder, account: account, cost: cost,
                              folder: line.cwd.flatMap { $0.hasPrefix("/") && $0 != "/" ? $0 : nil }))
     }
 }

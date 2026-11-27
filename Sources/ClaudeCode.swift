@@ -93,18 +93,18 @@ enum ClaudeCode {
 /// other one set up beside it in a folder of its own, ~/.claude-<name>, that Claude Code's run
 /// with CLAUDE_CONFIG_DIR set to (as `claude-personal` is).
 struct ClaudeAccount: Hashable, Sendable, Identifiable {
-    /// "work", "personal".
+    /// "school", "personal".
     let name: String
     /// Its folder, for CLAUDE_CONFIG_DIR: none for Claude Code's own.
     let folder: URL?
 
     var id: String { folder?.path ?? "" }
     var isDefault: Bool { folder == nil }
-    /// "W", "P": for the bar, beside what's left of its window.
+    /// "S", "P": for the bar, beside what's left of its window.
     var initial: String { String(name.prefix(1)).uppercased() }
 
-    /// Claude Code's own, called (beside the others) what it is here: `claude-work`'s.
-    nonisolated static let defaultName = "work"
+    /// Claude Code's own, called (beside the others) what it is here: the school's (Stanford's).
+    nonisolated static let defaultName = "school"
     nonisolated static let `default` = ClaudeAccount(name: defaultName, folder: nil)
 
     /// Claude Code's own, then each other one there's a folder for that's signed in (its

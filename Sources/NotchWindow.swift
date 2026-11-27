@@ -11,10 +11,11 @@ enum Layout {
     static var activityHeight: CGFloat { activitySystemHeight + 22 }
     /// Its rows: the processor, memory, network, battery and temperatures.
     static let activitySystemHeight: CGFloat = 112
-    /// The usage page: Claude's tokens, what they'd cost, a row for each account's 5-hour window,
-    /// and the commits (GitHub's grid under them, see `usageWithGitHub`).
+    /// The usage page: Claude's graph, a row for each account's 5-hour window, and the commits
+    /// (GitHub's grid under them, see `usageWithGitHub`).
     static var usageHeight: CGFloat {
-        22 + 16 + 24 + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0) + (Feature.commitTimeline.isOn ? 24 : 0)
+        22 + ClaudeGraph.height(accounts: ClaudeLimit.rows) + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0)
+            + (Feature.commitTimeline.isOn ? 24 : 0)
     }
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.
     static let githubHeight: CGFloat = 54

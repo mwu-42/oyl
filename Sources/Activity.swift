@@ -459,21 +459,16 @@ struct UsagePage: View {
     }
 }
 
-/// A bar for each hour of the day, the hour it is now brighter. Hours without any are a faint tick.
-/// Claude Code's tokens today, hour by hour, then the totals and where most of them went; and
-/// under them what they'd have cost at Anthropic's API prices (see `ClaudePrice`), hour by hour,
-/// today and in the last five hours.
+/// Claude's part of the usage page: the graph of both accounts' tokens (see `ClaudeGraph`), each
+/// account's 5-hour window under it, and your commits.
 struct ClaudeUsageRows: View {
     let totals: TokenUsage.Totals?
     @ObservedObject private var limit = ClaudeLimit.shared
     @ObservedObject private var features = Features.shared
-    @Environment(\.notchTheme) private var theme
-    private var tint: Color { theme.tint(ActivityPage.tint) }
-
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            tokens
+            ClaudeGraph(totals: totals, accounts: limit.accounts)
             if features.isOn(.claudeLimit) {
                 // One for each of your accounts, each in its own color, named if there's more than one.
                 let several = limit.accounts.count > 1
@@ -481,68 +476,9 @@ struct ClaudeUsageRows: View {
                     ClaudeWindowRow(reading: limit.readings[account.id], account: several ? account : nil, mark: index)
                 }
             }
-            if let totals, totals.today > 0 || totals.lastFiveHours > 0 { spent(totals) }
             if features.isOn(.commitTimeline) { CommitRow() }
         }
         .onAppear { limit.nudge() }
-    }
-
-    private var tokens: some View {
-        metric("Claude") {
-            HourlyBars(values: totals?.hourly ?? [], hour: totals?.hour ?? -1)
-                .frame(width: 92, height: 16)
-            if let totals {
-                if totals.today == 0 && totals.lastFiveHours == 0 {
-                    Text("No Claude Code usage today")
-                        .notchFont(size: 11, weight: .medium)
-                        .foregroundStyle(.white.opacity(0.45))
-                        .lineLimit(1)
-                } else {
-                    let line = "\(ActivityPage.tokens(totals.today)) today · \(ActivityPage.tokens(totals.lastFiveHours)) last 5 h"
-                        + " · \(ActivityPage.tokens(totals.outputToday)) out"
-                    // Without room for both, the project is left out.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: 8) {
-                            value(line)
-                            Spacer(minLength: 0)
-                            if let project = totals.busiestProject {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "folder")
-                                        .notchSymbol(size: 8, weight: .semibold)
-                                    Text(project)
-                                        .notchFont(size: 10, weight: .medium)
-                                        .lineLimit(1)
-                                }
-                                .foregroundStyle(.white.opacity(0.4))
-                            }
-                        }
-                        value(line)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Spent, hour by hour (in cents, for the bars), then today's and the last five hours'.
-    private func spent(_ totals: TokenUsage.Totals) -> some View {
-        metric("Spent") {
-            HourlyBars(values: totals.hourlySpend.map { Int(($0 * 100).rounded()) }, hour: totals.hour)
-                .frame(width: 92, height: 16)
-            let line = "\(Self.dollars(totals.spentToday)) today · \(Self.dollars(totals.spentLastFiveHours)) last 5 h"
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) {
-                    value(line + (totals.unpriced ? "+" : ""))
-                    Spacer(minLength: 0)
-                    Text("at API prices")
-                        .notchFont(size: 10, weight: .medium)
-                        .foregroundStyle(.white.opacity(0.4))
-                        .lineLimit(1)
-                }
-                value(line)
-            }
-            .help(totals.unpriced ? "What these tokens would cost on Anthropic's API, and more: some came from a model whose price Oyl doesn't know"
-                  : "What these tokens would cost on Anthropic's API, cache reads and writes included (a subscription doesn't charge by the token)")
-        }
     }
 
     /// "$0.42", "$12.40", "$318", "$1.2k"; under a cent, "<$0.01".
@@ -554,30 +490,209 @@ struct ClaudeUsageRows: View {
         default: return String(format: "$%.1fk", amount / 1000)
         }
     }
+}
 
-    private func metric<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
-        HStack(spacing: 8) {
-            Text(label)
-                .notchFont(size: 11, weight: .medium)
-                .foregroundStyle(tint.opacity(0.75))
-                .frame(width: 54, alignment: .leading)
-            content()
+/// How far back Claude's graph goes: today hour by hour, or the last week's or 30 days' days
+/// (Claude Code keeps a month of chats, to begin with).
+enum ClaudeSpan: String, CaseIterable {
+    case today, week, month
+
+    /// How many bars.
+    var count: Int {
+        switch self {
+        case .today: return 24
+        case .week: return 7
+        case .month: return TokenUsage.days
         }
-        .frame(height: 16)
     }
 
-    private func value(_ text: String) -> some View {
-        Text(text)
-            .notchFont(size: 11, weight: .medium, digits: true)
-            .foregroundStyle(.white.opacity(0.85))
-            .lineLimit(1)
+    /// One account's bars: its tokens, or what they'd cost.
+    func values(_ series: TokenUsage.Series, spent: Bool) -> [Double] {
+        switch self {
+        case .today: return spent ? series.hourlySpend : series.hourly.map(Double.init)
+        case .week, .month: return Array((spent ? series.dailySpend : series.daily.map(Double.init)).suffix(count))
+        }
+    }
+
+    /// One account's in all: tokens, output and what they'd cost.
+    func sums(_ series: TokenUsage.Series) -> (tokens: Int, output: Int, spent: Double) {
+        switch self {
+        case .today: return (series.hourly.reduce(0, +), series.hourlyOutput.reduce(0, +), series.hourlySpend.reduce(0, +))
+        case .week, .month:
+            return (series.daily.suffix(count).reduce(0, +), series.dailyOutput.suffix(count).reduce(0, +),
+                    series.dailySpend.suffix(count).reduce(0, +))
+        }
+    }
+
+    /// The times under the bars, each over an even share of them: "12 AM", "6 AM"…; "Mon"…;
+    /// "Oct 28"… (the last 30 days, five to each).
+    func times(now: Date, calendar: Calendar = .current) -> [String] {
+        let formatter = DateFormatter()
+        let today = calendar.startOfDay(for: now)
+        func day(_ back: Int) -> Date { calendar.date(byAdding: .day, value: -back, to: today) ?? today }
+        switch self {
+        case .today:
+            formatter.setLocalizedDateFormatFromTemplate("j")
+            return stride(from: 0, to: 24, by: 6).map { formatter.string(from: calendar.date(byAdding: .hour, value: $0, to: today) ?? today) }
+        case .week:
+            formatter.setLocalizedDateFormatFromTemplate("EEE")
+            return (0..<7).reversed().map { $0 == 0 ? "today" : formatter.string(from: day($0)) }
+        case .month:
+            formatter.setLocalizedDateFormatFromTemplate("MMMd")
+            return stride(from: count - 1, through: 0, by: -5).map { formatter.string(from: day($0)) }
+        }
     }
 }
 
-/// How much of Claude's 5-hour limit window is used, in the page's pink (see `ClaudeLimit`): a bar
-/// filling in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets. With more
-/// than one account, a row for each: "5 hours" over them, each named, and each in a color of its
-/// own (see `hue`): Claude Code's own in the pink, the next in sky blue.
+/// Claude Code's tokens, or what they'd have cost at Anthropic's API prices (see `ClaudePrice`),
+/// big: a bar a slot (an hour today, else a day), each account's stacked on the others in its own
+/// color (school in Stanford's cardinal, personal in blue, see `ClaudeWindowRow.color`), the slot
+/// it is now brighter. Over it, switches for tokens or what's spent and for how far back; under
+/// it, the times, then a line for each account: its tokens, output and what they'd cost.
+struct ClaudeGraph: View {
+    let totals: TokenUsage.Totals?
+    let accounts: [ClaudeAccount]
+    var now = Date()
+    @AppStorage("usage.claudeSpan") private var spanName = ClaudeSpan.today.rawValue
+    @AppStorage("usage.claudeSpent") private var spent = false
+    @Environment(\.notchTheme) private var theme
+
+    static let barsHeight: CGFloat = 84
+    /// How tall it stands with `accounts` accounts' lines.
+    static func height(accounts: Int) -> CGFloat { 16 + 6 + barsHeight + 3 + 12 + 6 + CGFloat(max(accounts, 1)) * 18 }
+
+    var body: some View {
+        let span = ClaudeSpan(rawValue: spanName) ?? .today
+        let midnight = theme == .midnight
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Claude")
+                    .notchFont(size: 11, weight: .semibold)
+                    .foregroundStyle(.white.opacity(0.85))
+                Spacer(minLength: 4)
+                UsageSwitch(options: ["tokens", "spent"], picked: spent ? 1 : 0) { spent = $0 == 1 }
+                    .help("Tokens (input, output and cache writes), or what they'd cost at Anthropic's API prices (a subscription doesn't charge by the token)")
+                UsageSwitch(options: ClaudeSpan.allCases.map(\.rawValue), picked: ClaudeSpan.allCases.firstIndex(of: span) ?? 0) {
+                    spanName = ClaudeSpan.allCases[$0].rawValue
+                }
+            }
+            .frame(height: 16)
+            Spacer().frame(height: 6)
+            bars(span, midnight: midnight)
+                .frame(height: Self.barsHeight)
+            Spacer().frame(height: 3)
+            HStack(spacing: 0) {
+                ForEach(Array(span.times(now: now).enumerated()), id: \.offset) { _, time in
+                    Text(time)
+                        .notchFont(size: 9, weight: .medium, digits: true)
+                        .foregroundStyle(.white.opacity(0.4))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .frame(height: 12)
+            Spacer().frame(height: 6)
+            ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
+                legend(account, mark: index, span: span)
+                    .frame(height: 18)
+            }
+        }
+    }
+
+    private func series(_ account: ClaudeAccount) -> TokenUsage.Series {
+        totals?.accounts[account.id] ?? TokenUsage.Series()
+    }
+
+    @ViewBuilder private func bars(_ span: ClaudeSpan, midnight: Bool) -> some View {
+        let columns = accounts.map { span.values(series($0), spent: spent) }
+        let colors = accounts.indices.map { ClaudeWindowRow.color($0, theme: theme) }
+        let count = span.count
+        let sums = (0..<count).map { slot in columns.reduce(0) { $0 + ($1.indices.contains(slot) ? $1[slot] : 0) } }
+        let peak = sums.max() ?? 0
+        let current = span == .today ? (totals?.hour ?? Calendar.current.component(.hour, from: now)) : count - 1
+        ZStack(alignment: .topLeading) {
+            Canvas { canvas, size in
+                let slot = size.width / CGFloat(count)
+                let gap = min(slot * 0.25, 3)
+                for index in 0..<count {
+                    let x = CGFloat(index) * slot + gap / 2, width = slot - gap
+                    guard peak > 0, sums[index] > 0 else {
+                        // Nothing then: a faint tick (none yet for the hours to come).
+                        if span != .today || index <= current {
+                            canvas.fill(Path(CGRect(x: x, y: size.height - 1, width: width, height: 1)), with: .color(.white.opacity(0.15)))
+                        }
+                        continue
+                    }
+                    var bottom = size.height
+                    for (account, column) in columns.enumerated() where column.indices.contains(index) && column[index] > 0 {
+                        let height = max(size.height * CGFloat(column[index] / peak), 1.5)
+                        let bar = CGRect(x: x, y: bottom - height, width: width, height: height)
+                        let shade = colors[account].opacity(index == current ? 1 : midnight ? 0.7 : 0.8)
+                        canvas.fill(Path(roundedRect: bar, cornerRadius: min(1.5, width / 2)), with: .color(shade))
+                        bottom -= height
+                    }
+                }
+            }
+            .background(RoundedRectangle(cornerRadius: 4).fill(.white.opacity(midnight ? 0.03 : 0.05)))
+            if totals == nil {
+                Text("Reading Claude Code's chats…")
+                    .notchFont(size: 11, weight: .medium)
+                    .foregroundStyle(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if peak > 0 {
+                // The tallest, at the top.
+                Text(spent ? ClaudeUsageRows.dollars(peak) : ActivityPage.tokens(Int(peak)))
+                    .notchFont(size: 9, weight: .medium, digits: true)
+                    .foregroundStyle(.white.opacity(0.4))
+                    .padding(.leading, 4)
+                    .padding(.top, 2)
+            }
+        }
+    }
+
+    private func legend(_ account: ClaudeAccount, mark: Int, span: ClaudeSpan) -> some View {
+        let sums = span.sums(series(account))
+        let color = ClaudeWindowRow.color(mark, theme: theme)
+        return HStack(spacing: 6) {
+            RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 8, height: 8)
+            Text(account.name)
+                .notchFont(size: 11, weight: .semibold)
+                .foregroundStyle(color)
+                .frame(width: 58, alignment: .leading)
+            Text("\(ActivityPage.tokens(sums.tokens)) tokens · \(ActivityPage.tokens(sums.output)) out · \(ClaudeUsageRows.dollars(sums.spent))")
+                .notchFont(size: 11, weight: .medium, digits: true)
+                .foregroundStyle(.white.opacity(sums.tokens > 0 ? 0.85 : 0.4))
+                .lineLimit(1)
+        }
+    }
+}
+
+/// A few words, one of them picked: the others dim, a click picks another. In Midnight's look in
+/// its italics.
+struct UsageSwitch: View {
+    let options: [String]
+    let picked: Int
+    let pick: (Int) -> Void
+    @Environment(\.notchTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(options.enumerated()), id: \.offset) { index, option in
+                Button { pick(index) } label: {
+                    Text(option)
+                        .font(theme == .midnight ? Midnight.italic(11.5) : .system(size: 10.5, weight: index == picked ? .semibold : .medium))
+                        .foregroundStyle(.white.opacity(index == picked ? 0.95 : 0.4))
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+}
+
+/// How much of Claude's 5-hour limit window is used (see `ClaudeLimit`), in its account's color: a
+/// bar filling in Oyl's look, a moon waxing in Midnight's; the figure, and when it resets. With
+/// more than one account, a row for each: "5 hours" over them, each named (see `color`).
 struct ClaudeWindowRow: View {
     let reading: ClaudeLimit.Reading?
     /// Whose it is, if it's one of several; and which of them (for its color, and "5 hours" on
@@ -587,18 +702,24 @@ struct ClaudeWindowRow: View {
     var now = Date()
     @Environment(\.notchTheme) private var theme
 
-    /// An account's color, by its place among them: the page's pink, sky blue, mint, lavender.
+    /// An account's color, by its place among them: Claude Code's own (school) in Stanford's
+    /// cardinal (a shade lighter, to read on black), then blue (personal), mint, lavender.
     static func hue(_ mark: Int) -> Color {
-        let hues = [ActivityPage.tint, Color(red: 0.4, green: 0.74, blue: 1), Color(red: 0.5, green: 0.9, blue: 0.68),
+        let hues = [Color(red: 0.78, green: 0.13, blue: 0.18), Color(red: 0.36, green: 0.62, blue: 1), Color(red: 0.5, green: 0.9, blue: 0.68),
                     Color(red: 0.74, green: 0.62, blue: 1)]
         return hues[((mark % hues.count) + hues.count) % hues.count]
     }
 
+    /// As this look shows it: in Midnight's paled, but less than its accents are, so the cardinal
+    /// stays red rather than going pink.
+    static func color(_ mark: Int, theme: NotchTheme) -> Color {
+        theme == .midnight ? Midnight.pale(hue(mark), keep: 0.6) : hue(mark)
+    }
+
     var body: some View {
-        // The page's pink, as everything on it is; the window in its account's color (the pink too, for
-        // the first).
-        let label = theme.tint(ActivityPage.tint)
-        let color = theme.tint(Self.hue(mark))
+        // The window in its account's color.
+        let label = Color.white.opacity(0.55)
+        let color = Self.color(mark, theme: theme)
         let reading = self.reading.flatMap { $0.isCurrent(at: now) ? $0 : nil }
         let fraction = reading.map { min(max(Double($0.percent) / 100, 0), 1) } ?? 0
         return HStack(spacing: 8) {
