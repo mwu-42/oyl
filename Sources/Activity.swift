@@ -442,7 +442,6 @@ struct UsagePage: View {
             ClaudeUsageRows(totals: usage.totals)
             // (The page is taller by it, so it's at the foot: see `GitHubSection.height`.)
             GitHubSection()
-                .padding(.top, 8)
         }
         .padding(.horizontal, 24)
         .padding(.top, 6)
@@ -862,6 +861,7 @@ struct GitHubSection: View {
                 if features.isOn(.commitTimeline) { CommitRow(span: span) }
                 if features.isOn(.githubGrid) { GitHubRow(span: span) }
             }
+            .padding(.top, 8)
         }
     }
 }
