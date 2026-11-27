@@ -6,7 +6,8 @@ import os
 
 // Four fingers up (or right Shift twice): your desktops and fullscreen apps in a list, in the order
 // they're in, each by its name (a fullscreen app's by its app's, as the menu bar's label names them)
-// with the icons of the apps on it. Click one to go straight to it; right-click one to rename it; drag
+// with the icons of the apps on it. Click one to go straight to it (an app's icon on it, to be offered
+// to quit that app); right-click one to rename it; drag
 // one onto another to group them, under a heading that folds them away (see `SpaceGroups`). (They
 // can't be put in another order from here: macOS keeps that in the Dock, and short of turning System
 // Integrity Protection off, only Mission Control can change it, by dragging.) macOS's own
@@ -762,7 +763,28 @@ final class DesktopsModel: ObservableObject {
     /// Shift-clicked first: where what's grouped begins, once another's shift-clicked.
     @Published var anchor: String?
 
+    /// An app whose icon's been clicked on a desktop's row: offered there to quit (see `DeskRow`).
+    @Published var quitting: Quitting?
+    struct Quitting: Equatable {
+        let desk: String
+        let app: App
+    }
+
+    /// How many desktops `app` has windows on (quitting it closes them all).
+    func desktops(with app: pid_t) -> Int { desks.filter { $0.apps.contains { $0.id == app } }.count }
+
+    /// "Quit Safari", or with it on more than one desktop, "Quit Code (on 3 desktops)".
+    nonisolated static func quitSays(_ name: String, desktops: Int) -> String {
+        "Quit \(name)" + (desktops > 1 ? " (on \(desktops) desktops)" : "")
+    }
+
+    /// Whether an app can be quit from here: never Oyl itself, or the Finder.
+    nonisolated static func canQuit(_ pid: pid_t, bundle: String?) -> Bool {
+        pid != ProcessInfo.processInfo.processIdentifier && bundle != "com.apple.finder"
+    }
+
     var pick: (Desk) -> Void = { _ in }
+    var quit: (App) -> Void = { _ in }
     var renamed: (Desk, String) -> Void = { _, _ in }
     var renamedGroup: (String, String) -> Void = { _, _ in }
     var regroup: (Regroup) -> Void = { _ in }
@@ -1587,7 +1609,12 @@ private struct DeskRow: View {
             }
             icons(midnight: midnight)
             Spacer(minLength: 8)
-            if showsActions {
+            if let quitting = model.quitting, quitting.desk == desk.id, !renaming {
+                let says = DesktopsModel.quitSays(quitting.app.name, desktops: model.desktops(with: quitting.app.id))
+                DeskAction(word: says.prefix(1).lowercased() + says.dropFirst(), symbol: "xmark.circle", help: says + ", as ⌘Q would", says: true) {
+                    model.quit(quitting.app)
+                }
+            } else if showsActions {
                 if model.picksSounds {
                     DeskAction(word: "sound", symbol: "speaker.wave.2", help: "Its sound when a Claude's done here") {
                         withAnimation(model.shuffle) { model.picking = model.picking == desk.id ? nil : desk.id }
@@ -1606,8 +1633,9 @@ private struct DeskRow: View {
         .onHover { inside in
             if inside {
                 model.hovered = desk.id
-            } else if model.hovered == desk.id {
-                model.hovered = nil
+            } else {
+                if model.hovered == desk.id { model.hovered = nil }
+                if model.quitting?.desk == desk.id { withAnimation(.easeOut(duration: 0.15)) { model.quitting = nil } }
             }
         }
         .onTapGesture {
@@ -1694,8 +1722,17 @@ private struct DeskRow: View {
     }
 
     private func icons(midnight: Bool) -> some View {
-        DeskIcons(apps: desk.apps, lit: lit, most: Self.mostIcons)
-            .offset(x: midnight && lit ? 4 : 0)
+        let chosen = model.quitting?.desk == desk.id ? model.quitting?.app.id : nil
+        // Offered to quit: its icon alone, by the offer (the name keeps its room).
+        let apps = chosen.map { chosen in desk.apps.filter { $0.id == chosen } } ?? desk.apps
+        return DeskIcons(apps: apps, lit: lit, most: Self.mostIcons, tapped: { app in
+            guard DesktopsModel.canQuit(app.id, bundle: NSRunningApplication(processIdentifier: app.id)?.bundleIdentifier) else { return }
+            // Clicked again: not after all.
+            withAnimation(.easeOut(duration: 0.15)) {
+                model.quitting = chosen == app.id ? nil : DesktopsModel.Quitting(desk: desk.id, app: app)
+            }
+        }, chosen: chosen)
+        .offset(x: midnight && lit ? 4 : 0)
     }
 
     private func takeOutButton(midnight: Bool) -> some View {
@@ -1859,6 +1896,9 @@ private struct DeskIcons: View {
     let lit: Bool
     let most: Int
     var small = false
+    /// Clicked, one of them (a desktop's row's own, not a group's heading's); and the one that was.
+    var tapped: ((DesktopsModel.App) -> Void)? = nil
+    var chosen: pid_t? = nil
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
@@ -1873,7 +1913,11 @@ private struct DeskIcons: View {
                         .frame(width: side, height: side)
                         .saturation(midnight ? 0.55 : 1)
                         .opacity(midnight ? (lit ? 0.95 : 0.72) : small ? 0.85 : 1)
+                        .scaleEffect(chosen == app.id ? 1.18 : 1)
                         .help(app.name)
+                        .contentShape(Rectangle())
+                        .onTapGesture { tapped?(app) }
+                        .allowsHitTesting(tapped != nil)
                 }
             }
             if apps.count > most {
@@ -1890,6 +1934,8 @@ private struct DeskAction: View {
     let word: String
     let symbol: String
     let help: String
+    /// The word beside the icon in Oyl's look too.
+    var says = false
     let action: () -> Void
     @Environment(\.notchTheme) private var theme
 
@@ -1899,6 +1945,15 @@ private struct DeskAction: View {
                 Text(word)
                     .font(Midnight.italic(12))
                     .foregroundStyle(Midnight.silver.opacity(0.6))
+            } else if says {
+                Label(word, systemImage: symbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.75))
+                    .padding(.horizontal, 7)
+                    .frame(height: 20)
+                    .background(Capsule().fill(.white.opacity(0.1)))
+                    .contentShape(Capsule())
+                    .fixedSize()
             } else {
                 Image(systemName: symbol)
                     .font(.system(size: 11, weight: .medium))
@@ -2475,6 +2530,7 @@ final class DesktopsViewer {
         }
         model.dismiss = { [weak self] in self?.close() }
         model.pick = { [weak self] desk in self?.close(goingTo: desk) }
+        model.quit = { [weak self] app in self?.quit(app) }
         model.renamed = { [weak self] desk, name in self?.rename(desk, to: name) }
         model.renamedGroup = { id, name in SpaceGroups().rename(id, to: name) }
         model.folded = { id, folded in SpaceGroups().fold(id, folded) }
@@ -2513,6 +2569,13 @@ final class DesktopsViewer {
             // (Mission Control come and gone): read again.
             workspace.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.spaceChanged() }
+            },
+            // An app quit while it's up (from it, or anywhere): what's on each read again.
+            workspace.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.isUp, self.hiding == nil else { return }
+                    self.load()
+                }
             },
         ]
         DockSwipes.shared.swipedAcross = { [weak self] in self?.swipedAway() }
@@ -2687,8 +2750,29 @@ final class DesktopsViewer {
             withAnimation(model.shuffle) { model.picking = nil }
         } else if model.anchor != nil {
             withAnimation(model.shuffle) { model.anchor = nil }
+        } else if model.quitting != nil {
+            withAnimation(.easeOut(duration: 0.15)) { model.quitting = nil }
         } else {
             close()
+        }
+    }
+
+    /// How long a quit app has to go before it's taken to be asking you something.
+    nonisolated static let quitPatience: TimeInterval = 2
+
+    /// An app quit from the list, as ⌘Q would: it may ask first (to save, say), under the list,
+    /// so one still up a moment on is gone to. (Read again as it goes, see `start`.)
+    private func quit(_ app: DesktopsModel.App) {
+        model.quitting = nil
+        guard let running = NSRunningApplication(processIdentifier: app.id),
+              DesktopsModel.canQuit(app.id, bundle: running.bundleIdentifier) else { return }
+        let desk = model.desks.first { $0.apps.contains { $0.id == app.id } }
+        Self.log.notice("Quitting \(app.name, privacy: .public) from the desktops' list (on \(self.model.desktops(with: app.id)) desktops)")
+        running.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.quitPatience) { [weak self] in
+            guard let self, self.isUp, self.hiding == nil, !running.isTerminated, let desk else { return }
+            Self.log.notice("\(app.name, privacy: .public) still up: gone to it, in case it's asking something")
+            self.close(goingTo: desk)
         }
     }
 
@@ -2815,6 +2899,7 @@ final class DesktopsViewer {
         model.dragShift = .zero
         model.anchor = nil
         model.picking = nil
+        model.quitting = nil
     }
 
     /// The Spaces, then what's on each.

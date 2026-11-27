@@ -10,6 +10,9 @@ struct CurrentSpace: Equatable {
     /// A fullscreen app's window, which keeps its name when it leaves fullscreen and comes back
     /// (a new Space each time), till the Mac restarts.
     let window: String?
+    /// A fullscreen app's own, while it's in only this one fullscreen Space: the name stays with
+    /// the app, so it's back when the app quits and opens again (a new window, and a new Space).
+    var app: String? = nil
     /// "desktop 2", as Mission Control numbers them; a fullscreen app's, the app's name: in lower
     /// case, as names Oyl gives are (one you type is kept as you type it).
     let standard: String
@@ -51,7 +54,12 @@ enum Spaces {
             let window = number(space["fs_wid"]).map { "window:\(boot)-\($0)" }
             let pid = number(space["pid"]).map { pid_t($0) }
             let name = pid.flatMap(appName) ?? "Full Screen"
-            return CurrentSpace(key: key, window: window, standard: name.lowercased(), isFullscreen: true, id: id, pid: pid)
+            // Two of an app's (two Chrome windows, say) would take each other's names: neither has it.
+            let mates = (display["Spaces"] as? [[String: Any]] ?? []).filter {
+                number($0["type"]) == FullscreenSpace.fullscreenType && number($0["pid"]) == number(space["pid"])
+            }
+            let app = pid != nil && mates.count == 1 ? "app:" + name.lowercased() : nil
+            return CurrentSpace(key: key, window: window, app: app, standard: name.lowercased(), isFullscreen: true, id: id, pid: pid)
         }
         let desktops = (display["Spaces"] as? [[String: Any]] ?? []).filter { number($0["type"]) != FullscreenSpace.fullscreenType }
         let index = desktops.firstIndex { number($0["ManagedSpaceID"]) == id }
@@ -105,14 +113,14 @@ struct SpaceNames {
     /// What `space` is called: the name it's been given, or its own.
     func name(of space: CurrentSpace) -> String {
         let all = self.all
-        return all[space.key] ?? space.window.flatMap { all[$0] } ?? space.standard
+        return all[space.key] ?? space.window.flatMap { all[$0] } ?? space.app.flatMap { all[$0] } ?? space.standard
     }
 
     /// Named `name`, trimmed (and cut to the longest); nothing, or its own name, puts its own back.
     func rename(_ space: CurrentSpace, to name: String) {
         var all = self.all
         let name = String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(Self.longest))
-        let keys = [space.key] + (space.window.map { [$0] } ?? [])
+        let keys = [space.key] + [space.window, space.app].compactMap { $0 }
         if name.isEmpty || name == space.standard {
             for key in keys { all[key] = nil }
         } else {
