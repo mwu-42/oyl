@@ -1726,7 +1726,16 @@ private struct DeskRow: View {
         // Offered to quit: its icon alone, by the offer (the name keeps its room).
         let apps = chosen.map { chosen in desk.apps.filter { $0.id == chosen } } ?? desk.apps
         return DeskIcons(apps: apps, lit: lit, most: Self.mostIcons, tapped: { app in
-            guard DesktopsModel.canQuit(app.id, bundle: NSRunningApplication(processIdentifier: app.id)?.bundleIdentifier) else { return }
+            guard !renaming, !model.justDragged else { return }
+            // Shift-clicked, or one that can't be quit: the row's own click, as before.
+            if NSEvent.modifierFlags.contains(.shift) {
+                withAnimation(model.shuffle) { model.shiftClicked(desk.id) }
+                return
+            }
+            guard DesktopsModel.canQuit(app.id, bundle: NSRunningApplication(processIdentifier: app.id)?.bundleIdentifier) else {
+                model.pick(desk)
+                return
+            }
             // Clicked again: not after all.
             withAnimation(.easeOut(duration: 0.15)) {
                 model.quitting = chosen == app.id ? nil : DesktopsModel.Quitting(desk: desk.id, app: app)

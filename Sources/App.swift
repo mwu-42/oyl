@@ -44,10 +44,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Created only once we know this is the sole copy: it resets lid sleep left over from a crash.
         let awake = AwakeManager()
         self.awake = awake
+        // Before the notch, so its window's sized for every account's row from the start.
+        ClaudeLimit.shared.start()
         controller = NotchController(nowPlaying: NowPlaying(), timers: TimerStore(), awake: awake,
                                      agents: AgentMonitor())
         MorningStart.shared.start()
-        ClaudeLimit.shared.start()
         ScreenshotHold.shared.start()
 
         // `kill`/`pkill` skip applicationWillTerminate; route them through it so a keep-awake
