@@ -34,12 +34,16 @@ final class TokenUsage: ObservableObject {
     /// How many days back are kept, today's the last of them.
     nonisolated static let days = 30
 
-    /// One account's: today by hour, and each of the last 30 days (oldest first, today last); its
-    /// tokens (input, output and cache writes), its output alone, and what they'd cost.
+    /// How many hours back are kept, this one the last of them.
+    nonisolated static let hours = days * 24
+
+    /// One account's: each of the last 720 hours and each of the last 30 days (oldest first, this
+    /// hour or today last); its tokens (input, output and cache writes), its output alone, and what
+    /// they'd cost.
     struct Series: Equatable {
-        var hourly = [Int](repeating: 0, count: 24)
-        var hourlyOutput = [Int](repeating: 0, count: 24)
-        var hourlySpend = [Double](repeating: 0, count: 24)
+        var hours = [Int](repeating: 0, count: TokenUsage.hours)
+        var hoursOutput = [Int](repeating: 0, count: TokenUsage.hours)
+        var hoursSpend = [Double](repeating: 0, count: TokenUsage.hours)
         var daily = [Int](repeating: 0, count: TokenUsage.days)
         var dailyOutput = [Int](repeating: 0, count: TokenUsage.days)
         var dailySpend = [Double](repeating: 0, count: TokenUsage.days)
@@ -192,6 +196,7 @@ final class TranscriptReader: @unchecked Sendable {
 
         var totals = TokenUsage.Totals()
         totals.hour = calendar.component(.hour, from: now)
+        let thisHour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
         let window = now.addingTimeInterval(-Self.fiveHours)
         var projects: [String: Int] = [:]
         for entry in entries {
@@ -207,11 +212,15 @@ final class TranscriptReader: @unchecked Sendable {
                 series.dailyOutput[day] += entry.output
                 series.dailySpend[day] += entry.cost ?? 0
             }
-            if entry.time >= today {
-                let hour = calendar.component(.hour, from: entry.time)
-                series.hourly[hour] += entry.tokens
-                series.hourlyOutput[hour] += entry.output
-                series.hourlySpend[hour] += entry.cost ?? 0
+            // Hours back by the clock's own seconds, so a change to or from daylight saving
+            // doesn't shift them.
+            let start = calendar.dateInterval(of: .hour, for: entry.time)?.start ?? entry.time
+            let back = Int((thisHour.timeIntervalSince(start) / 3600).rounded())
+            if (0..<TokenUsage.hours).contains(back) {
+                let hour = TokenUsage.hours - 1 - back
+                series.hours[hour] += entry.tokens
+                series.hoursOutput[hour] += entry.output
+                series.hoursSpend[hour] += entry.cost ?? 0
             }
             totals.accounts[entry.account] = series
             guard entry.time >= today else { continue }

@@ -508,6 +508,12 @@ struct ScrollInput: Sendable {
     let began: Bool
     let ended: Bool
     let isMomentum: Bool
+    /// A trackpad's (or Magic Mouse's), in phases; a mouse wheel's notches have none.
+    var phased = true
+
+    init(fingerDelta: CGSize, began: Bool = false, ended: Bool = false, isMomentum: Bool = false, phased: Bool = true) {
+        (self.fingerDelta, self.began, self.ended, self.isMomentum, self.phased) = (fingerDelta, began, ended, isMomentum, phased)
+    }
 
     init(_ event: NSEvent) {
         let direction: CGFloat = event.isDirectionInvertedFromDevice ? 1 : -1
@@ -517,6 +523,7 @@ struct ScrollInput: Sendable {
         began = event.phase.contains(.began)
         ended = event.phase.contains(.ended) || event.phase.contains(.cancelled)
         isMomentum = !event.momentumPhase.isEmpty
+        phased = !event.phase.isEmpty || !event.momentumPhase.isEmpty
     }
 }
 

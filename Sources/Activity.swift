@@ -489,10 +489,20 @@ struct ClaudeUsageRows: View {
     }
 }
 
-/// How far back Claude's graph goes: today hour by hour, or the last week's or 30 days' days
-/// (Claude Code keeps a month of chats, to begin with).
+/// How much of Claude's graph shows at once: 24 hours, hour by hour, or a week's or 30 days' days.
+/// It pages back a span at a time, as far as Claude Code keeps chats (a month, to begin with):
+/// page 0 is the latest, ending now.
 enum ClaudeSpan: String, CaseIterable {
+    // ("today" as it's remembered, from when it was the day so far.)
     case today, week, month
+
+    /// What its switch says.
+    var said: String {
+        switch self {
+        case .today: return "24 hours"
+        case .week, .month: return rawValue
+        }
+    }
 
     /// How many bars.
     var count: Int {
@@ -503,55 +513,154 @@ enum ClaudeSpan: String, CaseIterable {
         }
     }
 
-    /// One account's bars: its tokens, or what they'd cost.
-    func values(_ series: TokenUsage.Series, spent: Bool) -> [Double] {
+    /// How many pages back there are: as many as the hours or days kept fill (the last partly).
+    var pages: Int {
+        let kept = self == .today ? TokenUsage.hours : TokenUsage.days
+        return (kept + count - 1) / count
+    }
+
+    /// Page `page`'s share of `all` (oldest first, now last): `count` of them, ending `page`
+    /// spans back; any from before what's kept, none.
+    func slice<Value: AdditiveArithmetic>(_ all: [Value], page: Int) -> [Value] {
+        let end = all.count - page * count
+        return (end - count..<end).map { all.indices.contains($0) ? all[$0] : .zero }
+    }
+
+    /// One account's bars on `page`: its tokens, or what they'd cost.
+    func values(_ series: TokenUsage.Series, spent: Bool, page: Int = 0) -> [Double] {
         switch self {
-        case .today: return spent ? series.hourlySpend : series.hourly.map(Double.init)
-        case .week, .month: return Array((spent ? series.dailySpend : series.daily.map(Double.init)).suffix(count))
+        case .today: return slice(spent ? series.hoursSpend : series.hours.map(Double.init), page: page)
+        case .week, .month: return slice(spent ? series.dailySpend : series.daily.map(Double.init), page: page)
         }
     }
 
-    /// One account's in all: tokens, output and what they'd cost.
-    func sums(_ series: TokenUsage.Series) -> (tokens: Int, output: Int, spent: Double) {
+    /// One account's on `page`, in all: tokens, output and what they'd cost.
+    func sums(_ series: TokenUsage.Series, page: Int = 0) -> (tokens: Int, output: Int, spent: Double) {
         switch self {
-        case .today: return (series.hourly.reduce(0, +), series.hourlyOutput.reduce(0, +), series.hourlySpend.reduce(0, +))
+        case .today:
+            return (slice(series.hours, page: page).reduce(0, +), slice(series.hoursOutput, page: page).reduce(0, +),
+                    slice(series.hoursSpend, page: page).reduce(0, +))
         case .week, .month:
-            return (series.daily.suffix(count).reduce(0, +), series.dailyOutput.suffix(count).reduce(0, +),
-                    series.dailySpend.suffix(count).reduce(0, +))
+            return (slice(series.daily, page: page).reduce(0, +), slice(series.dailyOutput, page: page).reduce(0, +),
+                    slice(series.dailySpend, page: page).reduce(0, +))
         }
     }
 
-    /// The times under the bars, each over an even share of them: "12 AM", "6 AM"…; "Mon"…;
-    /// "Oct 28"… (the last 30 days, five to each).
-    func times(now: Date, calendar: Calendar = .current) -> [String] {
+    /// The tallest slot of all the accounts' together, on any page: one height for every page, so
+    /// one goes against another.
+    func peak(_ series: [TokenUsage.Series], spent: Bool) -> Double {
+        let all = series.map { one -> [Double] in
+            switch self {
+            case .today: return spent ? one.hoursSpend : one.hours.map(Double.init)
+            case .week, .month: return spent ? one.dailySpend : one.daily.map(Double.init)
+            }
+        }
+        let slots = all.map(\.count).max() ?? 0
+        return (0..<slots).map { slot in all.reduce(0) { $0 + ($1.indices.contains(slot) ? $1[slot] : 0) } }.max() ?? 0
+    }
+
+    /// When page `page`'s first slot begins (an hour's, or a day's start).
+    func start(now: Date, page: Int, calendar: Calendar = .current) -> Date {
+        switch self {
+        case .today:
+            let hour = calendar.dateInterval(of: .hour, for: now)?.start ?? now
+            return hour.addingTimeInterval(-3600 * Double(count - 1 + page * count))
+        case .week, .month:
+            let today = calendar.startOfDay(for: now)
+            return calendar.date(byAdding: .day, value: -(count - 1 + page * count), to: today) ?? today
+        }
+    }
+
+    /// The times under page `page`'s bars, each over an even share of them, from its own start:
+    /// "5 PM", "11 PM"…; "Mon"… ("today" last, on the latest); "Oct 28"… (five days to each).
+    func times(now: Date, page: Int = 0, calendar: Calendar = .current) -> [String] {
         let formatter = DateFormatter()
-        let today = calendar.startOfDay(for: now)
-        func day(_ back: Int) -> Date { calendar.date(byAdding: .day, value: -back, to: today) ?? today }
+        let first = start(now: now, page: page, calendar: calendar)
         switch self {
         case .today:
             formatter.setLocalizedDateFormatFromTemplate("j")
-            return stride(from: 0, to: 24, by: 6).map { formatter.string(from: calendar.date(byAdding: .hour, value: $0, to: today) ?? today) }
+            return stride(from: 0, to: count, by: 6).map { formatter.string(from: first.addingTimeInterval(3600 * Double($0))) }
         case .week:
             formatter.setLocalizedDateFormatFromTemplate("EEE")
-            return (0..<7).reversed().map { $0 == 0 ? "today" : formatter.string(from: day($0)) }
+            return (0..<count).map { day in
+                page == 0 && day == count - 1 ? "today" : formatter.string(from: calendar.date(byAdding: .day, value: day, to: first) ?? first)
+            }
         case .month:
             formatter.setLocalizedDateFormatFromTemplate("MMMd")
-            return stride(from: count - 1, through: 0, by: -5).map { formatter.string(from: day($0)) }
+            return stride(from: 0, to: count, by: 5).map { formatter.string(from: calendar.date(byAdding: .day, value: $0, to: first) ?? first) }
         }
+    }
+
+    /// What page `page` spans, past the latest: "Nov 24, 5 PM – Nov 25, 4 PM"; "Oct 29 – Nov 4".
+    func range(now: Date, page: Int, calendar: Calendar = .current) -> String? {
+        guard page > 0 else { return nil }
+        let first = start(now: now, page: page, calendar: calendar)
+        let formatter = DateIntervalFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = self == .today ? .short : .none
+        formatter.dateTemplate = self == .today ? "MMMdj" : "MMMd"
+        let last = self == .today ? first.addingTimeInterval(3600 * Double(count - 1))
+            : calendar.date(byAdding: .day, value: count - 1, to: first) ?? first
+        return formatter.string(from: first, to: last).replacingOccurrences(of: "\u{202F}", with: " ")
+    }
+}
+
+/// Which of Claude's graph's pages is up, and turning to another: a page a swipe, however far the
+/// fingers go (and none for the glide after), fingers right going back in time, as the bars
+/// would be pulled along.
+struct GraphPaging: Equatable {
+    var page = 0
+    private var travelled: CGFloat = 0
+    private var turned = false
+
+    /// How far across the fingers go before it turns.
+    static let reach: CGFloat = 30
+
+    mutating func scrolled(_ input: ScrollInput, pages: Int) {
+        if input.began || !input.phased {
+            travelled = 0
+            turned = false
+        }
+        let across = input.fingerDelta.width
+        if !input.isMomentum, abs(across) > abs(input.fingerDelta.height) {
+            travelled += across
+            if !turned, abs(travelled) >= (input.phased ? Self.reach : 1) {
+                turn(by: travelled > 0 ? 1 : -1, pages: pages)
+                turned = true
+            }
+        }
+        if input.ended {
+            travelled = 0
+            turned = false
+        }
+    }
+
+    /// Back (`by` 1) or on (−1), as far as there are pages.
+    mutating func turn(by step: Int, pages: Int) {
+        page = min(max(page + step, 0), max(pages - 1, 0))
     }
 }
 
 /// Claude Code's tokens, or what they'd have cost at Anthropic's API prices (see `ClaudePrice`),
-/// big: a bar a slot (an hour today, else a day), each account's stacked on the others in its own
-/// color (school in Stanford's cardinal, personal in blue, see `ClaudeWindowRow.color`), the slot
-/// it is now brighter. Over it, switches for tokens or what's spent and for how far back; under
-/// it, the times, then a line for each account: its tokens, output and what they'd cost.
+/// big: a bar a slot (an hour, or a day), each account's stacked on the others in its own color
+/// (school in Stanford's cardinal, personal in blue, see `ClaudeWindowRow.color`), the slot it is
+/// now brighter, all of it to one height across its pages (see `ClaudeSpan.peak`). Over it,
+/// switches for tokens or what's spent and for how much shows (24 hours, a week, a month); swipe
+/// across it with two fingers (or click ‹ ›, there while the pointer's on it) to go back a span
+/// at a time, the span then said at its top right. Under it, the times, then a line for each
+/// account: its tokens, output and what they'd cost, on the page that's up.
 struct ClaudeGraph: View {
     let totals: TokenUsage.Totals?
     let accounts: [ClaudeAccount]
     var now = Date()
+    /// The page to begin on, and whether it's swiped (for pictures, which can't hold what reads
+    /// the swipes).
+    var startingPage = 0
+    var swipes = true
     @AppStorage("usage.claudeSpan") private var spanName = ClaudeSpan.today.rawValue
     @AppStorage("usage.claudeSpent") private var spent = false
+    @StateObject private var paging = LocalState(GraphPaging())
+    @StateObject private var pointing = LocalState(false)
     @Environment(\.notchTheme) private var theme
 
     static let barsHeight: CGFloat = 84
@@ -560,6 +669,7 @@ struct ClaudeGraph: View {
 
     var body: some View {
         let span = ClaudeSpan(rawValue: spanName) ?? .today
+        let page = max(paging.value.page, startingPage)
         let midnight = theme == .midnight
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
@@ -569,17 +679,23 @@ struct ClaudeGraph: View {
                 Spacer(minLength: 4)
                 UsageSwitch(options: ["tokens", "spent"], picked: spent ? 1 : 0) { spent = $0 == 1 }
                     .help("Tokens (input, output and cache writes), or what they'd cost at Anthropic's API prices (a subscription doesn't charge by the token)")
-                UsageSwitch(options: ClaudeSpan.allCases.map(\.rawValue), picked: ClaudeSpan.allCases.firstIndex(of: span) ?? 0) {
+                UsageSwitch(options: ClaudeSpan.allCases.map(\.said), picked: ClaudeSpan.allCases.firstIndex(of: span) ?? 0) {
                     spanName = ClaudeSpan.allCases[$0].rawValue
+                    // A new span begins at the latest.
+                    paging.value = GraphPaging()
                 }
             }
             .frame(height: 16)
             Spacer().frame(height: 6)
-            bars(span, midnight: midnight)
+            bars(span, page: page, midnight: midnight)
                 .frame(height: Self.barsHeight)
+                .overlay { turners(span, page: page) }
+                .background { if swipes { ScrollReader { input in paging.value.scrolled(input, pages: span.pages) } } }
+                .onHover { inside in withAnimation(.easeOut(duration: 0.15)) { pointing.value = inside } }
+                .animation(midnight ? .easeInOut(duration: 0.35) : .easeOut(duration: 0.18), value: page)
             Spacer().frame(height: 3)
             HStack(spacing: 0) {
-                ForEach(Array(span.times(now: now).enumerated()), id: \.offset) { _, time in
+                ForEach(Array(span.times(now: now, page: page).enumerated()), id: \.offset) { _, time in
                     Text(time)
                         .notchFont(size: 9, weight: .medium, digits: true)
                         .foregroundStyle(.white.opacity(0.4))
@@ -590,7 +706,7 @@ struct ClaudeGraph: View {
             .frame(height: 12)
             Spacer().frame(height: 6)
             ForEach(Array(accounts.enumerated()), id: \.element.id) { index, account in
-                legend(account, mark: index, span: span)
+                legend(account, mark: index, span: span, page: page)
                     .frame(height: 18)
             }
         }
@@ -600,13 +716,14 @@ struct ClaudeGraph: View {
         totals?.accounts[account.id] ?? TokenUsage.Series()
     }
 
-    @ViewBuilder private func bars(_ span: ClaudeSpan, midnight: Bool) -> some View {
-        let columns = accounts.map { span.values(series($0), spent: spent) }
+    @ViewBuilder private func bars(_ span: ClaudeSpan, page: Int, midnight: Bool) -> some View {
+        let columns = accounts.map { span.values(series($0), spent: spent, page: page) }
         let colors = accounts.indices.map { ClaudeWindowRow.color($0, theme: theme) }
         let count = span.count
         let sums = (0..<count).map { slot in columns.reduce(0) { $0 + ($1.indices.contains(slot) ? $1[slot] : 0) } }
-        let peak = sums.max() ?? 0
-        let current = span == .today ? (totals?.hour ?? Calendar.current.component(.hour, from: now)) : count - 1
+        let peak = span.peak(accounts.map(series), spent: spent)
+        // The slot it is now: the latest page's last.
+        let current = page == 0 ? count - 1 : -1
         ZStack(alignment: .topLeading) {
             Canvas { canvas, size in
                 let slot = size.width / CGFloat(count)
@@ -614,10 +731,7 @@ struct ClaudeGraph: View {
                 for index in 0..<count {
                     let x = CGFloat(index) * slot + gap / 2, width = slot - gap
                     guard peak > 0, sums[index] > 0 else {
-                        // Nothing then: a faint tick (none yet for the hours to come).
-                        if span != .today || index <= current {
-                            canvas.fill(Path(CGRect(x: x, y: size.height - 1, width: width, height: 1)), with: .color(.white.opacity(0.15)))
-                        }
+                        canvas.fill(Path(CGRect(x: x, y: size.height - 1, width: width, height: 1)), with: .color(.white.opacity(0.15)))
                         continue
                     }
                     var bottom = size.height
@@ -637,18 +751,53 @@ struct ClaudeGraph: View {
                     .foregroundStyle(.white.opacity(0.45))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if peak > 0 {
-                // The tallest, at the top.
+                // The tallest of any page, at the top.
                 Text(spent ? ClaudeUsageRows.dollars(peak) : ActivityPage.tokens(Int(peak)))
                     .notchFont(size: 9, weight: .medium, digits: true)
                     .foregroundStyle(.white.opacity(0.4))
                     .padding(.leading, 4)
                     .padding(.top, 2)
             }
+            // Gone back: which span it is.
+            if let range = span.range(now: now, page: page) {
+                Text(range)
+                    .notchFont(size: 9.5, weight: .medium, digits: true)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(.trailing, 5)
+                    .padding(.top, 2)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+            }
         }
     }
 
-    private func legend(_ account: ClaudeAccount, mark: Int, span: ClaudeSpan) -> some View {
-        let sums = span.sums(series(account))
+    /// ‹ back a span and › on one, at the graph's sides while the pointer's on it (each only
+    /// where there's a page to go to).
+    private func turners(_ span: ClaudeSpan, page: Int) -> some View {
+        HStack {
+            turner("chevron.left", "Back \(span.said)", shown: page < span.pages - 1) { paging.value.turn(by: 1, pages: span.pages) }
+            Spacer()
+            turner("chevron.right", "On \(span.said)", shown: page > 0) { paging.value.turn(by: -1, pages: span.pages) }
+        }
+        .opacity(pointing.value ? 1 : 0)
+    }
+
+    private func turner(_ symbol: String, _ help: String, shown: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 20, height: 28)
+                .background(Capsule().fill(theme == .midnight ? Midnight.ink.opacity(0.75) : Color.black.opacity(0.6)))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .opacity(shown ? 1 : 0)
+        .allowsHitTesting(shown)
+    }
+
+    private func legend(_ account: ClaudeAccount, mark: Int, span: ClaudeSpan, page: Int) -> some View {
+        let sums = span.sums(series(account), page: page)
         let color = ClaudeWindowRow.color(mark, theme: theme)
         return HStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 1.5).fill(color).frame(width: 8, height: 8)
