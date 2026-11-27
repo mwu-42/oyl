@@ -1,7 +1,8 @@
 import Combine
 import Foundation
 
-/// Your commits today, hour by hour, for the stats page, as Claude's tokens are: from the git
+/// Your commits over the past year, by day and by week (and today, by the hour), for the usage
+/// page's GitHub part, as its grid is: from the git
 /// repositories Claude Code's worked in (each folder's, as its transcripts say, remembered once
 /// seen, so one worked on by hand afterwards still counts). Only yours (by the repository's own
 /// `user.email`), on its local branches, unpushed ones too. Read while the page is up, once a
@@ -18,7 +19,24 @@ final class CommitTimeline: ObservableObject {
         /// The repository with the most today (its folder's name).
         var busiest: String?
         var repositories = 0
+        /// Each of the last 30 days (today last), and each of the last 53 weeks, Sunday to
+        /// Saturday as GitHub's grid has them (this one last).
+        var daily = [Int](repeating: 0, count: CommitTimeline.days)
+        var weekly = [Int](repeating: 0, count: CommitTimeline.weeks)
+        /// The repository with the most in each span.
+        var busiestIn: [GitHubSpan: String] = [:]
+
+        /// How many in `span`.
+        func count(in span: GitHubSpan) -> Int {
+            span.days.map { daily.suffix($0).reduce(0, +) } ?? weekly.reduce(0, +)
+        }
+
+        /// The bars for `span`: a day each for a week or a month, a week each for the year.
+        func bars(_ span: GitHubSpan) -> [Int] { span.days.map { Array(daily.suffix($0)) } ?? weekly }
     }
+
+    nonisolated static let days = 30
+    nonisolated static let weeks = 53
 
     @Published private(set) var totals: Totals?
 
@@ -91,7 +109,7 @@ final class CommitTimeline: ObservableObject {
         reading = true
         let repositories = self.repositories
         let now = Date()
-        let since = min(Calendar.current.startOfDay(for: now), now.addingTimeInterval(-5 * 3600))
+        let since = Self.since(now)
         DispatchQueue.global(qos: .utility).async {
             let commits = repositories.flatMap { root in
                 Self.commits(in: root, since: since).map { (repo: (root as NSString).lastPathComponent, time: $0) }
@@ -108,23 +126,43 @@ final class CommitTimeline: ObservableObject {
 
     // MARK: Reading git
 
+    /// The first moment read: the Sunday 52 weeks before this week's (the grid's first day).
+    nonisolated static func since(_ now: Date, calendar: Calendar = .current) -> Date {
+        let today = calendar.startOfDay(for: now)
+        let sunday = calendar.date(byAdding: .day, value: 1 - calendar.component(.weekday, from: today), to: today) ?? today
+        return calendar.date(byAdding: .day, value: -7 * (weeks - 1), to: sunday) ?? sunday
+    }
+
     /// The commits made at or after `since`: by hour of today, today's and the last five hours',
-    /// and the repository with the most today.
+    /// each day's and week's, and the repository with the most today and in each span.
     nonisolated static func tally(_ commits: [(repo: String, time: Date)], repositories: Int, now: Date,
                                   calendar: Calendar = .current) -> Totals {
         var totals = Totals()
         totals.hour = calendar.component(.hour, from: now)
         totals.repositories = repositories
         let today = calendar.startOfDay(for: now), window = now.addingTimeInterval(-5 * 3600)
+        let first = since(now, calendar: calendar)
         var repos: [String: Int] = [:]
-        for commit in commits where commit.time <= now {
+        var reposIn: [GitHubSpan: [String: Int]] = [:]
+        for commit in commits where commit.time <= now && commit.time >= first {
             if commit.time >= window { totals.lastFiveHours += 1 }
+            let back = calendar.dateComponents([.day], from: calendar.startOfDay(for: commit.time), to: today).day ?? 0
+            if back < days { totals.daily[days - 1 - back] += 1 }
+            let week = (calendar.dateComponents([.day], from: first, to: calendar.startOfDay(for: commit.time)).day ?? 0) / 7
+            if totals.weekly.indices.contains(week) { totals.weekly[week] += 1 }
+            for span in GitHubSpan.allCases where back < (span.days ?? Int.max) {
+                reposIn[span, default: [:]][commit.repo, default: 0] += 1
+            }
             guard commit.time >= today else { continue }
             totals.today += 1
             totals.hourly[calendar.component(.hour, from: commit.time)] += 1
             repos[commit.repo, default: 0] += 1
         }
-        totals.busiest = repos.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+        func most(_ counts: [String: Int]) -> String? {
+            counts.max { $0.value != $1.value ? $0.value < $1.value : $0.key > $1.key }?.key
+        }
+        totals.busiest = most(repos)
+        totals.busiestIn = reposIn.compactMapValues(most)
         return totals
     }
 

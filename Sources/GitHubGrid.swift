@@ -224,17 +224,43 @@ final class GitHubContributions: ObservableObject {
     }
 }
 
+/// How far back GitHub's part of the usage page goes: the grid, and the commits over it.
+enum GitHubSpan: String, CaseIterable {
+    case week, month, year
+
+    /// How many days back, a week's or 30; the year's the whole grid.
+    var days: Int? {
+        switch self {
+        case .week: return 7
+        case .month: return 30
+        case .year: return nil
+        }
+    }
+
+    /// "past week".
+    var said: String { "past " + rawValue }
+}
+
+/// GitHub's own greens, its dark theme's, the quietest day's to the busiest's; and as this look
+/// shows them (paled in Midnight's, less than its accents, so they stay green).
+enum GitHubGreen {
+    static let levels = [Color(red: 0.055, green: 0.267, blue: 0.161), Color(red: 0, green: 0.427, blue: 0.196),
+                         Color(red: 0.149, green: 0.651, blue: 0.255), Color(red: 0.224, green: 0.827, blue: 0.325)]
+    static func bright(_ theme: NotchTheme) -> Color { theme == .midnight ? Midnight.pale(levels[3], keep: 0.6) : levels[3] }
+}
+
 /// Where the grid's squares go in a space `size` big, for `weeks` weeks: the months' names in a
-/// row over it, then seven rows, Sunday at the top.
+/// row over it, then seven rows, Sunday at the top; or, for the last week or month, one row of
+/// them, a day to a column.
 struct ContributionLayout {
     static let monthRow: CGFloat = 10
     let pitch: CGFloat
     let cell: CGFloat
     let origin: CGPoint
 
-    init(size: CGSize, weeks: Int) {
+    init(size: CGSize, weeks: Int, rows: Int = 7) {
         let columns = CGFloat(max(weeks, 1))
-        pitch = max(min(size.width / columns, (size.height - Self.monthRow) / 7), 1)
+        pitch = max(min(size.width / columns, (size.height - Self.monthRow) / CGFloat(max(rows, 1))), 1)
         cell = pitch * 0.8
         // Against the right, where today is.
         origin = CGPoint(x: size.width - columns * pitch, y: Self.monthRow)
@@ -261,9 +287,10 @@ struct ContributionLayout {
 /// On the Activity page, under Claude's rows: the grid, kept up to date while it's showing.
 struct GitHubRow: View {
     @ObservedObject var github = GitHubContributions.shared
+    var span = GitHubSpan.year
 
     var body: some View {
-        ContributionsRow(grid: github.grid, trouble: github.trouble, reading: github.isReading)
+        ContributionsRow(grid: github.grid, trouble: github.trouble, reading: github.isReading, span: span)
             .onAppear { github.start() }
             .onDisappear { github.stop() }
             // Right-click: it hidden (the page is shorter by it).
@@ -284,17 +311,30 @@ struct ContributionsRow: View {
     let grid: GitHubContributions.Grid?
     let trouble: GitHubContributions.Trouble?
     let reading: Bool
+    var span = GitHubSpan.year
     @StateObject private var pointed: LocalState<GitHubContributions.Day?>
     @Environment(\.notchTheme) private var theme
-    private var tint: Color { theme.tint(ActivityPage.tint) }
+    private var tint: Color { GitHubGreen.bright(theme) }
 
     /// `pointing`: as if pointed at from the first (for pictures of it).
-    init(grid: GitHubContributions.Grid?, trouble: GitHubContributions.Trouble?, reading: Bool,
+    init(grid: GitHubContributions.Grid?, trouble: GitHubContributions.Trouble?, reading: Bool, span: GitHubSpan = .year,
          pointing: GitHubContributions.Day? = nil) {
         self.grid = grid
         self.trouble = trouble
         self.reading = reading
+        self.span = span
         _pointed = StateObject(wrappedValue: LocalState(pointing))
+    }
+
+    /// What's drawn: the year's weeks; or the last week's or month's days, each a column of its own.
+    nonisolated static func columns(_ weeks: [[GitHubContributions.Day]], span: GitHubSpan) -> [[GitHubContributions.Day]] {
+        guard let days = span.days else { return weeks }
+        return weeks.flatMap { $0 }.suffix(days).map { [GitHubContributions.Day(date: $0.date, weekday: 0, count: $0.count, level: $0.level)] }
+    }
+
+    /// Their contributions in all: the year's as GitHub counts it, else the days'.
+    nonisolated static func total(_ grid: GitHubContributions.Grid, span: GitHubSpan) -> Int {
+        span == .year ? grid.total : columns(grid.weeks, span: span).flatMap { $0 }.reduce(0) { $0 + $1.count }
     }
 
     var body: some View {
@@ -302,13 +342,13 @@ struct ContributionsRow: View {
             figures
                 .frame(width: 54, alignment: .leading)
             GeometryReader { geometry in
-                let weeks = grid?.weeks ?? Self.blank
-                let layout = ContributionLayout(size: geometry.size, weeks: weeks.count)
+                let weeks = Self.columns(grid?.weeks ?? Self.blank, span: span)
+                let layout = ContributionLayout(size: geometry.size, weeks: weeks.count, rows: span == .year ? 7 : 1)
                 ZStack(alignment: .topLeading) {
                     months(weeks, layout)
                     if theme == .midnight {
                         StarChart(weeks: weeks, layout: layout, today: grid != nil ? weeks.last?.last?.date : nil,
-                                  pointed: pointed.value?.date)
+                                  pointed: pointed.value?.date, color: tint)
                     } else {
                         squares(weeks, layout)
                     }
@@ -319,7 +359,7 @@ struct ContributionsRow: View {
                     guard let grid else { return }
                     switch phase {
                     case .active(let point):
-                        let day = layout.day(at: point, in: grid.weeks)
+                        let day = layout.day(at: point, in: Self.columns(grid.weeks, span: span))
                         if day != pointed.value {
                             withAnimation(theme == .midnight ? .easeInOut(duration: 0.3) : .easeOut(duration: 0.12)) { pointed.value = day }
                         }
@@ -334,21 +374,17 @@ struct ContributionsRow: View {
         .help(help)
     }
 
-    /// "GitHub", then the year's total or the day pointed at's count, and what it's of.
+    /// The span's total or the day pointed at's count, and what it's of (GitHub's named over it).
     private var figures: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text("GitHub")
-                .notchFont(size: 11, weight: .medium)
-                .foregroundStyle(tint.opacity(0.75))
-                .frame(height: 16)
             Spacer(minLength: 0)
             if let grid {
                 let day = pointed.value
-                Text((day?.count ?? grid.total).formatted())
+                Text((day?.count ?? Self.total(grid, span: span)).formatted())
                     .notchFont(size: 11, weight: .medium, digits: true)
-                    .foregroundStyle(.white.opacity(0.85))
+                    .foregroundStyle(tint)
                     .lineLimit(1)
-                Text(day.map { $0.date == grid.weeks.last?.last?.date ? "today" : "on " + GitHubContributions.said($0.date) } ?? "past year")
+                Text(day.map { $0.date == grid.weeks.last?.last?.date ? "today" : "on " + GitHubContributions.said($0.date) } ?? span.said)
                     .notchFont(size: 9.5, weight: .medium)
                     .foregroundStyle(.white.opacity(0.4))
                     .lineLimit(1)
@@ -357,8 +393,11 @@ struct ContributionsRow: View {
         .padding(.bottom, 2)
     }
 
+    /// Over the grid, the months' names; over a week's days, each one's.
     private func months(_ weeks: [[GitHubContributions.Day]], _ layout: ContributionLayout) -> some View {
-        ForEach(grid == nil ? [] : GitHubContributions.months(weeks), id: \.week) { mark in
+        let marks = grid == nil ? [] : span == .week ? weeks.enumerated().map { (week: $0.offset, name: Self.weekday($0.element.first?.date)) }
+            : GitHubContributions.months(weeks)
+        return ForEach(marks, id: \.week) { mark in
             Text(mark.name)
                 .notchFont(size: 8, weight: .medium, role: .label)
                 .foregroundStyle(.white.opacity(theme == .midnight ? 0.45 : 0.38))
@@ -367,18 +406,28 @@ struct ContributionsRow: View {
         }
     }
 
-    /// Oyl's look: rounded squares in the page's pink.
+    /// "Mon", of a day's "2026-11-23".
+    nonisolated static func weekday(_ date: String?) -> String {
+        let read = DateFormatter()
+        read.dateFormat = "yyyy-MM-dd"
+        read.locale = Locale(identifier: "en_US_POSIX")
+        guard let date, let day = read.date(from: date) else { return "" }
+        let say = DateFormatter()
+        say.setLocalizedDateFormatFromTemplate("EEE")
+        return say.string(from: day)
+    }
+
+    /// Oyl's look: rounded squares in GitHub's own greens.
     private func squares(_ weeks: [[GitHubContributions.Day]], _ layout: ContributionLayout) -> some View {
         let today = grid != nil ? weeks.last?.last?.date : nil
         let pointed = pointed.value?.date
-        let tint = tint
         return Canvas { context, _ in
             let corner = layout.cell * 0.24
             for (index, week) in weeks.enumerated() {
                 for day in week {
                     let square = layout.rect(week: index, weekday: day.weekday)
                     let shape = Path(roundedRect: square, cornerRadius: corner)
-                    let fill = day.level == 0 ? Color.white.opacity(0.08) : tint.opacity([0.3, 0.5, 0.75, 1][min(day.level, 4) - 1])
+                    let fill = day.level == 0 ? Color.white.opacity(0.08) : GitHubGreen.levels[min(day.level, 4) - 1]
                     context.fill(shape, with: .color(fill))
                     if day.date == pointed {
                         context.stroke(Path(roundedRect: square.insetBy(dx: -0.6, dy: -0.6), cornerRadius: corner + 0.6),
@@ -416,11 +465,11 @@ struct ContributionsRow: View {
     }
 
     private var help: String {
-        guard grid != nil else { return "Your GitHub contributions this past year, read with GitHub's gh tool" }
+        guard grid != nil else { return "Your GitHub contributions, read with GitHub's gh tool" }
         switch trouble {
         case .signedOut: return "As last read: gh is signed out now. Click a day to see it on GitHub"
         case .failed, .noTool: return "As last read: GitHub couldn't be reached just now. Click a day to see it on GitHub"
-        case nil: return "Your GitHub contributions this past year. Click a day to see what you did on GitHub"
+        case nil: return "Your GitHub contributions, the \(span.said). Click a day to see what you did on GitHub"
         }
     }
 
@@ -440,14 +489,15 @@ struct ContributionsRow: View {
         (0..<53).map { week in (0..<7).map { GitHubContributions.Day(date: "\(week)-\($0)", weekday: $0, count: 0, level: 0) } }
 }
 
-/// Midnight Oyl's grid, a star chart (see `ContributionsRow`), its stars in the page's pink, as
+/// Midnight Oyl's grid, a star chart (see `ContributionsRow`), its stars in GitHub's green, as
 /// Midnight has it (paler).
 private struct StarChart: View {
     let weeks: [[GitHubContributions.Day]]
     let layout: ContributionLayout
     let today: String?
     let pointed: String?
-    private let pink = NotchTheme.midnight.tint(ActivityPage.tint)
+    let color: Color
+    private var pink: Color { color }
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1.0 / 20)) { timeline in

@@ -436,14 +436,13 @@ private struct Sparkline: View {
 /// 5-hour window, your commits, and GitHub's grid under them.
 struct UsagePage: View {
     @ObservedObject var usage = TokenUsage.shared
-    /// (For GitHub's grid, turned on or off.)
-    @ObservedObject private var features = Features.shared
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             ClaudeUsageRows(totals: usage.totals)
-            // (The page is taller by it, so it's always at the foot: see `Layout.githubHeight`.)
-            if features.isOn(.githubGrid) { GitHubRow() }
+            // (The page is taller by it, so it's at the foot: see `GitHubSection.height`.)
+            GitHubSection()
+                .padding(.top, 8)
         }
         .padding(.horizontal, 24)
         .padding(.top, 6)
@@ -459,8 +458,8 @@ struct UsagePage: View {
     }
 }
 
-/// Claude's part of the usage page: the graph of both accounts' tokens (see `ClaudeGraph`), each
-/// account's 5-hour window under it, and your commits.
+/// Claude's part of the usage page: the graph of both accounts' tokens (see `ClaudeGraph`), and
+/// each account's 5-hour window under it.
 struct ClaudeUsageRows: View {
     let totals: TokenUsage.Totals?
     @ObservedObject private var limit = ClaudeLimit.shared
@@ -476,7 +475,6 @@ struct ClaudeUsageRows: View {
                     ClaudeWindowRow(reading: limit.readings[account.id], account: several ? account : nil, mark: index)
                 }
             }
-            if features.isOn(.commitTimeline) { CommitRow() }
         }
         .onAppear { limit.nudge() }
     }
@@ -778,26 +776,27 @@ struct ClaudeWindowRow: View {
 /// bars, how many today and in the last five hours, and the repository with the most.
 struct CommitRow: View {
     @ObservedObject private var commits = CommitTimeline.shared
+    var span = GitHubSpan.year
     /// Shown in place of what's read (for a picture of it).
     var given: CommitTimeline.Totals? = nil
     @Environment(\.notchTheme) private var theme
-    private var tint: Color { theme.tint(ActivityPage.tint) }
+    private var tint: Color { GitHubGreen.bright(theme) }
 
     var body: some View {
         let totals = given ?? commits.totals
         HStack(spacing: 8) {
             Text("Commits")
                 .notchFont(size: 11, weight: .medium)
-                .foregroundStyle(tint.opacity(0.75))
+                .foregroundStyle(tint.opacity(0.8))
                 .frame(width: 54, alignment: .leading)
-            HourlyBars(values: totals?.hourly ?? [], hour: totals?.hour ?? -1)
-                .frame(width: 92, height: 16)
-            Text(Self.says(totals))
+            SlotBars(values: totals?.bars(span) ?? [], current: (totals?.bars(span).count ?? 0) - 1, tint: tint)
+                .frame(width: 128, height: 16)
+            Text(Self.says(totals, span: span))
                 .notchFont(size: 11, weight: .medium, digits: true)
                 .foregroundStyle(.white.opacity(totals?.repositories == 0 ? 0.45 : 0.85))
                 .lineLimit(1)
             Spacer(minLength: 0)
-            if let busiest = totals?.busiest {
+            if let busiest = totals?.busiestIn[span] {
                 HStack(spacing: 3) {
                     Image(systemName: "folder")
                         .notchSymbol(size: 8, weight: .semibold)
@@ -821,24 +820,69 @@ struct CommitRow: View {
         guard totals.today > 0 || totals.lastFiveHours > 0 else { return "None today" }
         return "\(totals.today) today · \(totals.lastFiveHours) last 5 h"
     }
+
+    /// "34 past week · 5 today"; "120 past month"; before any's read, or with none to read.
+    static func says(_ totals: CommitTimeline.Totals?, span: GitHubSpan) -> String {
+        guard let totals else { return "Reading git…" }
+        guard totals.repositories > 0 else { return "No repositories yet" }
+        let count = totals.count(in: span)
+        guard count > 0 else { return "None, the \(span.said)" }
+        return "\(count) \(span.said)" + (span == .week && totals.today > 0 ? " · \(totals.today) today" : "")
+    }
 }
 
-private struct HourlyBars: View {
+/// GitHub's part of the usage page, in its green: its name and how far back (the past week,
+/// month or year, remembered), your commits, then its grid.
+struct GitHubSection: View {
+    @ObservedObject private var features = Features.shared
+    @AppStorage("usage.githubSpan") private var spanName = GitHubSpan.year.rawValue
     @Environment(\.notchTheme) private var theme
-    /// The page's pink as this look shows it.
-    private var tint: Color { theme.tint(ActivityPage.tint) }
+
+    /// How tall it is, with what's on (none of it: nothing).
+    static var height: CGFloat {
+        let grid = Feature.githubGrid.isOn, commits = Feature.commitTimeline.isOn
+        guard grid || commits else { return 0 }
+        return 8 + 16 + (commits ? 24 : 0) + (grid ? 8 + Layout.githubHeight : 0)
+    }
+
+    var body: some View {
+        let span = GitHubSpan(rawValue: spanName) ?? .year
+        if features.isOn(.githubGrid) || features.isOn(.commitTimeline) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Text("GitHub")
+                        .notchFont(size: 11, weight: .semibold)
+                        .foregroundStyle(GitHubGreen.bright(theme))
+                    Spacer(minLength: 4)
+                    UsageSwitch(options: GitHubSpan.allCases.map(\.rawValue), picked: GitHubSpan.allCases.firstIndex(of: span) ?? 2) {
+                        spanName = GitHubSpan.allCases[$0].rawValue
+                    }
+                }
+                .frame(height: 16)
+                if features.isOn(.commitTimeline) { CommitRow(span: span) }
+                if features.isOn(.githubGrid) { GitHubRow(span: span) }
+            }
+        }
+    }
+}
+
+/// A bar a slot (an hour, a day, a week), the one it is now brighter; one with none, a faint tick.
+private struct SlotBars: View {
     let values: [Int]
-    let hour: Int
+    let current: Int
+    let tint: Color
 
     var body: some View {
         Canvas { canvas, size in
             let peak = CGFloat(max(values.max() ?? 0, 1))
-            let slot = size.width / 24
-            for index in 0..<24 {
+            let count = max(values.count, 1)
+            let slot = size.width / CGFloat(count)
+            for index in 0..<count {
                 let value = index < values.count ? CGFloat(values[index]) : 0
                 let height = value > 0 ? max(size.height * value / peak, 2) : 1
-                let bar = CGRect(x: CGFloat(index) * slot + 0.5, y: size.height - height, width: slot - 1, height: height)
-                let opacity = value > 0 ? (index == hour ? 1 : 0.55) : (index == hour ? 0.5 : 0.15)
+                let gap = min(1, slot * 0.25)
+                let bar = CGRect(x: CGFloat(index) * slot + gap / 2, y: size.height - height, width: slot - gap, height: height)
+                let opacity = value > 0 ? (index == current ? 1 : 0.6) : (index == current ? 0.5 : 0.15)
                 canvas.fill(Path(bar), with: .color(tint.opacity(opacity)))
             }
         }

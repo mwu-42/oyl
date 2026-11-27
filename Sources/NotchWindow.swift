@@ -11,15 +11,15 @@ enum Layout {
     static var activityHeight: CGFloat { activitySystemHeight + 22 }
     /// Its rows: the processor, memory, network, battery and temperatures.
     static let activitySystemHeight: CGFloat = 112
-    /// The usage page: Claude's graph, a row for each account's 5-hour window, and the commits
-    /// (GitHub's grid under them, see `usageWithGitHub`).
+    /// The usage page: Claude's graph, a row for each account's 5-hour window, then GitHub's part
+    /// (see `GitHubSection.height`).
     static var usageHeight: CGFloat {
         22 + ClaudeGraph.height(accounts: ClaudeLimit.rows) + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0)
-            + (Feature.commitTimeline.isOn ? 24 : 0)
+            + GitHubSection.height
     }
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.
     static let githubHeight: CGFloat = 54
-    static var usageWithGitHub: CGFloat { usageHeight + 8 + githubHeight }
+
     static let mirrorSize = CGSize(width: 240, height: 180)  // the camera's 4:3, about the size it's taken at
     static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
     static let awakeHeight: CGFloat = 146
@@ -481,7 +481,7 @@ final class NotchState: ObservableObject {
             return Layout.oylsHeight(rows: oylRowCount) + Layout.oylSettingsHeight(rows: oylSettingsRows)
                 + (hasOylsFooter ? Layout.chatsFooterHeight : 0)
         case .activity: return Layout.activityHeight
-        case .usage: return Feature.githubGrid.isOn ? Layout.usageWithGitHub : Layout.usageHeight
+        case .usage: return Layout.usageHeight
         case .mirror: return Layout.mirrorHeight
         case .settings:
             let rows = (SettingsPage.items(settingsSection, state: self).count + 1) / 2
@@ -549,7 +549,7 @@ final class NotchState: ObservableObject {
 
     var windowSize: CGSize {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
-                          Layout.activityHeight, Layout.usageWithGitHub,
+                          Layout.activityHeight, Layout.usageHeight,
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
                           Layout.settingsHeight(rows: Layout.settingsRowsFit),
