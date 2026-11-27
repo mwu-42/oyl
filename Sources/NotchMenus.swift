@@ -63,6 +63,7 @@ struct PageMenu {
         case .inbox: return .inboxPage
         case .awake: return .awakePage
         case .activity: return .activityPage
+        case .usage: return .usagePage
         case .agents, .mirror, .settings: return nil
         }
     }
@@ -73,7 +74,8 @@ struct PageMenu {
         case .timers: return "Timers"
         case .inbox: return "Inbox"
         case .awake: return "Awake"
-        case .activity: return "Stats"
+        case .activity: return "Computer"
+        case .usage: return "Usage"
         case .agents: return "Oyls"
         case .mirror: return "Mirror"
         case .settings: return "Settings"

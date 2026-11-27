@@ -1,4 +1,5 @@
 import Darwin
+import IOKit
 import SwiftUI
 
 /// What the Mac is doing, sampled every couple of seconds while the Activity page is open (and
@@ -22,6 +23,9 @@ final class SystemStats: ObservableObject {
         var busiest: [Process] = []
         var ownCPU = 0.0        // the app itself
         var ownMemory = 0.0
+        /// The chip's and the battery's temperatures, in °C (see `Thermals`).
+        var chipTemp: Double?
+        var batteryTemp: Double?
     }
 
     /// (Set only by sampling, and by the tests' pictures.)
@@ -70,6 +74,7 @@ private final class Sampler: @unchecked Sendable {
     private var network: [String: (down: UInt32, up: UInt32)] = [:]
     private var processTimes: [Int32: UInt64] = [:]
     private var last: TimeInterval?
+    private let sensors = Thermals.Sensors()
     private let timebase: (numer: Double, denom: Double) = {
         var info = mach_timebase_info()
         mach_timebase_info(&info)
@@ -92,6 +97,8 @@ private final class Sampler: @unchecked Sendable {
         snapshot.busiest = Array(processes.sorted { $0.cpu > $1.cpu }.prefix(3))
         snapshot.ownCPU = processes.first { $0.pid == getpid() }?.cpu ?? 0
         snapshot.ownMemory = ownMemory()
+        let thermals = Thermals.pick(sensors.read())
+        (snapshot.chipTemp, snapshot.batteryTemp) = (thermals.chip, thermals.battery)
         return snapshot
     }
 
@@ -189,11 +196,10 @@ private final class Sampler: @unchecked Sendable {
     }
 }
 
+/// The computer page: the processor, memory, network, battery and temperatures, and the busiest
+/// apps, all in its pink.
 struct ActivityPage: View {
     @ObservedObject var stats: SystemStats
-    @ObservedObject var usage = TokenUsage.shared
-    /// (For GitHub's grid, turned on or off.)
-    @ObservedObject private var features = Features.shared
 
     /// The page's pink, for every meter, graph and figure on it.
     static let tint = Color(red: 1, green: 0.42, blue: 0.74)
@@ -202,31 +208,18 @@ struct ActivityPage: View {
     private var tint: Color { theme.tint(ActivityPage.tint) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            system
-            ClaudeUsageRows(totals: usage.totals)
-            // (The page is taller by it, so it's always at the foot: see `Layout.githubHeight`.)
-            if features.isOn(.githubGrid) { GitHubRow() }
-        }
-        .padding(.horizontal, 24)
-        .padding(.top, 6)
-        .padding(.bottom, 16)
-        .onAppear {
-            stats.start()
-            usage.start()
-            CommitTimeline.shared.start()
-        }
-        .onDisappear {
-            stats.stop()
-            usage.stop()
-            CommitTimeline.shared.stop()
-        }
+        system
+            .padding(.horizontal, 24)
+            .padding(.top, 6)
+            .padding(.bottom, 16)
+            .onAppear { stats.start() }
+            .onDisappear { stats.stop() }
     }
 
     var system: some View {
         let now = stats.snapshot
         return HStack(alignment: .top, spacing: 20) {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 8) {
                 metric("CPU") {
                     Sparkline(values: stats.history)
                         .frame(width: 92, height: 16)
@@ -246,10 +239,17 @@ struct ActivityPage: View {
                         value("\(battery)%" + (now.charging ? " · charging" : ""))
                     }
                 }
+                if let chip = now.chipTemp {
+                    metric("Temp") {
+                        Meter(fraction: Thermals.fraction(chip)).frame(width: 92, height: 5)
+                        value(Thermals.said(chip) + (now.batteryTemp.map { " · battery " + Thermals.said($0) } ?? ""))
+                    }
+                    .help("The chip's temperature (its dies' on average), and the battery's")
+                }
             }
             // Its figures whole: the busiest apps' names give way instead.
             .fixedSize(horizontal: true, vertical: false)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Busiest")
                     .notchFont(size: 10, weight: .semibold)
                     .foregroundStyle(tint.opacity(0.7))
@@ -266,9 +266,11 @@ struct ActivityPage: View {
                     }
                 }
                 Spacer(minLength: 0)
-                Text("Oyl: \(Self.percent(now.ownCPU)) CPU · \(Int(now.ownMemory / 1_048_576)) MB")
+                Text("Oyl: \(Self.percent(now.ownCPU)) · \(Int(now.ownMemory / 1_048_576)) MB")
                     .notchFont(size: 10, weight: .medium, digits: true)
                     .foregroundStyle(.white.opacity(0.4))
+                    .lineLimit(1)
+                    .help("Oyl's own share of the processor, and its memory")
             }
             .frame(maxWidth: .infinity, maxHeight: Layout.activitySystemHeight, alignment: .topLeading)  // Claude's rows under it
         }
@@ -313,6 +315,77 @@ struct ActivityPage: View {
     }
 }
 
+/// The Mac's own temperatures, from Apple silicon's sensors as macOS's HID event system has them
+/// (read as tools like Stats read them: no privileges, no prompt), every couple of seconds while
+/// the page is open: the chip, its dies on average; and the battery.
+enum Thermals {
+    struct Reading: Equatable {
+        var chip: Double?
+        var battery: Double?
+    }
+
+    /// Of what the sensors say (name, °C): the chip's dies' on average ("PMU tdie3", "PMU2
+    /// tdie1"), and the battery's ("gas gauge battery"), each left out if it's past reason (one
+    /// says −22° all the time).
+    nonisolated static func pick(_ readings: [(name: String, celsius: Double)]) -> Reading {
+        func mean(_ values: [Double]) -> Double? { values.isEmpty ? nil : values.reduce(0, +) / Double(values.count) }
+        let chip = readings.filter { $0.name.contains("tdie") && (10...130).contains($0.celsius) }.map(\.celsius)
+        let battery = readings.filter { $0.name.hasPrefix("gas gauge battery") && (0...80).contains($0.celsius) }.map(\.celsius)
+        return Reading(chip: mean(chip), battery: mean(battery))
+    }
+
+    /// How far along it is from cool (30°) to as hot as a Mac lets itself get (100°), for its meter.
+    nonisolated static func fraction(_ celsius: Double) -> Double { min(max((celsius - 30) / 70, 0), 1) }
+
+    /// "122°F", or "50°C", as the Mac's set to say temperatures.
+    nonisolated static func said(_ celsius: Double) -> String {
+        let formatter = MeasurementFormatter()
+        formatter.numberFormatter.maximumFractionDigits = 0
+        formatter.unitStyle = .medium
+        return formatter.string(from: Measurement(value: celsius, unit: UnitTemperature.celsius))
+    }
+
+    /// The sensors, found once; read each time asked (on the stats' queue only).
+    final class Sensors: @unchecked Sendable {
+        private var services: [CFTypeRef] = []
+        /// Kept, for its services to go on answering.
+        private var client: CFTypeRef?
+
+        init() {
+            guard let client = hidClientCreate(kCFAllocatorDefault)?.takeRetainedValue() else { return }
+            self.client = client
+            // Apple's own vendor page, and its temperature sensors.
+            _ = hidClientSetMatching(client, ["PrimaryUsagePage": 0xff00, "PrimaryUsage": 5] as CFDictionary)
+            services = (hidClientCopyServices(client)?.takeRetainedValue() as? [CFTypeRef]) ?? []
+        }
+
+        func read() -> [(name: String, celsius: Double)] {
+            services.compactMap { service in
+                guard let name = hidServiceCopyProperty(service, "Product" as CFString)?.takeRetainedValue() as? String,
+                      let event = hidServiceCopyEvent(service, Thermals.temperatureEvent, 0, 0)?.takeRetainedValue() else { return nil }
+                return (name, hidEventGetFloatValue(event, Int32(Thermals.temperatureEvent << 16)))
+            }
+        }
+    }
+
+    /// kIOHIDEventTypeTemperature, and its value's field is it shifted up 16.
+    static let temperatureEvent: Int64 = 15
+}
+
+// IOKit's HID event system: exported, though not in its public headers.
+@_silgen_name("IOHIDEventSystemClientCreate")
+private func hidClientCreate(_ allocator: CFAllocator?) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDEventSystemClientSetMatching")
+private func hidClientSetMatching(_ client: CFTypeRef, _ matching: CFDictionary) -> Int32
+@_silgen_name("IOHIDEventSystemClientCopyServices")
+private func hidClientCopyServices(_ client: CFTypeRef) -> Unmanaged<CFArray>?
+@_silgen_name("IOHIDServiceClientCopyProperty")
+private func hidServiceCopyProperty(_ service: CFTypeRef, _ key: CFString) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDServiceClientCopyEvent")
+private func hidServiceCopyEvent(_ service: CFTypeRef, _ type: Int64, _ options: Int32, _ timestamp: Int64) -> Unmanaged<CFTypeRef>?
+@_silgen_name("IOHIDEventGetFloatValue")
+private func hidEventGetFloatValue(_ event: CFTypeRef, _ field: Int32) -> Double
+
 private struct Meter: View {
     @Environment(\.notchTheme) private var theme
     /// The page's pink as this look shows it.
@@ -356,6 +429,33 @@ private struct Sparkline: View {
             canvas.stroke(line, with: .color(tint), style: StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round))
         }
         .background(RoundedRectangle(cornerRadius: 3).fill(tint.opacity(0.08)))
+    }
+}
+
+/// The usage page: Claude Code's tokens (both accounts', see `ClaudeAccount`), each account's
+/// 5-hour window, your commits, and GitHub's grid under them.
+struct UsagePage: View {
+    @ObservedObject var usage = TokenUsage.shared
+    /// (For GitHub's grid, turned on or off.)
+    @ObservedObject private var features = Features.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ClaudeUsageRows(totals: usage.totals)
+            // (The page is taller by it, so it's always at the foot: see `Layout.githubHeight`.)
+            if features.isOn(.githubGrid) { GitHubRow() }
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 6)
+        .padding(.bottom, 16)
+        .onAppear {
+            usage.start()
+            CommitTimeline.shared.start()
+        }
+        .onDisappear {
+            usage.stop()
+            CommitTimeline.shared.stop()
+        }
     }
 }
 
@@ -547,7 +647,7 @@ struct ClaudeWindowRow: View {
             FeatureToggle(.claudeLimitBar, "On the bar, beside the notch (what's left)")
             FeatureToggle(.morningClaude, "Started early each morning, at \(MorningStart.shared.time)")
             FeatureToggle(.claudeChain, "Started again as each one ends, till 2 AM")
-            FeatureToggle(.claudeLimit, "Here, on the stats page")
+            FeatureToggle(.claudeLimit, "Here, on the usage page")
         }
     }
 

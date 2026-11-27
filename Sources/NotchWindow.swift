@@ -7,17 +7,18 @@ enum Layout {
     static let artSize: CGFloat = 94
     static let musicHeight: CGFloat = 8 + artSize + 22   // page content below the notch strip
     static let lyricsHeight: CGFloat = 74                // three lines of lyrics under the song
-    /// (With a row under Claude's tokens for what they'd cost, and one for each account's 5-hour
-    /// window.)
-    static var activityHeight: CGFloat {
-        activitySystemHeight + 46 + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0) + (Feature.commitTimeline.isOn ? 24 : 0)
+    /// The computer page: its rows, and room round them.
+    static var activityHeight: CGFloat { activitySystemHeight + 22 }
+    /// Its rows: the processor, memory, network, battery and temperatures.
+    static let activitySystemHeight: CGFloat = 112
+    /// The usage page: Claude's tokens, what they'd cost, a row for each account's 5-hour window,
+    /// and the commits (GitHub's grid under them, see `usageWithGitHub`).
+    static var usageHeight: CGFloat {
+        22 + 16 + 24 + (Feature.claudeLimit.isOn ? 24 * CGFloat(ClaudeLimit.rows) : 0) + (Feature.commitTimeline.isOn ? 24 : 0)
     }
-    /// The system's part of it, over Claude's rows: four close rows, so there's room for each
-    /// account and GitHub.
-    static let activitySystemHeight: CGFloat = 80
     /// GitHub's grid, under them (and the gap over it): a row of months, then seven of days.
     static let githubHeight: CGFloat = 54
-    static var activityWithGitHub: CGFloat { activityHeight + 8 + githubHeight }
+    static var usageWithGitHub: CGFloat { usageHeight + 8 + githubHeight }
     static let mirrorSize = CGSize(width: 240, height: 180)  // the camera's 4:3, about the size it's taken at
     static var mirrorHeight: CGFloat { 8 + mirrorSize.height + 16 }
     static let awakeHeight: CGFloat = 146
@@ -79,7 +80,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, inbox, awake, agents, activity, mirror
+    case music, timers, inbox, awake, agents, activity, usage, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -347,7 +348,7 @@ final class NotchState: ObservableObject {
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .inbox, .awake, .activity, .mirror, .settings].filter(shows)
+        [.agents, .music, .timers, .inbox, .awake, .activity, .usage, .mirror, .settings].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
@@ -359,6 +360,7 @@ final class NotchState: ObservableObject {
         case .inbox: return Feature.inboxPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
+        case .usage: return Feature.usagePage.isOn
         case .mirror: return showsMirrorTab
         }
     }
@@ -477,7 +479,8 @@ final class NotchState: ObservableObject {
             // The settings go under them all.
             return Layout.oylsHeight(rows: oylRowCount) + Layout.oylSettingsHeight(rows: oylSettingsRows)
                 + (hasOylsFooter ? Layout.chatsFooterHeight : 0)
-        case .activity: return Feature.githubGrid.isOn ? Layout.activityWithGitHub : Layout.activityHeight
+        case .activity: return Layout.activityHeight
+        case .usage: return Feature.githubGrid.isOn ? Layout.usageWithGitHub : Layout.usageHeight
         case .mirror: return Layout.mirrorHeight
         case .settings:
             let rows = (SettingsPage.items(settingsSection, state: self).count + 1) / 2
@@ -545,7 +548,7 @@ final class NotchState: ObservableObject {
 
     var windowSize: CGSize {
         let tallest = max(Layout.musicHeight + Layout.lyricsHeight, Layout.awakeHeight, Layout.alertHeight, Layout.mirrorHeight,
-                          Layout.activityWithGitHub,
+                          Layout.activityHeight, Layout.usageWithGitHub,
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
                           Layout.settingsHeight(rows: Layout.settingsRowsFit),

@@ -439,6 +439,9 @@ struct ExpandedNotch: View {
                             .transition(NotchView.swap)
                     case .activity:
                         ActivityPage(stats: stats)
+                            .transition(NotchView.swap)
+                    case .usage:
+                        UsagePage()
                             .settingsMenu(.notch) {
                                 FeatureToggle(.claudeLimit, "Claude's 5 hours here")
                                 FeatureToggle(.claudeLimitBar, "5 hours on the bar")
@@ -485,6 +488,7 @@ struct PageTabs: View {
             if tabs.contains(.inbox) { tab(.inbox, symbol: "tray.and.arrow.down") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }
+            if tabs.contains(.usage) { tab(.usage, symbol: "chart.bar.xaxis") }
             if tabs.contains(.mirror) { tab(.mirror, symbol: "camera.fill") }
             tab(.settings, symbol: "gearshape")
         }
