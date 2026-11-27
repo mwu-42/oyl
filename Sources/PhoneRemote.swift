@@ -486,9 +486,8 @@ final class NotchPhoneControls: PhoneControls {
     func snapshot() -> PhoneSnapshot {
         let now = Date()
         let agents = state.agents, playing = state.nowPlaying, timers = state.timers
-        var pages = [(Feature.musicPage, "music"), (Feature.timersPage, "timers"), (Feature.awakePage, "awake")]
+        let pages = [(Feature.musicPage, "music"), (Feature.timersPage, "timers"), (Feature.awakePage, "awake")]
             .filter { $0.0.isOn }.map(\.1)
-        if Feature.ideasPage.isOn, state.tod.isAvailable { pages.append("ideas") }
         let music = playing.track.flatMap { track in
             playing.player.map { player in
                 PhoneSnapshot.Music(player: player.name, title: track.title, artist: track.artist, playing: playing.isPlaying,

@@ -97,13 +97,9 @@ struct SettingsPage: View {
                 items.append(feature(.useToyl, "toyl in Oyl", "On: Oyl's to-dos, ideas, timers and lists are toyl's. Off: nothing of toyl's in Oyl, which goes back to its own (and tod's). Also on the notch's right-click"))
             }
             if state.usesToyl {
-                items += [
-                    feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines: toyl's ideas"),
-                    feature(.inboxPage, "Inbox page", "Put a task in toyl's inbox, read as toyl reads it, and see what's there"),
-                ]
+                items.append(feature(.inboxPage, "Inbox page", "Put a task in toyl's inbox, read as toyl reads it, and see what's there"))
             } else {
                 items += [
-                    feature(.ideasPage, "Ideas page", "Ideas to come back to, with deadlines or rough aims, in tod's brain dump"),
                     feature(.inboxPage, "Inbox page", "Put a task in tod's inbox (“#name” for a list), and see what's there"),
                     feature(.projectsPage, "Projects outline", "Areas, projects and their tasks, ideas and screenshots, as an outline in its own window (right-click the notch: Projects…), with reminders"),
                 ]

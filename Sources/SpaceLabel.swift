@@ -410,7 +410,7 @@ final class SpaceLabel {
             if !inside { finish(keeping: true) }
             return
         }
-        guard inside, space?.isFullscreen == true, !menuBarDown, !state.isViewingDesktops, !state.isTakingShot else { return }
+        guard inside, space?.isFullscreen == true, !menuBarDown, !state.isViewingDesktops else { return }
         startRenaming()
     }
 

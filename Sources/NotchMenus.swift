@@ -60,7 +60,6 @@ struct PageMenu {
         switch page {
         case .music: return .musicPage
         case .timers: return .timersPage
-        case .ideas: return .ideasPage
         case .inbox: return .inboxPage
         case .awake: return .awakePage
         case .activity: return .activityPage
@@ -72,7 +71,6 @@ struct PageMenu {
         switch page {
         case .music: return "Music"
         case .timers: return "Timers"
-        case .ideas: return "Ideas"
         case .inbox: return "Inbox"
         case .awake: return "Awake"
         case .activity: return "Stats"

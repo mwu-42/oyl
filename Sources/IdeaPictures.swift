@@ -2,76 +2,10 @@ import AppKit
 import ImageIO
 import SwiftUI
 
-/// Screenshots ideas are jotted about: taken from the ideas page's camera (an area picked out by
-/// hand, as ⇧⌘4 has you), kept in Oyl's own folder named for the idea's id in tod (tod keeps only
-/// the idea itself), and shown small on its row, a click from opening and a drag from a chat.
+/// A screenshot picked out by hand, and pictures read small (a project's screenshots, see
+/// `ProjectStore`).
 @MainActor
-final class IdeaPictures: ObservableObject {
-    /// The ideas that have one.
-    @Published private(set) var ids: Set<String> = []
-    let folder: URL
-    private var thumbnails: [String: NSImage] = [:]
-
-    nonisolated static var ownFolder: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Oyl/Ideas", isDirectory: true)
-    }
-
-    init(folder: URL = IdeaPictures.ownFolder) {
-        self.folder = folder
-        let kept = (try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
-        ids = Set(kept.filter { $0.pathExtension == "png" }.map { $0.deletingPathExtension().lastPathComponent })
-    }
-
-    /// The idea `id`'s screenshot, if it has one.
-    func url(for id: String) -> URL? {
-        ids.contains(id) ? file(for: id) : nil
-    }
-
-    /// Small, to show on its row (made once).
-    func thumbnail(for id: String) -> NSImage? {
-        if let made = thumbnails[id] { return made }
-        guard let url = url(for: id), let made = Self.thumbnail(of: url) else { return nil }
-        thumbnails[id] = made
-        return made
-    }
-
-    /// `shot` moved in as the idea `id`'s screenshot: whether it was.
-    @discardableResult
-    func keep(_ shot: URL, for id: String) -> Bool {
-        guard !id.isEmpty, !id.contains("/"), !id.hasPrefix(".") else { return false }
-        let files = FileManager.default, target = file(for: id)
-        do {
-            try files.createDirectory(at: folder, withIntermediateDirectories: true)
-            if files.fileExists(atPath: target.path) { try files.removeItem(at: target) }
-            try files.moveItem(at: shot, to: target)
-        } catch {
-            return false
-        }
-        thumbnails[id] = nil
-        ids.insert(id)
-        return true
-    }
-
-    /// The screenshots of ideas gone from tod altogether (not only done: one checked off can be
-    /// brought back) moved to the Trash, once they're a day old, so one whose idea hasn't reached
-    /// tod yet is never lost. (`discard` is for a test to give.)
-    func prune(keeping kept: Set<String>, now: Date = Date(),
-               discard: (URL) -> Void = { try? FileManager.default.trashItem(at: $0, resultingItemURL: nil) }) {
-        for id in ids.subtracting(kept) {
-            let url = file(for: id)
-            let taken = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? now
-            guard now.timeIntervalSince(taken) > 86_400 else { continue }
-            discard(url)
-            ids.remove(id)
-            thumbnails[id] = nil
-        }
-    }
-
-    private func file(for id: String) -> URL {
-        folder.appendingPathComponent(id).appendingPathExtension("png")
-    }
-
+enum IdeaPictures {
     /// A picture `size` pixels across at most, read without the whole of it.
     nonisolated static func thumbnail(of url: URL, size: Int = 160) -> NSImage? {
         let options = [kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceThumbnailMaxPixelSize: size,
@@ -100,41 +34,6 @@ final class IdeaPictures: ObservableObject {
         } catch {
             done(nil)
         }
-    }
-}
-
-/// What's being jotted on the ideas page, kept while the notch is closed (as it is while a
-/// screenshot's taken for it): the words, the screenshot they're about if there is one, and
-/// whether the field's to take the keyboard as it comes up.
-@MainActor
-final class IdeaDraft: ObservableObject {
-    @Published var text = ""
-    /// A screenshot just taken, no idea's yet.
-    @Published private(set) var shot: URL?
-    private(set) var shotImage: NSImage?
-    @Published var wantsKeyboard = false
-
-    /// `url` is the screenshot the idea's about (in place of any before it).
-    func attach(_ url: URL) {
-        drop()
-        shotImage = IdeaPictures.thumbnail(of: url)
-        shot = url
-    }
-
-    /// The screenshot let go of, and its file with it, since no idea has it.
-    func drop() {
-        if let shot { try? FileManager.default.removeItem(at: shot) }
-        shotImage = nil
-        shot = nil
-    }
-
-    /// The screenshot, handed over to the idea it's about: no longer the draft's.
-    func handOver() -> URL? {
-        defer {
-            shotImage = nil
-            shot = nil
-        }
-        return shot
     }
 }
 
@@ -167,3 +66,4 @@ struct IdeaShot: View {
         }
     }
 }
+

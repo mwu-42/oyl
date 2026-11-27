@@ -203,7 +203,7 @@ final class DockController {
         atPress.map { dragCount != $0 } ?? true
     }
 
-    private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops && !state.isTakingShot }
+    private var canOpen: Bool { state.showsDock && !state.isOff && !state.isResting && !state.isViewingDesktops }
 
     private func pointerMoved(_ event: NSEvent) {
         if event.type == .mouseMoved { noteDragBoard() }

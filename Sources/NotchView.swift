@@ -411,18 +411,10 @@ struct ExpandedNotch: View {
                                 Toggle("Countdowns over them", isOn: $state.showsCountdowns)
                             }
                             .transition(NotchView.swap)
-                    case .ideas:
-                        IdeasPage(tod: state.tod, state: state)
-                            .settingsMenu(.notch) {
-                                if TodStore.hasToyl { FeatureToggle(.useToyl, "toyl in Oyl") }
-                                FeatureToggle(.inboxPage, "Inbox page")
-                            }
-                            .transition(NotchView.swap)
                     case .inbox:
                         InboxPage(tod: state.tod, state: state)
                             .settingsMenu(.notch) {
                                 if TodStore.hasToyl { FeatureToggle(.useToyl, "toyl in Oyl") }
-                                FeatureToggle(.ideasPage, "Ideas page")
                             }
                             .transition(NotchView.swap)
                     case .awake:
@@ -490,7 +482,6 @@ struct PageTabs: View {
             }
             if tabs.contains(.music) { tab(.music, symbol: "music.note") }
             if tabs.contains(.timers) { tab(.timers, symbol: "timer") }
-            if tabs.contains(.ideas) { tab(.ideas, symbol: "lightbulb") }
             if tabs.contains(.inbox) { tab(.inbox, symbol: "tray.and.arrow.down") }
             if tabs.contains(.awake) { tab(.awake, symbol: AwakePage.symbol) }
             if tabs.contains(.activity) { tab(.activity, symbol: "cpu") }

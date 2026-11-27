@@ -35,10 +35,8 @@ enum Layout {
     static let settingsMottoHeight: CGFloat = 26
     /// The rows a phone's pairing card takes on the settings page.
     static let pairingRows = 5
-    /// The ideas page: an idea's row, the heading over each kind, and as many rows as show before
-    /// they scroll.
+    /// The inbox page: a task's row, and as many rows as show before they scroll.
     static let ideaRowHeight: CGFloat = 24
-    static let ideaHeaderHeight: CGFloat = 18
     static let maxVisibleIdeaRows = 6
     static func ideasHeight(list: CGFloat) -> CGFloat { 6 + 28 + 10 + list + 14 }
     static func settingsRows(_ rows: Int) -> CGFloat { CGFloat(rows) * settingsRowHeight }
@@ -81,7 +79,7 @@ enum NotchMode {
 }
 
 enum NotchPage {
-    case music, timers, ideas, inbox, awake, agents, activity, mirror
+    case music, timers, inbox, awake, agents, activity, mirror
     /// Every setting, from the Oyls page (or a right-click on the notch); it has no tab.
     case settings
 }
@@ -174,7 +172,6 @@ final class NotchState: ObservableObject {
     @Published var isResting = false    // the lid's shut with no other screen, or Oyl's off: nothing's drawn
     @Published var isOff = false        // switched off by three taps of control, till three more
     @Published var isViewingDesktops = false  // Mission Control's up: the top of the screen is its
-    @Published var isTakingShot = false  // an area's being picked out for an idea's screenshot: out of the way
     /// The right Shift's held, the camera on for gestures: what it sees, on the closed notch.
     @Published var watching: GestureWatch?
     /// The timer to pick out on its page: its Oyl on the menu bar was just clicked.
@@ -252,12 +249,6 @@ final class NotchState: ObservableObject {
     let shelf = Shelf()
     /// Gives the keyboard back to the app you were using. Set by the controller.
     var resignKeyboard: () -> Void = {}
-    /// Takes a screenshot for the idea being jotted. Set by the controller.
-    var takeIdeaShot: () -> Void = {}
-    /// What's being jotted on the ideas page, kept while the notch is closed, and the screenshots
-    /// ideas are about.
-    let ideaDraft = IdeaDraft()
-    let ideaPictures = IdeaPictures()
     /// Your projects, as an outline (see `ProjectStore`), in a window of its own (right-click the
     /// notch: Projects…), and how to open it (at a line, if it's given). Set by the controller.
     let projects = ProjectStore()
@@ -342,30 +333,10 @@ final class NotchState: ObservableObject {
     /// Starts the phone remote, if it's on, and redraws the settings as it changes.
     func startPhone() {
         phoneForwarding = phone.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-        // The ideas and inbox pages' heights go by what's on them.
+        // The inbox page's height goes by what's on it.
         todForwarding = tod.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
         // An outline reminder opens the notch.
         projectsForwarding = projects.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
-    }
-
-    /// The ideas' rows as tall as they stand (each kind under its heading), and as much of that as
-    /// shows before they scroll; with none, room for the hint.
-    ///
-    /// It's asked on every move of the pointer while the notch is open (for where it reaches), and
-    /// making the rows to measure them (their dates said, sorted) takes about a millisecond with a
-    /// couple of hundred ideas. So it's kept till tod's lists or ideas change, or the day does
-    /// (which is all that sorts them into coming up and later).
-    var ideaRowsHeight: CGFloat {
-        let day = IdeaQuick.calendar.startOfDay(for: Date())
-        if let kept = ideaHeight, kept.day == day, kept.tasks == tod.tasks, kept.lists == tod.lists { return kept.height }
-        let height = IdeaBoard.height(of: IdeaBoard.rows(tod.ideas, aims: tod.hasAims))
-        ideaHeight = (tod.tasks, tod.lists, day, height)
-        return height
-    }
-    private var ideaHeight: (tasks: [TodStore.Task], lists: [TodStore.List], day: Date, height: CGFloat)?
-
-    var ideaListHeight: CGFloat {
-        min(ideaRowsHeight, CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight)
     }
 
     /// The inbox page's list: its open tasks, as far as they show before they scroll.
@@ -376,7 +347,7 @@ final class NotchState: ObservableObject {
     /// The pages with tabs, in order: Oyl's own (always), then those turned on, then the settings
     /// (always).
     var tabs: [NotchPage] {
-        [.agents, .music, .timers, .ideas, .inbox, .awake, .activity, .mirror, .settings].filter(shows)
+        [.agents, .music, .timers, .inbox, .awake, .activity, .mirror, .settings].filter(shows)
     }
 
     /// Whether `page` is one of the notch's now (Oyl's and the settings always are).
@@ -385,7 +356,6 @@ final class NotchState: ObservableObject {
         case .agents, .settings: return true
         case .music: return Feature.musicPage.isOn
         case .timers: return Feature.timersPage.isOn
-        case .ideas: return Feature.ideasPage.isOn
         case .inbox: return Feature.inboxPage.isOn
         case .awake: return Feature.awakePage.isOn
         case .activity: return Feature.activityPage.isOn
@@ -402,7 +372,7 @@ final class NotchState: ObservableObject {
     var mode: NotchMode {
         if isAlerting || isHovering || isEditing || isHeld || isRevealing { return .expanded }
         // Midnight Oyl pinned open, on display (but not over Mission Control's desktops).
-        if isPinned && theme == .midnight && !isViewingDesktops && !isTakingShot { return .expanded }
+        if isPinned && theme == .midnight && !isViewingDesktops { return .expanded }
         return closedMode
     }
 
@@ -501,7 +471,6 @@ final class NotchState: ObservableObject {
             // (In Midnight Oyl the lyrics float in the sky under the page instead; see `bloomReach`.)
             return Layout.musicHeight + (showsLyrics && nowPlaying.lyrics != nil && theme != .midnight ? Layout.lyricsHeight : 0)
         case .timers: return Layout.timersHeight(list: timerListHeight)
-        case .ideas: return Layout.ideasHeight(list: ideaListHeight)
         case .inbox: return Layout.ideasHeight(list: inboxListHeight)
         case .awake: return Layout.awakeHeight
         case .agents:
@@ -580,7 +549,7 @@ final class NotchState: ObservableObject {
                           Layout.timersHeight(list: max(timerListHeight, Layout.timerRows(Layout.maxVisibleTimers))),
                           Layout.oylsHeight(rows: Layout.maxVisibleOyls) + Layout.oylSettingsHeight(rows: 3) + Layout.chatsFooterHeight,
                           Layout.settingsHeight(rows: Layout.settingsRowsFit),
-                          Layout.ideasHeight(list: CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight + 2 * Layout.ideaHeaderHeight))
+                          Layout.ideasHeight(list: CGFloat(Layout.maxVisibleIdeaRows) * Layout.ideaRowHeight))
         let size = CGSize(width: expandedWidth + 2 * (Self.topRadius(.expanded) + Layout.shadowPadding),
                           height: metrics.size.height + Layout.fullscreenStripHeight + tallest + Layout.shadowPadding)
         guard theme == .midnight else { return size }
@@ -775,7 +744,6 @@ final class NotchController {
         updateScreen()
         panel.orderFrontRegardless()
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
-        state.takeIdeaShot = { [weak self] in self?.takeShot(for: .ideas) }
         state.openProjects = { [weak self] id in self?.openProjects(at: id) }
         state.openFromAlert = { [weak self] page in self?.openFromAlert(page) }
         // toyl's list in use: the outline's window goes (and can't be opened) till it isn't.
@@ -835,7 +803,7 @@ final class NotchController {
             MainActor.assumeIsolated {
                 // Not a click on Mission Control's desktops, wherever an Oyl was standing, or
                 // picking out an area for a screenshot.
-                guard let self, !self.state.isViewingDesktops, !self.state.isTakingShot else { return }
+                guard let self, !self.state.isViewingDesktops else { return }
                 self.walkers.clickedThrough(at: NSEvent.mouseLocation)
             }
         }) {
@@ -1374,48 +1342,8 @@ final class NotchController {
         walkers.letPointerThrough()
     }
 
-    /// A screenshot for an idea, from the ideas page's camera: the notch closes out of the way and
-    /// stays closed (the pointer let through, and Oyl's Dock kept down) while an area's picked out,
-    /// as ⇧⌘4 has you, then opens on the page again, the picture at the head of the field, which
-    /// takes the keyboard for what the idea is. Called off with Escape, it's back to the field as
-    /// it was.
-    private func takeShot(for page: NotchPage) {
-        guard !state.isTakingShot else { return }
-        let draft = state.ideaDraft
-        state.isTakingShot = true
-        hoverWork?.cancel()
-        pointerInside = false
-        gestures.hovering = false
-        close()
-        panel.ignoresMouseEvents = true
-        // Once it's closed, so it's not in the picture (Midnight's band, once it's folded away).
-        DispatchQueue.main.asyncAfter(deadline: .now() + (state.theme == .midnight ? Midnight.closingDuration : 0.35)) { [weak self] in
-            MainActor.assumeIsolated {
-                IdeaPictures.take { shot in
-                    guard let self else { return }
-                    self.state.isTakingShot = false
-                    if let shot { draft.attach(shot) }
-                    self.state.page = page
-                    draft.wantsKeyboard = true
-                    self.state.isRevealing = true
-                    self.updatePassThrough(at: NSEvent.mouseLocation)
-                    // Open while it's typed in; otherwise, as a revealed page is, for a moment.
-                    self.revealWork?.cancel()
-                    let work = DispatchWorkItem { [weak self] in
-                        MainActor.assumeIsolated {
-                            guard let self, !self.pointerInside else { return }
-                            self.state.isRevealing = false
-                        }
-                    }
-                    self.revealWork = work
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: work)
-                }
-            }
-        }
-    }
-
     private func pointerMoved(released: Bool) {
-        guard !state.isOff, !state.isResting, !state.isViewingDesktops, !state.isTakingShot else { return }
+        guard !state.isOff, !state.isResting, !state.isViewingDesktops else { return }
         let rect = hoverRect()
         let location = NSEvent.mouseLocation
         walkers.pointerMoved(to: location)
