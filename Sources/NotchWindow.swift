@@ -126,9 +126,9 @@ struct NotchMetrics: Equatable {
     }
 }
 
-/// What the closed notch shows on each side, and how wide each side needs to be: while Wispr Flow
-/// takes down what you say, a microphone left and your voice right. (The song, timers, agents and
-/// the rest are Oyls out on the menu bar; see `WalkerOverlay`.)
+/// What the closed notch shows on each side, and how wide each side needs to be: a timer held on
+/// it, or what the right Shift's camera sees. (The song, timers, agents and the rest are Oyls out
+/// on the menu bar; see `WalkerOverlay`.)
 /// What the right Shift's camera sees, for the closed notch: the shape, once it's steady, and the
 /// gesture it's just acted on.
 struct GestureWatch: Equatable {
@@ -137,24 +137,21 @@ struct GestureWatch: Equatable {
 }
 
 struct CompactLayout {
-    let dictating: Bool
-    /// The timer held on the notch, while nothing's being dictated.
+    /// The timer held on the notch.
     let focus: ReminderTimer?
-    /// The right Shift held, the camera on: what it sees (over a held timer, while nothing's
-    /// being dictated).
+    /// The right Shift held, the camera on: what it sees (over a held timer).
     let watch: GestureWatch?
     let art: CGFloat
     let inset: CGFloat
 
-    init(notchHeight: CGFloat, dictating: Bool, focus: ReminderTimer? = nil, watch: GestureWatch? = nil) {
-        self.dictating = dictating
-        self.watch = dictating ? nil : watch
-        self.focus = dictating || watch != nil ? nil : focus
+    init(notchHeight: CGFloat, focus: ReminderTimer? = nil, watch: GestureWatch? = nil) {
+        self.watch = watch
+        self.focus = watch != nil ? nil : focus
         art = max(notchHeight - 12, 16)
         inset = (notchHeight - art) / 2 + 3
     }
 
-    var isEmpty: Bool { !dictating && focus == nil && watch == nil }
+    var isEmpty: Bool { focus == nil && watch == nil }
 
     /// How far it reaches either side of the notch: for a timer, room for its name and its time;
     /// for what the camera sees, a symbol of its shape and one of what it does.
@@ -242,7 +239,6 @@ final class NotchState: ObservableObject {
     let agents: AgentMonitor
     let power: PowerWatcher
     let bedtime: Bedtime
-    let dictation: Dictation
     /// Apps taking notes (Granola), each with an Oyl writing it down.
     let notes = NoteTakers()
     /// The hand gestures, for their settings. Set by the controller.
@@ -272,17 +268,15 @@ final class NotchState: ObservableObject {
     private var phoneForwarding: AnyCancellable?
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor,
-         power: PowerWatcher, bedtime: Bedtime, dictation: Dictation) {
+         power: PowerWatcher, bedtime: Bedtime) {
         self.nowPlaying = nowPlaying
         self.timers = timers
         self.awake = awake
         self.agents = agents
         self.power = power
         self.bedtime = bedtime
-        self.dictation = dictation
-        // The battery's Oyl is on the Oyls page, which redraws with this; dictating changes the
-        // closed notch.
-        forwarding = Publishers.Merge4(power.objectWillChange, dictation.objectWillChange, Features.shared.objectWillChange,
+        // The battery's Oyl is on the Oyls page, which redraws with this.
+        forwarding = Publishers.Merge3(power.objectWillChange, Features.shared.objectWillChange,
                                        AgentRadar.shared.objectWillChange.merge(with: notes.objectWillChange))
             .sink { [weak self] _ in self?.objectWillChange.send() }
         // toyl's timers on the notch too, and what's done to them here back in toyl's file.
@@ -407,7 +401,7 @@ final class NotchState: ObservableObject {
     var isAnnouncing: Bool { isAlerting && !isHovering }
 
     var compact: CompactLayout {
-        CompactLayout(notchHeight: metrics.size.height, dictating: dictation.isListening && Feature.wisprFlow.isOn,
+        CompactLayout(notchHeight: metrics.size.height,
                       focus: Feature.timersPage.isOn ? timers.focusedTimer : nil, watch: watching)
     }
 
@@ -702,7 +696,7 @@ final class NotchController {
 
     init(nowPlaying: NowPlaying, timers: TimerStore, awake: AwakeManager, agents: AgentMonitor) {
         state = NotchState(nowPlaying: nowPlaying, timers: timers, awake: awake, agents: agents,
-                           power: PowerWatcher(), bedtime: Bedtime(), dictation: Dictation())
+                           power: PowerWatcher(), bedtime: Bedtime())
         state.startPhone()
         gestures = GestureWatcher()
         closedLyrics = ClosedLyrics(nowPlaying: nowPlaying)
@@ -1019,20 +1013,18 @@ final class NotchController {
         }, ended: { [weak self] in
             self?.gestures.holdAwake(false)
         })
-        // Option (either one) held a moment on its own: the Claude that last finished (or began
-        // waiting for you), as its sound would have told, brought up; a tap of the trackpad for
-        // the right one only. Not while the desktops' list is up, where Option's for clicking an
-        // app's icon to quit it.
-        optionHold = HoldWatcher(.option, after: 0.5, began: { [weak self] in
+        // The right Option held a moment on its own (the left's left alone, for everything else
+        // Option does): the Claude that last finished (or began waiting for you), as its sound
+        // would have told, brought up, with a tap of the trackpad. Not while the desktops' list
+        // is up, where Option's for clicking an app's icon to quit it.
+        optionHold = HoldWatcher(.option, side: ModifierTaps.rightOption, after: 0.5, began: { [weak self] in
             guard let self, !self.state.isOff, Feature.optionLatest.isOn, self.desktops?.isUp != true else { return }
             // The latest still running (one that's quit has nothing to bring up).
             guard let session = self.chimes.latest(among: self.state.agents.sessions) else {
                 LatestClaude.log.notice("Option held: no Claude that's finished is running still")
                 return
             }
-            if CGEventSource.flagsState(.combinedSessionState).rawValue & UInt64(ModifierTaps.rightOption.this) != 0 {
-                Haptics.perform(.alignment)
-            }
+            Haptics.perform(.alignment)
             // Straight to its desktop, with no slide through the rest, nothing rearranged.
             LatestClaude.go(to: session) { [weak self] in self?.state.agents.reveal(session) }
         }, ended: {})
@@ -1138,7 +1130,6 @@ final class NotchController {
         desktops?.isResting = resting
         gestures.isSuspended = resting
         state.nowPlaying.resting = resting
-        state.dictation.resting = resting
         state.notes.resting = resting
         if resting { panel.orderOut(nil) } else { panel.orderFrontRegardless() }
         if resting { closedLyrics.hideNow() }

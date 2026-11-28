@@ -10,7 +10,7 @@ extension NotchState {
     /// They would be, but for the song being paused.
     var wouldShowLyricsByNotch: Bool {
         theme == .midnight && showsLyricsClosed && showsLyrics && !(nowPlaying.track?.isAudiobook ?? true)
-            && mode != .expanded && !compact.dictating && !isResting && !isViewingDesktops
+            && mode != .expanded && !isResting && !isViewingDesktops
     }
 }
 

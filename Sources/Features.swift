@@ -15,8 +15,6 @@ enum Feature: String, CaseIterable, Sendable {
     case useToyl
     /// The trackpad's tap as the notch pops, opens, and takes a gesture.
     case haptics
-    /// Wispr Flow's listening, in the closed notch, and its button.
-    case wisprFlow
     /// The music's sound analyzed, for the visualizer and the beat.
     case visualizer
     /// The song's name a click away from its player.
@@ -45,7 +43,7 @@ enum Feature: String, CaseIterable, Sendable {
     /// The right Shift key held on its own: the camera on for the gestures while it's held, and a
     /// moment after.
     case shiftCamera
-    /// Option (either) held on its own: the Claude that last finished, brought up.
+    /// The right Option held on its own: the Claude that last finished, brought up.
     case optionLatest
     /// Control once, then pressed again and held: Midnight Oyl, or back to Oyl's look.
     case themeKey

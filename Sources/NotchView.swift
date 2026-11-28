@@ -88,8 +88,7 @@ struct NotchView: View {
                               bedtime: bedtime, gestures: gestures, stats: stats)
                     .transition(Self.swap)
             case .compact:
-                CompactNotch(layout: state.compact, size: size, notchWidth: state.metrics.size.width,
-                             dictation: state.dictation, timers: timers)
+                CompactNotch(layout: state.compact, size: size, notchWidth: state.metrics.size.width, timers: timers)
                     .transition(Self.swap)
             case .idle:
                 EmptyView()
@@ -155,7 +154,6 @@ struct CompactNotch: View {
     let layout: CompactLayout
     let size: CGSize
     let notchWidth: CGFloat
-    let dictation: Dictation
     @ObservedObject var timers: TimerStore
 
     var body: some View {
@@ -163,27 +161,7 @@ struct CompactNotch: View {
             WatchedHand(watch: watch, size: size, notchWidth: notchWidth)
         } else if let timer = layout.focus.flatMap({ focus in timers.timers.first { $0.id == focus.id } }) {
             HeldTimer(timer: timer, size: size, notchWidth: notchWidth)
-        } else {
-            dictating
         }
-    }
-
-    private var dictating: some View {
-        HStack(spacing: 0) {
-            if layout.dictating {
-                Image(systemName: "mic.fill")
-                    .notchSymbol(size: layout.art * 0.55, weight: .semibold)
-                    .foregroundStyle(Dictation.tint)
-                    .frame(width: layout.art, height: layout.art)
-            }
-            Spacer(minLength: notchWidth)
-            if layout.dictating {
-                VoiceBars(dictation: dictation, barWidth: 2.5, height: layout.art * 0.65)
-                    .frame(width: layout.art)
-            }
-        }
-        .padding(.horizontal, layout.inset)
-        .frame(width: size.width, height: size.height)
     }
 }
 
@@ -359,7 +337,6 @@ struct ExpandedNotch: View {
                                 .notchSymbol(size: 11, weight: .semibold)
                                 .foregroundStyle(theme.tint(AwakePage.tint))
                         }
-                        if state.dictation.isAvailable, Feature.wisprFlow.isOn { DictationToggle(dictation: state.dictation) }
                         GestureToggle(gestures: gestures)
                     }
                     .transition(.opacity)
@@ -552,49 +529,6 @@ private struct TabMenu: ViewModifier {
 
 /// Top right of the open notch: turns hand gestures on and off. It pulses while the camera
 /// watches, and shows each gesture as it's acted on (a pinch for as long as it's held).
-/// Wispr Flow's hands-free dictation, on and off: orange, pulsing, while it's listening (however
-/// it was started).
-struct DictationToggle: View {
-    @ObservedObject var dictation: Dictation
-
-    var body: some View {
-        Button(action: dictation.toggle) {
-            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
-                .foregroundStyle(dictation.isListening ? Dictation.tint : .white.opacity(0.55))
-                .symbolEffect(.pulse, isActive: dictation.isListening)
-                .notchSymbol(size: 12, weight: .semibold)
-                .frame(width: 16, height: 18)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PressableStyle())
-        .help(dictation.isListening ? "Stop Wispr Flow" : "Dictate with Wispr Flow")
-    }
-}
-
-/// Your voice while Wispr Flow takes it down: bars rising and falling with it, each a little
-/// differently, or without the microphone, swaying gently on their own.
-struct VoiceBars: View {
-    let dictation: Dictation
-    var barWidth: CGFloat = 3
-    var height: CGFloat = 16
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20)) { context in
-            let time = context.date.timeIntervalSinceReferenceDate
-            let level = CGFloat(dictation.level ?? Float(0.35 + 0.15 * sin(time * 2.4)))
-            HStack(alignment: .center, spacing: barWidth * 0.7) {
-                ForEach(0..<4, id: \.self) { bar in
-                    let sway = 0.55 + 0.45 * sin(time * (6 + 1.7 * Double(bar)) + 1.3 * Double(bar))
-                    Capsule()
-                        .fill(Dictation.tint)
-                        .frame(width: barWidth, height: max(barWidth, height * min(level * CGFloat(sway) * 1.3, 1)))
-                }
-            }
-        }
-        .frame(width: barWidth * (4 + 3 * 0.7), height: height)
-    }
-}
-
 struct GestureToggle: View {
     @ObservedObject var gestures: GestureWatcher
 
