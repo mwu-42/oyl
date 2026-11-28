@@ -1020,15 +1020,19 @@ final class NotchController {
             self?.gestures.holdAwake(false)
         })
         // Option (either one) held a moment on its own: the Claude that last finished (or began
-        // waiting for you), as its sound would have told, brought up.
+        // waiting for you), as its sound would have told, brought up; a tap of the trackpad for
+        // the right one only. Not while the desktops' list is up, where Option's for clicking an
+        // app's icon to quit it.
         optionHold = HoldWatcher(.option, after: 0.5, began: { [weak self] in
-            guard let self, !self.state.isOff, Feature.optionLatest.isOn else { return }
+            guard let self, !self.state.isOff, Feature.optionLatest.isOn, self.desktops?.isUp != true else { return }
             // The latest still running (one that's quit has nothing to bring up).
             guard let session = self.chimes.latest(among: self.state.agents.sessions) else {
                 LatestClaude.log.notice("Option held: no Claude that's finished is running still")
                 return
             }
-            Haptics.perform(.alignment)
+            if CGEventSource.flagsState(.combinedSessionState).rawValue & UInt64(ModifierTaps.rightOption.this) != 0 {
+                Haptics.perform(.alignment)
+            }
             // Straight to its desktop, with no slide through the rest, nothing rearranged.
             LatestClaude.go(to: session) { [weak self] in self?.state.agents.reveal(session) }
         }, ended: {})

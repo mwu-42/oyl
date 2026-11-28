@@ -6,8 +6,8 @@ import os
 
 // Four fingers up (or right Shift twice): your desktops and fullscreen apps in a list, in the order
 // they're in, each by its name (a fullscreen app's by its app's, as the menu bar's label names them)
-// with the icons of the apps on it. Click one to go straight to it (an app's icon on it, to be offered
-// to quit that app); right-click one to rename it; drag
+// with the icons of the apps on it. Click one to go straight to it (Option-click an app's icon on it to
+// quit that app); right-click one to rename it; drag
 // one onto another to group them, under a heading that folds them away (see `SpaceGroups`). (They
 // can't be put in another order from here: macOS keeps that in the Dock, and short of turning System
 // Integrity Protection off, only Mission Control can change it, by dragging.) macOS's own
@@ -633,6 +633,8 @@ final class DesktopsModel: ObservableObject {
         let id: pid_t
         let name: String
         let icon: NSImage?
+        /// Whether Option-clicking it quits it (never Oyl, or the Finder: see `canQuit`).
+        var quittable = true
     }
 
     struct Desk: Identifiable, Equatable {
@@ -763,12 +765,8 @@ final class DesktopsModel: ObservableObject {
     /// Shift-clicked first: where what's grouped begins, once another's shift-clicked.
     @Published var anchor: String?
 
-    /// An app whose icon's been clicked on a desktop's row: offered there to quit (see `DeskRow`).
-    @Published var quitting: Quitting?
-    struct Quitting: Equatable {
-        let desk: String
-        let app: App
-    }
+    /// Option's held: an app's icon clicked quits it, and each that can be is marked so.
+    @Published var optionHeld = false
 
     /// How many desktops `app` has windows on (quitting it closes them all).
     func desktops(with app: pid_t) -> Int { desks.filter { $0.apps.contains { $0.id == app } }.count }
@@ -1609,12 +1607,7 @@ private struct DeskRow: View {
             }
             icons(midnight: midnight)
             Spacer(minLength: 8)
-            if let quitting = model.quitting, quitting.desk == desk.id, !renaming {
-                let says = DesktopsModel.quitSays(quitting.app.name, desktops: model.desktops(with: quitting.app.id))
-                DeskAction(word: says.prefix(1).lowercased() + says.dropFirst(), symbol: "xmark.circle", help: says + ", as ⌘Q would", says: true) {
-                    model.quit(quitting.app)
-                }
-            } else if showsActions {
+            if showsActions {
                 if model.picksSounds {
                     DeskAction(word: "sound", symbol: "speaker.wave.2", help: "Its sound when a Claude's done here") {
                         withAnimation(model.shuffle) { model.picking = model.picking == desk.id ? nil : desk.id }
@@ -1635,7 +1628,6 @@ private struct DeskRow: View {
                 model.hovered = desk.id
             } else {
                 if model.hovered == desk.id { model.hovered = nil }
-                if model.quitting?.desk == desk.id { withAnimation(.easeOut(duration: 0.15)) { model.quitting = nil } }
             }
         }
         .onTapGesture {
@@ -1722,25 +1714,22 @@ private struct DeskRow: View {
     }
 
     private func icons(midnight: Bool) -> some View {
-        let chosen = model.quitting?.desk == desk.id ? model.quitting?.app.id : nil
-        // Offered to quit: its icon alone, by the offer (the name keeps its room).
-        let apps = chosen.map { chosen in desk.apps.filter { $0.id == chosen } } ?? desk.apps
-        return DeskIcons(apps: apps, lit: lit, most: Self.mostIcons, tapped: { app in
+        // Marked on the row pointed at only, so the list isn't all ×s.
+        DeskIcons(apps: desk.apps, lit: lit, most: Self.mostIcons, quits: model.optionHeld && lit, tapped: { app in
             guard !renaming, !model.justDragged else { return }
-            // Shift-clicked, or one that can't be quit: the row's own click, as before.
-            if NSEvent.modifierFlags.contains(.shift) {
+            let flags = NSEvent.modifierFlags
+            if flags.contains(.shift) {
                 withAnimation(model.shuffle) { model.shiftClicked(desk.id) }
-                return
-            }
-            guard DesktopsModel.canQuit(app.id, bundle: NSRunningApplication(processIdentifier: app.id)?.bundleIdentifier) else {
+            } else if flags.contains(.option), app.quittable {
+                // Option-clicked: quit at once, as ⌘Q would.
+                model.quit(app)
+            } else {
+                // Else as the row's own click.
                 model.pick(desk)
-                return
             }
-            // Clicked again: not after all.
-            withAnimation(.easeOut(duration: 0.15)) {
-                model.quitting = chosen == app.id ? nil : DesktopsModel.Quitting(desk: desk.id, app: app)
-            }
-        }, chosen: chosen)
+        }, says: { app in
+            model.optionHeld && app.quittable ? "Option-click: " + DesktopsModel.quitSays(app.name, desktops: model.desktops(with: app.id)) : app.name
+        })
         .offset(x: midnight && lit ? 4 : 0)
     }
 
@@ -1905,15 +1894,19 @@ private struct DeskIcons: View {
     let lit: Bool
     let most: Int
     var small = false
-    /// Clicked, one of them (a desktop's row's own, not a group's heading's); and the one that was.
+    /// Option's held: each that can be quit marked with an ×.
+    var quits = false
+    /// Clicked, one of them (a desktop's row's own, not a group's heading's), and what each says
+    /// pointed at.
     var tapped: ((DesktopsModel.App) -> Void)? = nil
-    var chosen: pid_t? = nil
+    var says: ((DesktopsModel.App) -> String)? = nil
     @Environment(\.notchTheme) private var theme
 
     var body: some View {
         let midnight = theme == .midnight
         let side: CGFloat = (midnight ? 17 : 16) - (small ? 3 : 0)
-        HStack(spacing: midnight ? 4 : 3) {
+        // More room between them while they're marked, for the marks.
+        HStack(spacing: (midnight ? 4 : 3) + (quits ? 6 : 0)) {
             ForEach(apps.prefix(most)) { app in
                 if let icon = app.icon {
                     Image(nsImage: icon)
@@ -1922,8 +1915,11 @@ private struct DeskIcons: View {
                         .frame(width: side, height: side)
                         .saturation(midnight ? 0.55 : 1)
                         .opacity(midnight ? (lit ? 0.95 : 0.72) : small ? 0.85 : 1)
-                        .scaleEffect(chosen == app.id ? 1.18 : 1)
-                        .help(app.name)
+                        .overlay(alignment: .topTrailing) {
+                            if quits, app.quittable { QuitMark(midnight: midnight).offset(x: 3, y: -3).transition(.scale.combined(with: .opacity)) }
+                        }
+                        .animation(midnight ? .easeInOut(duration: 0.3) : .easeOut(duration: 0.12), value: quits)
+                        .help(says?(app) ?? app.name)
                         .contentShape(Rectangle())
                         .onTapGesture { tapped?(app) }
                         .allowsHitTesting(tapped != nil)
@@ -1933,8 +1929,26 @@ private struct DeskIcons: View {
                 Text("+\(apps.count - most)")
                     .font(midnight ? Midnight.italic(11) : .system(size: 10.5, weight: .medium))
                     .foregroundStyle(midnight ? Midnight.silver.opacity(0.5) : .white.opacity(0.45))
+                    .fixedSize()
             }
         }
+    }
+}
+
+/// On an app's icon while Option's held: an Option-click quits it. In Oyl's look a small dark disc
+/// with a white ×; in Midnight's a little patch of night with a silver one.
+private struct QuitMark: View {
+    let midnight: Bool
+
+    var body: some View {
+        ZStack {
+            Circle().fill(midnight ? Midnight.ink.opacity(0.92) : Color(white: 0.16))
+            Circle().strokeBorder(midnight ? Midnight.silver.opacity(0.55) : Color.white.opacity(0.75), lineWidth: midnight ? 0.5 : 0.75)
+            Image(systemName: "xmark")
+                .font(.system(size: 5.5, weight: .heavy))
+                .foregroundStyle(midnight ? Midnight.silver : .white)
+        }
+        .frame(width: 10, height: 10)
     }
 }
 
@@ -1943,8 +1957,6 @@ private struct DeskAction: View {
     let word: String
     let symbol: String
     let help: String
-    /// The word beside the icon in Oyl's look too.
-    var says = false
     let action: () -> Void
     @Environment(\.notchTheme) private var theme
 
@@ -1954,15 +1966,6 @@ private struct DeskAction: View {
                 Text(word)
                     .font(Midnight.italic(12))
                     .foregroundStyle(Midnight.silver.opacity(0.6))
-            } else if says {
-                Label(word, systemImage: symbol)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.75))
-                    .padding(.horizontal, 7)
-                    .frame(height: 20)
-                    .background(Capsule().fill(.white.opacity(0.1)))
-                    .contentShape(Capsule())
-                    .fixedSize()
             } else {
                 Image(systemName: symbol)
                     .font(.system(size: 11, weight: .medium))
@@ -2461,12 +2464,15 @@ final class DesktopsPanel: NSPanel {
 
     /// A right-click (or control-click): whether it was taken (a line renamed).
     var rightClicked: (NSEvent) -> Bool = { _ in false }
+    /// The modifier keys, as they change while it's key.
+    var flagsChanged: (NSEvent.ModifierFlags) -> Void = { _ in }
 
     override var canBecomeKey: Bool { true }
 
     override func cancelOperation(_ sender: Any?) { escape() }
 
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .flagsChanged { flagsChanged(event.modifierFlags) }
         let right = event.type == .rightMouseDown || event.type == .leftMouseDown && event.modifierFlags.contains(.control)
         if right, rightClicked(event) { return }
         super.sendEvent(event)
@@ -2540,6 +2546,11 @@ final class DesktopsViewer {
         model.dismiss = { [weak self] in self?.close() }
         model.pick = { [weak self] desk in self?.close(goingTo: desk) }
         model.quit = { [weak self] app in self?.quit(app) }
+        panel.flagsChanged = { [weak self] flags in
+            guard let self else { return }
+            let held = flags.contains(.option)
+            if held != self.model.optionHeld { self.model.optionHeld = held }
+        }
         model.renamed = { [weak self] desk, name in self?.rename(desk, to: name) }
         model.renamedGroup = { id, name in SpaceGroups().rename(id, to: name) }
         model.folded = { id, folded in SpaceGroups().fold(id, folded) }
@@ -2759,8 +2770,6 @@ final class DesktopsViewer {
             withAnimation(model.shuffle) { model.picking = nil }
         } else if model.anchor != nil {
             withAnimation(model.shuffle) { model.anchor = nil }
-        } else if model.quitting != nil {
-            withAnimation(.easeOut(duration: 0.15)) { model.quitting = nil }
         } else {
             close()
         }
@@ -2772,7 +2781,6 @@ final class DesktopsViewer {
     /// An app quit from the list, as ⌘Q would: it may ask first (to save, say), under the list,
     /// so one still up a moment on is gone to. (Read again as it goes, see `start`.)
     private func quit(_ app: DesktopsModel.App) {
-        model.quitting = nil
         guard let running = NSRunningApplication(processIdentifier: app.id),
               DesktopsModel.canQuit(app.id, bundle: running.bundleIdentifier) else { return }
         let desk = model.desks.first { $0.apps.contains { $0.id == app.id } }
@@ -2827,6 +2835,7 @@ final class DesktopsViewer {
         model.hovered = nil
         model.selected = nil
         model.renaming = nil
+        model.optionHeld = NSEvent.modifierFlags.contains(.option)
         model.desks = []
         model.showsClock = Feature.desktopsClock.isOn
         // Midnight's sky: new constellations each time it comes up, drawn in from now (at once,
@@ -2909,7 +2918,7 @@ final class DesktopsViewer {
         model.dragShift = .zero
         model.anchor = nil
         model.picking = nil
-        model.quitting = nil
+        model.optionHeld = false
     }
 
     /// The Spaces, then what's on each.
@@ -3058,7 +3067,8 @@ final class DesktopsViewer {
         func app(_ pid: pid_t) -> DesktopsModel.App? {
             if let found = known[pid] { return found }
             guard let running = NSRunningApplication(processIdentifier: pid) else { return nil }
-            let made = DesktopsModel.App(id: pid, name: running.localizedName ?? "", icon: running.icon)
+            let made = DesktopsModel.App(id: pid, name: running.localizedName ?? "", icon: running.icon,
+                                         quittable: DesktopsModel.canQuit(pid, bundle: running.bundleIdentifier))
             known[pid] = made
             return made
         }
