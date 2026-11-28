@@ -239,6 +239,7 @@ struct SettingsPage: View {
                 feature(.themeSound, "⌃ ⌃ held: its sound", "As the look swaps: moonrise into Midnight Oyl, daybreak back, both rising (and a tap of the trackpad, with Haptics on)"),
                 feature(.songKeys, "⌃⌥← → Songs", "The song before, or the next, from any app"),
                 feature(.emojiKey, "⌘. Emoji", "The emoji picker, from any app, as on Windows"),
+                feature(.windowSnapping, "Snapping windows", "Drag a window up toward the notch: three places to drop it come up under it, the left half, the middle (as big as it is) and the right half, where it'll go shown as you're over one"),
                 feature(.pictureInPicture, "⌃⌥P Picture in picture", "The window in front, kept up small over every desktop and fullscreen app (or right-click an app in Oyl's Dock); again to put it away"),
                 feature(.desktopsClock, "Time in the desktops", "The time and the day, over the list of your desktops"),
                 feature(.desktopsKey, "⇧⇧ Desktops", "The right Shift key twice, quickly: your desktops in a list, as four fingers up bring them (whatever macOS does with four fingers); twice again puts it away"),

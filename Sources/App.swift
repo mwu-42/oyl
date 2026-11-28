@@ -50,6 +50,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                      agents: AgentMonitor())
         MorningStart.shared.start()
         ScreenshotHold.shared.start()
+        WindowSnap.shared.start()
 
         // `kill`/`pkill` skip applicationWillTerminate; route them through it so a keep-awake
         // session never outlives the app (lid sleep especially). It carries on if Oyl's back soon.

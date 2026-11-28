@@ -750,6 +750,11 @@ final class NotchController {
         state.resignKeyboard = { [weak self] in self?.resignKeyboard() }
         state.openProjects = { [weak self] id in self?.openProjects(at: id) }
         state.openFromAlert = { [weak self] page in self?.openFromAlert(page) }
+        // Windows snapped only while Oyl's on, awake, and the desktops' list is away.
+        WindowSnap.shared.isAllowed = { [weak self] in
+            guard let state = self?.state else { return false }
+            return !state.isOff && !state.isResting && !state.isViewingDesktops && self?.desktops?.isUp != true
+        }
         // toyl's list in use: the outline's window goes (and can't be opened) till it isn't.
         state.onSourceChange = { [weak self] in
             guard let self, self.state.usesToyl else { return }
@@ -938,6 +943,7 @@ final class NotchController {
                     self?.desktops?.theme = theme
                     self?.missionGroups.theme = theme
                     ScreenshotHold.shared.theme = theme
+                    WindowSnap.shared.theme = theme
                 }
             }
             .store(in: &cancellables)

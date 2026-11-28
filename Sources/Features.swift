@@ -88,6 +88,9 @@ enum Feature: String, CaseIterable, Sendable {
     case morningClaude
     /// And another as each window ends, if none's going, till 2 AM.
     case claudeChain
+    /// A window dragged up toward the notch: places to drop it, the left half, the middle, the
+    /// right half (see `WindowSnap`).
+    case windowSnapping
 
     var key: String { "feature." + rawValue }
 
